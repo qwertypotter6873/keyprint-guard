@@ -1,125 +1,291 @@
 import * as ort from 'onnxruntime-web';
 
-// Configure ONNX Runtime Web WASM for static hosting (GitHub Pages / Vercel)
-// Single-threaded SIMD avoids SharedArrayBuffer COOP/COEP header issues on GitHub Pages.
+// Single-threaded SIMD WASM avoids SharedArrayBuffer COOP/COEP issues on GitHub Pages
 ort.env.wasm.wasmPaths = new URL('./ort/', window.location.href).href;
 ort.env.wasm.numThreads = 1;
 
+const PRINTABLE_CODE_RE =
+  /^(Key[A-Z]|Digit[0-9]|Space|Period|Comma|Slash|Semicolon|Quote|BracketLeft|BracketRight|Minus|Equal|Backquote|Backslash|Numpad[0-9]|NumpadDecimal|NumpadAdd|NumpadSubtract)$/;
+
 /**
- * Validate captured keystroke events and convert to raw { holds, dds, uds } in seconds.
- * Implements strict biometric input exception handling (Rubric D3).
+ * Character-level accuracy (%) between typed string and target prompt.
  */
-export function validateAndBuildStroke(events, expectedPassword) {
+export function computeTypingAccuracy(typed, target) {
+  const a = String(typed || '');
+  const b = String(target || '');
+  if (!a.length) return 100;
+  const len = Math.max(a.length, b.length);
+  let matches = 0;
+  const minLen = Math.min(a.length, b.length);
+  for (let i = 0; i < minLen; i++) {
+    if (a[i] === b[i]) matches++;
+  }
+  return Math.round((matches / len) * 100);
+}
+
+/**
+ * Backspace-resilient physical keystroke recorder.
+ * - Captures sub-ms physical scan codes (works identically for English & Korean 2-beolsik IME).
+ * - Maintains a live keystroke stack: when Backspace/Delete is pressed, pops the mistyped stroke
+ *   and marks a clean stitch boundary (`justEdited = true`) so the contaminated edit gap is
+ *   isolated while all valid neuromuscular digraphs before and after are preserved!
+ */
+export class SmartKeystrokeRecorder {
+  constructor(inputEl, { onLiveUpdate, onSubmit } = {}) {
+    this.inputEl = inputEl;
+    this.onLiveUpdate = onLiveUpdate;
+    this.onSubmit = onSubmit;
+    this.reset();
+    this._bind();
+  }
+
+  reset() {
+    this.stack = []; // Surviving physical strokes: { code, downTime, upTime, cleanFromPrev }
+    this.activeDown = new Map(); // code -> stack reference
+    this.justEdited = false;
+    this.backspaceCount = 0;
+    this.totalKeyPresses = 0;
+    this.hadPaste = false;
+    this.firstDownTime = null;
+    this.lastDownTime = null;
+  }
+
+  _bind() {
+    this.inputEl.addEventListener('paste', (e) => {
+      e.preventDefault();
+      this.hadPaste = true;
+      if (this.onLiveUpdate) this.onLiveUpdate(this.getLiveStats());
+    });
+
+    this.inputEl.addEventListener('keydown', (e) => {
+      const now = performance.now();
+
+      if (e.key === 'Enter') {
+        if (e.isComposing) {
+          // Allow Korean IME composition to commit final syllable before reading inputEl.value
+          setTimeout(() => {
+            if (this.onSubmit) this.onSubmit();
+          }, 15);
+          return;
+        }
+        e.preventDefault();
+        if (this.onSubmit) this.onSubmit();
+        return;
+      }
+
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        this.backspaceCount += 1;
+        this.justEdited = true;
+        if (this.stack.length > 0) {
+          this.stack.pop();
+        }
+        return;
+      }
+
+      // Ignore OS auto-repeat and pure modifier keys (Shift, Ctrl, Alt, Meta, Arrows)
+      if (e.repeat) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (!PRINTABLE_CODE_RE.test(e.code)) return;
+
+      // If input was cleared externally (e.g. select-all + delete), resync stack
+      if (this.inputEl.value.length === 0 && this.stack.length > 3) {
+        this.stack = [];
+        this.justEdited = false;
+      }
+
+      // Mark long pause (> 2.2s) as a stitch boundary instead of throwing an error
+      const hadLongPause =
+        this.stack.length > 0 && now - this.stack[this.stack.length - 1].downTime > 2200;
+
+      const entry = {
+        code: e.code,
+        downTime: now,
+        upTime: null,
+        cleanFromPrev: this.stack.length === 0 ? true : !this.justEdited && !hadLongPause,
+      };
+
+      if (this.firstDownTime === null) this.firstDownTime = now;
+      this.lastDownTime = now;
+      this.totalKeyPresses += 1;
+      this.justEdited = false;
+
+      this.stack.push(entry);
+      this.activeDown.set(e.code, entry);
+    });
+
+    this.inputEl.addEventListener('keyup', (e) => {
+      const now = performance.now();
+      const entry = this.activeDown.get(e.code);
+      if (entry && entry.upTime === null) {
+        entry.upTime = now;
+        this.activeDown.delete(e.code);
+      }
+    });
+
+    this.inputEl.addEventListener('input', () => {
+      if (this.inputEl.value.length === 0 && this.backspaceCount > 0) {
+        // User erased everything back to empty — give a clean slate automatically
+        const pasted = this.hadPaste;
+        this.reset();
+        this.hadPaste = pasted;
+      }
+      if (this.onLiveUpdate) this.onLiveUpdate(this.getLiveStats());
+    });
+  }
+
+  getLiveStats() {
+    const text = this.inputEl.value;
+    let cpm = 0;
+    if (this.firstDownTime && this.lastDownTime && this.lastDownTime > this.firstDownTime) {
+      const elapsedMin = (this.lastDownTime - this.firstDownTime) / 60000;
+      if (elapsedMin > 0.004) {
+        cpm = Math.round(this.stack.length / elapsedMin);
+      }
+    }
+    return {
+      text,
+      cpm,
+      backspaceCount: this.backspaceCount,
+      hadPaste: this.hadPaste,
+      keyCount: this.stack.length,
+    };
+  }
+
+  /**
+   * Reconstruct clean consecutive digraph sequence from surviving stack strokes,
+   * seamlessly bridging over any Backspace-repaired mistakes or mid-sentence pauses.
+   */
+  extractCleanStroke() {
+    const holds = [];
+    const dds = [];
+    const uds = [];
+    const stitchFlags = [];
+
+    for (let i = 0; i < this.stack.length - 1; i++) {
+      const c0 = this.stack[i];
+      const c1 = this.stack[i + 1];
+      if (!c1.cleanFromPrev) {
+        // Skip ONLY the single transition interrupted by Backspace or a long pause
+        continue;
+      }
+
+      const up0 = c0.upTime ?? c0.downTime + 80.0;
+      const up1 = c1.upTime ?? c1.downTime + 80.0;
+      const h0 = (up0 - c0.downTime) / 1000.0;
+      const h1 = (up1 - c1.downTime) / 1000.0;
+      const dd = (c1.downTime - c0.downTime) / 1000.0;
+      const ud = (c1.downTime - up0) / 1000.0;
+
+      if (h0 < 0.005 || h0 > 1.2 || h1 < 0.005 || h1 > 1.2) continue;
+      if (dd < 0.006 || dd > 2.2) continue;
+
+      if (holds.length === 0) {
+        holds.push(h0);
+      }
+      holds.push(h1);
+      dds.push(dd);
+      uds.push(ud);
+      stitchFlags.push(i > 0 && !c0.cleanFromPrev);
+    }
+
+    const meanHoldMs =
+      holds.length > 0
+        ? Math.round((holds.reduce((a, b) => a + b, 0) / holds.length) * 1000)
+        : 0;
+    const meanDdSec = dds.length > 0 ? dds.reduce((a, b) => a + b, 0) / dds.length : 0;
+    const cpm = meanDdSec > 0 ? Math.round(60.0 / meanDdSec) : 0;
+    const rolloverPct =
+      uds.length > 0 ? Math.round((uds.filter((u) => u < 0).length / uds.length) * 100) : 0;
+
+    return {
+      typedText: this.inputEl.value,
+      hadPaste: this.hadPaste,
+      backspaceCount: this.backspaceCount,
+      cleanDigraphCount: dds.length,
+      cpm,
+      holdMs: meanHoldMs,
+      rolloverPct,
+      stroke: {
+        holds,
+        dds,
+        uds,
+        stitchFlags,
+      },
+    };
+  }
+}
+
+export function validatePasswordCapture(capture, expectedPassword) {
   if (!expectedPassword || expectedPassword.length < 6) {
     return {
       ok: false,
       code: 'SHORT_PASSWORD',
-      message: '비밀번호는 최소 6자 이상이어야 유의미한 디그래프(Digraph) 생체 리듬을 추출할 수 있습니다.',
+      message: '비밀번호는 최소 6자 이상으로 설정해 주세요.',
     };
   }
-
-  if (events.hadPaste) {
+  if (capture.hadPaste) {
     return {
       ok: false,
       code: 'PASTE_BLOCKED',
-      message: '복사·붙여넣기(Paste) 입력이 감지되었습니다. 타건 생체 지문 측정을 위해 직접 타이핑해 주세요.',
+      message: '붙여넣기는 사용할 수 없습니다. 직접 키보드로 타이핑해 주세요.',
     };
   }
-
-  if (events.hadRepeat) {
-    return {
-      ok: false,
-      code: 'KEY_REPEAT',
-      message: '키 길게 누름(OS Key Repeat)이 감지되어 홀드(Hold) 시간이 왜곡되었습니다. 평소 속도로 다시 입력해 주세요.',
-    };
-  }
-
-  if (events.hadBackspace) {
-    return {
-      ok: false,
-      code: 'BACKSPACE_USED',
-      message: '백스페이스/수정 키가 포함되었습니다. 연속적인 근육 기억 측정을 위해 오타 없이 한 번에 입력해 주세요.',
-    };
-  }
-
-  if (events.typedText !== expectedPassword) {
+  if (capture.typedText !== expectedPassword) {
     return {
       ok: false,
       code: 'PASSWORD_MISMATCH',
-      message: `비밀번호 문자열이 일치하지 않습니다 (입력 길이: ${events.typedText.length}자 / 설정 암호: ${expectedPassword.length}자).`,
+      message: '비밀번호 문자열이 일치하지 않습니다. 철자를 확인하고 다시 입력해 주세요.',
     };
   }
-
-  const records = events.records;
-  if (records.length < 6) {
+  if (capture.cleanDigraphCount < 4) {
     return {
       ok: false,
-      code: 'INSUFFICIENT_KEYS',
-      message: '측정된 유효 키 이벤트 수가 부족합니다. 입력창을 클릭한 뒤 처음부터 타이핑해 주세요.',
+      code: 'INSUFFICIENT_CLEAN_KEYS',
+      message: '유효한 연속 타건 구간이 너무 적습니다(과도한 수정). 한 번만 자연스럽게 다시 입력해 주세요.',
     };
   }
+  return { ok: true };
+}
 
-  const holds = [];
-  const dds = [];
-  const uds = [];
-  const keyLabels = [];
-
-  for (let i = 0; i < records.length; i++) {
-    const r = records[i];
-    const upTime = r.upTime ?? (r.downTime + 85.0);
-    const holdSec = (upTime - r.downTime) / 1000.0;
-
-    if (holdSec < 0.006 || holdSec > 1.2) {
-      return {
-        ok: false,
-        code: 'ABNORMAL_HOLD',
-        message: `비정상적인 키 누름 시간(${Math.round(holdSec * 1000)}ms)이 감지되었습니다. 하드웨어 매크로이거나 입력이 지연되었습니다.`,
-      };
-    }
-    holds.push(holdSec);
-    keyLabels.push(r.label);
-
-    if (i < records.length - 1) {
-      const next = records[i + 1];
-      const ddSec = (next.downTime - r.downTime) / 1000.0;
-      const udSec = (next.downTime - upTime) / 1000.0;
-
-      if (ddSec > 2.8) {
-        return {
-          ok: false,
-          code: 'TYPING_PAUSED',
-          message: `타이핑 도중 긴 멈춤(${ddSec.toFixed(2)}초)이 감지되었습니다. 끊김 없이 자연스럽게 입력해 주세요.`,
-        };
-      }
-      dds.push(ddSec);
-      uds.push(udSec);
-    }
+export function validateSentenceCapture(capture, targetSentence) {
+  if (capture.hadPaste) {
+    return {
+      ok: false,
+      code: 'PASTE_BLOCKED',
+      message: '붙여넣기는 사용할 수 없습니다. 타자연습 문장을 직접 타이핑해 주세요.',
+    };
   }
-
+  const typedTrim = capture.typedText.trim();
+  const targetTrim = String(targetSentence || '').trim();
+  const minChars = Math.max(8, Math.floor(targetTrim.length * 0.72));
+  if (typedTrim.length < minChars) {
+    return {
+      ok: false,
+      code: 'INCOMPLETE_SENTENCE',
+      message: `문장을 끝까지 타이핑한 뒤 Enter를 눌러주세요 (${typedTrim.length} / ${targetTrim.length}자).`,
+    };
+  }
+  if (capture.cleanDigraphCount < 8) {
+    return {
+      ok: false,
+      code: 'INSUFFICIENT_CLEAN_KEYS',
+      message: '추출된 연속 리듬 구간이 부족합니다. 문장을 자연스럽게 이어서 타이핑해 주세요.',
+    };
+  }
   return {
     ok: true,
-    stroke: {
-      holds,
-      dds,
-      uds,
-      keyLabels,
-    },
+    accuracy: computeTypingAccuracy(typedTrim, targetTrim),
   };
 }
 
 /**
- * Exact JavaScript counterpart of src/preprocessing.py:
- * 1) Physiological outlier clipping
- * 2) 9-channel biomechanical digraph feature extraction
- * 3) Leakage-free Train channel Z-score standardization
- * Returns Float32Array of shape [1, 9, M] where M = K - 1.
+ * Exact JavaScript counterpart of src/preprocessing.py with Stitch-Boundary Acceleration Reset.
  */
 export function build9ChannelTensor(stroke, config) {
-  const { holds, dds, uds } = stroke;
+  const { holds, dds, uds, stitchFlags = [] } = stroke;
   const m = dds.length;
   const bounds = config.outlier_bounds;
   const eps = 1e-4;
-
   const clip = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
 
   const cHolds = holds.map((v) => clip(v, bounds.H));
@@ -129,7 +295,6 @@ export function build9ChannelTensor(stroke, config) {
   const meanH = Math.max(eps, cHolds.reduce((a, b) => a + b, 0) / cHolds.length);
   const meanDD = Math.max(eps, cDds.reduce((a, b) => a + b, 0) / cDds.length);
 
-  // Tensor layout: [1, 9, M] -> contiguous row-major channel-first
   const data = new Float32Array(9 * m);
   const chMean = config.channel_mean;
   const chStd = config.channel_std;
@@ -143,7 +308,8 @@ export function build9ChannelTensor(stroke, config) {
     const relDD = dd / meanDD;
     const dutyRatio = Math.min(5.0, Math.max(0.0, hCurr / Math.max(dd, 0.02)));
     const rolloverMag = Math.max(0.0, -ud);
-    const localAccel = t === 0 ? 0.0 : dd - cDds[t - 1];
+    // Reset Local_Accel at Backspace/pause stitch boundaries so zero artificial jump enters CNN
+    const localAccel = t === 0 || stitchFlags[t] ? 0.0 : dd - cDds[t - 1];
 
     const rawChannels = [
       hCurr,
@@ -169,6 +335,47 @@ export function build9ChannelTensor(stroke, config) {
   };
 }
 
+function dot(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
+}
+
+/**
+ * Merge a newly embedded sample into a variable-length template (works for both
+ * fixed passwords and diverse multi-sentence typing practice!).
+ */
+export function mergeTemplateSample(existing, { embedding, cpm, holdMs, rolloverPct }) {
+  const prevExemplars = existing?.exemplars ? [...existing.exemplars] : [];
+  prevExemplars.push(embedding.map((v) => Math.round(v * 100000) / 100000));
+  // Keep up to 12 most recent exemplars so synced payload stays tiny (~2 KB)
+  const exemplars = prevExemplars.slice(-12);
+
+  const dim = embedding.length;
+  const centroid = new Array(dim).fill(0);
+  for (const ex of exemplars) {
+    for (let d = 0; d < dim; d++) centroid[d] += ex[d];
+  }
+  const cNorm = Math.hypot(...centroid) || 1e-8;
+  for (let d = 0; d < dim; d++) {
+    centroid[d] = Math.round((centroid[d] / cNorm) * 100000) / 100000;
+  }
+
+  const prevCount = existing?.count || 0;
+  const nextCount = prevCount + 1;
+  const blend = (oldVal, newVal) =>
+    prevCount === 0 ? newVal : Math.round((oldVal * prevCount + newVal) / nextCount);
+
+  return {
+    centroid,
+    exemplars,
+    count: nextCount,
+    cpm: blend(existing?.cpm || 0, cpm || 0),
+    holdMs: blend(existing?.holdMs || 0, holdMs || 0),
+    rolloverPct: blend(existing?.rolloverPct || 0, rolloverPct || 0),
+  };
+}
+
 export class KeyPrintEngine {
   constructor() {
     this.session = null;
@@ -191,7 +398,6 @@ export class KeyPrintEngine {
     this.config = cfgResp;
     this.session = session;
 
-    // Warm up WASM kernel with a dummy [1, 9, 10] inference
     const dummy = new ort.Tensor('float32', new Float32Array(90), [1, 9, 10]);
     await this.session.run({ keystroke_seq: dummy });
     this.loadTimeMs = Math.round((performance.now() - t0) * 10) / 10;
@@ -204,81 +410,40 @@ export class KeyPrintEngine {
     const inputTensor = new ort.Tensor('float32', tensorData, dims);
     const results = await this.session.run({ keystroke_seq: inputTensor });
     const rawEmb = Array.from(results.biometric_embedding.data);
-
-    // Ensure unit L2 norm
     const norm = Math.hypot(...rawEmb) || 1e-8;
     const embedding = rawEmb.map((v) => v / norm);
     const latencyMs = Math.round((performance.now() - t0) * 100) / 100;
-
     return { embedding, latencyMs, cleanStroke };
   }
 
-  buildTemplate(enrolledItems) {
-    const dim = enrolledItems[0].embedding.length;
-    const centroid = new Array(dim).fill(0);
-    for (const item of enrolledItems) {
-      for (let d = 0; d < dim; d++) centroid[d] += item.embedding[d];
-    }
-    const cNorm = Math.hypot(...centroid) || 1e-8;
-    for (let d = 0; d < dim; d++) centroid[d] /= cNorm;
-
-    // Compute intra-template consistency & per-digraph mean/std for visual forensics
-    const m = enrolledItems[0].cleanStroke.dds.length;
-    const meanDD = new Array(m).fill(0);
-    const stdDD = new Array(m).fill(0);
-    const meanHold = new Array(m + 1).fill(0);
-    const meanUD = new Array(m).fill(0);
-
-    for (const item of enrolledItems) {
-      for (let t = 0; t < m; t++) {
-        meanDD[t] += item.cleanStroke.dds[t] / enrolledItems.length;
-        meanUD[t] += item.cleanStroke.uds[t] / enrolledItems.length;
-      }
-      for (let k = 0; k <= m; k++) {
-        meanHold[k] += item.cleanStroke.holds[k] / enrolledItems.length;
-      }
-    }
-
-    for (const item of enrolledItems) {
-      for (let t = 0; t < m; t++) {
-        const diff = item.cleanStroke.dds[t] - meanDD[t];
-        stdDD[t] += (diff * diff) / enrolledItems.length;
-      }
-    }
-    for (let t = 0; t < m; t++) {
-      stdDD[t] = Math.max(0.015, Math.sqrt(stdDD[t]));
-    }
-
-    const selfScores = enrolledItems.map((it) => dot(it.embedding, centroid));
-    const consistency = selfScores.reduce((a, b) => a + b, 0) / selfScores.length;
-
-    return {
-      centroid,
-      exemplars: enrolledItems.map((it) => it.embedding),
-      meanDD,
-      stdDD,
-      meanHold,
-      meanUD,
-      consistency,
-    };
-  }
-
-  scoreAgainstTemplate(embedding, cleanStroke, template, threshold) {
+  scoreTemplate(embedding, template, { domain = 'password', threshold = 0.49 } = {}) {
     const cSim = dot(embedding, template.centroid);
-    let maxExSim = -1;
-    for (const ex of template.exemplars) {
-      const s = dot(embedding, ex);
-      if (s > maxExSim) maxExSim = s;
+    let maxExSim = cSim;
+    if (Array.isArray(template.exemplars) && template.exemplars.length > 0) {
+      maxExSim = -1;
+      for (const ex of template.exemplars) {
+        const s = dot(embedding, ex);
+        if (s > maxExSim) maxExSim = s;
+      }
     }
     const raw = 0.65 * cSim + 0.35 * maxExSim;
     let similarity = raw;
 
-    // Apply Adaptive Symmetric Cohort Normalization (AS-Norm) if cohort is present
-    const cohort = this.config?.cohort_centroids;
+    const cohort =
+      domain === 'sentence' && Array.isArray(this.config?.sentence_cohort_centroids)
+        ? this.config.sentence_cohort_centroids
+        : this.config?.cohort_centroids;
+
     if (Array.isArray(cohort) && cohort.length > 0) {
-      const topM = Math.min(12, cohort.length);
-      const uScores = cohort.map((r) => dot(r, template.centroid)).sort((a, b) => a - b).slice(-topM);
-      const qScores = cohort.map((r) => dot(r, embedding)).sort((a, b) => a - b).slice(-topM);
+      const topM = Math.min(domain === 'sentence' ? 16 : 12, cohort.length);
+      const uScores = cohort
+        .map((r) => dot(r, template.centroid))
+        .sort((a, b) => a - b)
+        .slice(-topM);
+      const qScores = cohort
+        .map((r) => dot(r, embedding))
+        .sort((a, b) => a - b)
+        .slice(-topM);
 
       const meanArr = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
       const stdArr = (arr, mu) =>
@@ -293,58 +458,37 @@ export class KeyPrintEngine {
       similarity = 1.0 / (1.0 + Math.exp(-0.85 * (zAs - 0.15)));
     }
 
-    const accepted = similarity >= threshold;
-
-    // Per-digraph rhythmic deviation z-score for explainable UI bar chart
-    const m = Math.min(cleanStroke.dds.length, template.meanDD.length);
-    const digraphDeviations = [];
-    for (let t = 0; t < m; t++) {
-      const z = Math.abs(cleanStroke.dds[t] - template.meanDD[t]) / (template.stdDD[t] + 0.01);
-      digraphDeviations.push(Math.min(5.0, Math.round(z * 100) / 100));
-    }
-
     return {
       similarity,
       centroidSim: cSim,
       exemplarSim: maxExSim,
-      accepted,
+      accepted: similarity >= threshold,
       threshold,
-      digraphDeviations,
     };
   }
 
-  /**
-   * 1:N Multi-User Typing-Practice Identification ("Who Is Typing?")
-   * Ranks all N enrolled user templates in the gallery by AS-Norm biometric similarity
-   * and applies an open-set rejection threshold to detect unregistered outsiders.
-   */
-  identifyAgainstGallery(embedding, cleanStroke, galleryProfiles, openSetThreshold = 0.48) {
-    if (!Array.isArray(galleryProfiles) || galleryProfiles.length === 0) {
-      return null;
-    }
+  identifyTypist(embedding, candidates, { openSetThreshold = 0.44 } = {}) {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
 
-    const scored = galleryProfiles.map((profile) => {
-      const res = this.scoreAgainstTemplate(
-        embedding,
-        cleanStroke,
-        profile.template,
-        openSetThreshold
-      );
+    const scored = candidates.map((cand) => {
+      const res = this.scoreTemplate(embedding, cand.template, {
+        domain: 'sentence',
+        threshold: openSetThreshold,
+      });
       return {
-        id: profile.id,
-        name: profile.name,
-        badge: profile.badge || '',
+        id: cand.id,
+        name: cand.name,
+        color: cand.color || '#2563eb',
+        isSample: Boolean(cand.isSample),
         similarity: res.similarity,
         centroidSim: res.centroidSim,
-        digraphDeviations: res.digraphDeviations,
-        template: profile.template,
+        template: cand.template,
       };
     });
 
     scored.sort((a, b) => b.similarity - a.similarity);
 
-    // Temperature-scaled softmax confidence across gallery candidates
-    const temp = 9.0;
+    const temp = 8.5;
     const maxS = scored[0].similarity;
     const exps = scored.map((it) => Math.exp(temp * (it.similarity - maxS)));
     const sumExp = exps.reduce((a, b) => a + b, 0) || 1.0;
@@ -353,68 +497,14 @@ export class KeyPrintEngine {
       it.rank = idx + 1;
     });
 
-    const best = scored[0];
-    const margin = scored.length > 1 ? best.similarity - scored[1].similarity : best.similarity;
-    const identified = best.similarity >= openSetThreshold;
+    const winner = scored[0];
+    const identified = winner.similarity >= openSetThreshold;
 
     return {
       identified,
-      winner: best,
-      margin,
+      winner,
       openSetThreshold,
       rankings: scored,
     };
   }
-}
-
-function dot(a, b) {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
-  return s;
-}
-
-/**
- * Generate synthetic attack strokes for any password length K (including Enter key).
- */
-export function synthesizeBotStroke(numKeys, attackType = 'uniform_macro') {
-  const holds = [];
-  const dds = [];
-  const uds = [];
-
-  if (attackType === 'uniform_macro') {
-    // Automated Selenium / PyAutoGUI style constant-interval macro script
-    for (let i = 0; i < numKeys; i++) {
-      const h = 0.075 + (Math.random() - 0.5) * 0.004;
-      holds.push(h);
-      if (i < numKeys - 1) {
-        const dd = 0.145 + (Math.random() - 0.5) * 0.005;
-        dds.push(dd);
-        uds.push(dd - h);
-      }
-    }
-  } else if (attackType === 'gaussian_mimic') {
-    // Attacker script injecting naive random delays to bypass rate limiters
-    for (let i = 0; i < numKeys; i++) {
-      const h = 0.045 + Math.random() * 0.135;
-      holds.push(h);
-      if (i < numKeys - 1) {
-        const dd = 0.095 + Math.random() * 0.320;
-        dds.push(dd);
-        uds.push(dd - h);
-      }
-    }
-  } else if (attackType === 'hunt_and_peck') {
-    // One-finger "eagle typing" attacker who stole the plaintext password on a sticky note
-    for (let i = 0; i < numKeys; i++) {
-      const h = 0.095 + Math.random() * 0.055;
-      holds.push(h);
-      if (i < numKeys - 1) {
-        const dd = 0.360 + Math.random() * 0.290;
-        dds.push(dd);
-        uds.push(dd - h);
-      }
-    }
-  }
-
-  return { holds, dds, uds };
 }

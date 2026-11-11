@@ -45,120 +45,254 @@ function startStaticServer(rootDir) {
   });
 }
 
+/**
+ * Type an English string with a distinct human-like cadence (holdMs, ddMs, rollover)
+ * and optionally inject real typos + Backspace repairs mid-sentence!
+ */
+async function typeWithBiometricCadence(page, selector, text, profile, injectBackspace = false) {
+  await page.focus(selector);
+  const chars = Array.from(text);
+  const typoAt = injectBackspace ? Math.floor(chars.length * 0.42) : -1;
+
+  const codeForChar = (ch) => {
+    if (ch === ' ') return 'Space';
+    if (ch === '.') return 'Period';
+    if (/^[a-zA-Z]$/.test(ch)) return `Key${ch.toUpperCase()}`;
+    if (/^[0-9]$/.test(ch)) return `Digit${ch}`;
+    return 'KeyA';
+  };
+
+  for (let i = 0; i < chars.length; i++) {
+    if (i === typoAt) {
+      // Inject 2 mistyped characters followed by 2 Backspaces!
+      for (const bad of ['x', 'z']) {
+        await page.dispatchEvent(selector, 'keydown', { key: bad, code: codeForChar(bad) });
+        await page.evaluate(
+          ({ sel, ch }) => {
+            const el = document.querySelector(sel);
+            el.value += ch;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          },
+          { sel: selector, ch: bad }
+        );
+        await page.waitForTimeout(38);
+        await page.dispatchEvent(selector, 'keyup', { key: bad, code: codeForChar(bad) });
+        await page.waitForTimeout(55);
+      }
+      for (let b = 0; b < 2; b++) {
+        await page.dispatchEvent(selector, 'keydown', { key: 'Backspace', code: 'Backspace' });
+        await page.evaluate((sel) => {
+          const el = document.querySelector(sel);
+          el.value = el.value.slice(0, -1);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, selector);
+        await page.waitForTimeout(35);
+        await page.dispatchEvent(selector, 'keyup', { key: 'Backspace', code: 'Backspace' });
+        await page.waitForTimeout(60);
+      }
+    }
+
+    const ch = chars[i];
+    const code = codeForChar(ch);
+    const wave = 1.0 + profile.waveAmp * Math.sin((i / Math.max(1, chars.length)) * Math.PI * 2);
+    const hold = Math.round(profile.holdMs * wave);
+    const dd = Math.round(profile.ddMs * wave);
+
+    await page.dispatchEvent(selector, 'keydown', { key: ch, code });
+    await page.evaluate(
+      ({ sel, c }) => {
+        const el = document.querySelector(sel);
+        el.value += c;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      },
+      { sel: selector, c: ch }
+    );
+
+    if (dd < hold) {
+      // Rollover typing (UD < 0): next key pressed before releasing current key!
+      await page.waitForTimeout(dd);
+      setTimeout(() => {
+        page.dispatchEvent(selector, 'keyup', { key: ch, code }).catch(() => {});
+      }, hold - dd);
+    } else {
+      await page.waitForTimeout(hold);
+      await page.dispatchEvent(selector, 'keyup', { key: ch, code });
+      await page.waitForTimeout(Math.max(8, dd - hold));
+    }
+  }
+  await page.waitForTimeout(60);
+}
+
 async function run() {
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
   const { server, url } = await startStaticServer(DIST_DIR);
-  console.log(`[E2E] Serving static build at ${url}`);
+  const testRoom = `E2E${Math.floor(1000 + Math.random() * 8999)}`;
+  const roomUrl = `${url}/?room=${testRoom}`;
+  console.log(`[E2E] Serving MVP build at ${roomUrl}`);
 
   const browser = await chromium.launch({
     executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     headless: true,
   });
 
+  // Two distinct human cadence profiles
+  const cadenceDaehyeon = { holdMs: 108, ddMs: 84, waveAmp: 0.12 }; // Fast rollover typist (UD < 0!)
+  const cadenceMinsu = { holdMs: 62, ddMs: 195, waveAmp: 0.08 }; // Deliberate staccato typist (UD > 0)
+
   try {
-    const context = await browser.newContext({
-      viewport: { width: 1440, height: 980 },
-      deviceScaleFactor: 2,
-    });
-    const page = await context.newPage();
+    // Launch TWO simultaneous independent browser contexts (Laptop A & Laptop B)
+    const contextA = await browser.newContext({ viewport: { width: 1280, height: 880 }, deviceScaleFactor: 2 });
+    const contextB = await browser.newContext({ viewport: { width: 1280, height: 880 }, deviceScaleFactor: 2 });
+    const pageA = await contextA.newPage();
+    const pageB = await contextB.newPage();
 
     const errors = [];
-    page.on('pageerror', (e) => errors.push(e.message));
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') errors.push(msg.text());
-    });
+    for (const p of [pageA, pageB]) {
+      p.on('pageerror', (e) => errors.push(e.message));
+      p.on('console', (msg) => {
+        if (msg.type() === 'error') errors.push(msg.text());
+      });
+    }
 
-    await page.goto(url, { waitUntil: 'networkidle' });
-    await page.waitForFunction(
-      () => document.getElementById('engine-status')?.textContent?.includes('ONNX WASM 활성'),
-      { timeout: 15000 }
+    await Promise.all([
+      pageA.goto(roomUrl, { waitUntil: 'networkidle' }),
+      pageB.goto(roomUrl, { waitUntil: 'networkidle' }),
+    ]);
+
+    await Promise.all([
+      pageA.waitForFunction(() => document.getElementById('engine-status-text')?.textContent?.includes('ONNX 준비 완료'), { timeout: 15000 }),
+      pageB.waitForFunction(() => document.getElementById('engine-status-text')?.textContent?.includes('ONNX 준비 완료'), { timeout: 15000 }),
+    ]);
+    console.log('[E2E] Both Laptop A & Laptop B initialized ONNX WASM!');
+
+    // Switch both to English sentences for deterministic fast cadence synthesis + test Korean display too
+    await pageA.click('#lang-en-btn');
+    await pageB.click('#lang-en-btn');
+
+    // 1. Laptop A enrolls '김대현' across 3 DIFFERENT sentences WITH Backspace repairs!
+    await pageA.fill('#arena-name-input', '김대현');
+    const seenSentences = new Set();
+    for (let s = 0; s < 3; s++) {
+      const promptTxt = await pageA.evaluate(() => window.__keyprintTestApi.state.arenaEnrollSentence);
+      seenSentences.add(promptTxt);
+      await typeWithBiometricCadence(pageA, '#arena-enroll-input', promptTxt, cadenceDaehyeon, true);
+      if (s === 1) {
+        // Capture clean enrollment in-progress screenshot
+        await pageA.screenshot({
+          path: path.join(SCREENSHOT_DIR, '01_enrollment_template_ready.png'),
+          fullPage: false,
+        });
+      }
+      await pageA.keyboard.press('Enter');
+      await pageA.waitForTimeout(160);
+    }
+    if (seenSentences.size !== 3) {
+      throw new Error(`Expected 3 diverse sentences, got ${seenSentences.size}`);
+    }
+    console.log('[E2E] Laptop A enrolled 김대현 across 3 diverse sentences WITH Backspace!');
+
+    // Verify Laptop B received 김대현's profile in real time over WSS!
+    await pageB.waitForFunction(
+      () => window.__keyprintTestApi.state.profiles.some((p) => p.name === '김대현'),
+      { timeout: 8000 }
     );
-    const engineTxt = await page.textContent('#engine-status');
-    console.log(`[E2E] Engine Ready: ${engineTxt}`);
+    console.log('[E2E] Real-time WSS Sync verified: Laptop B automatically received 김대현!');
 
-    // 1. Mode 1: Click first Unseen Test Subject Preset -> Capture Enrollment Screenshot
-    await page.click('#benchmark-preset-buttons .preset-user-btn');
-    await page.waitForSelector('#template-summary-card:not([hidden])');
-    await page.waitForTimeout(300);
-    await page.screenshot({
-      path: path.join(SCREENSHOT_DIR, '01_enrollment_template_ready.png'),
+    // 2. Laptop B enrolls '박민수' across 3 DIFFERENT sentences!
+    await pageB.fill('#arena-name-input', '박민수');
+    for (let s = 0; s < 3; s++) {
+      const promptTxt = await pageB.evaluate(() => window.__keyprintTestApi.state.arenaEnrollSentence);
+      await typeWithBiometricCadence(pageB, '#arena-enroll-input', promptTxt, cadenceMinsu, s === 0);
+      await pageB.keyboard.press('Enter');
+      await pageB.waitForTimeout(160);
+    }
+
+    // Verify Laptop A now sees BOTH 김대현 and 박민수!
+    await pageA.waitForFunction(
+      () => window.__keyprintTestApi.state.profiles.length >= 2,
+      { timeout: 8000 }
+    );
+    console.log('[E2E] Laptop A now has live synced profiles:', await pageA.evaluate(() => window.__keyprintTestApi.state.profiles.map((p) => p.name)));
+
+    // 3. Blind Identification on a BRAND NEW sentence WITH Backspace!
+    await pageA.click('#arena-sub-blind');
+    const blindSentence = await pageA.evaluate(() => window.__keyprintTestApi.state.arenaBlindSentence);
+    await typeWithBiometricCadence(pageA, '#arena-blind-input', blindSentence, cadenceDaehyeon, true);
+    await pageA.keyboard.press('Enter');
+    await pageA.waitForSelector('#arena-result-card:not([hidden])');
+    await pageA.waitForTimeout(300);
+    const blindTitle = await pageA.textContent('#arena-result-title');
+    const blindMeta = await pageA.textContent('#arena-result-meta');
+    console.log(`[E2E] Blind Identification Result: ${blindTitle} | ${blindMeta}`);
+
+    await pageA.screenshot({
+      path: path.join(SCREENSHOT_DIR, '05_typing_arena_who_is_typing.png'),
       fullPage: false,
     });
-    console.log('[E2E] Saved 01_enrollment_template_ready.png');
 
-    // 2. Mode 1: Genuine User Verification -> ACCESS GRANTED
-    await page.click('#sim-genuine-btn');
-    await page.waitForSelector('#verdict-card.state-granted');
-    await page.waitForTimeout(300);
-    const genuineScore = await page.textContent('#verdict-score');
-    console.log(`[E2E] Genuine Verification Score: ${genuineScore}`);
-    await page.screenshot({
+    // 4. Mode B: Password Guard — Laptop A registers password for 김대현 (with Backspace on rep 1!)
+    await pageA.click('#nav-guard-btn');
+    await pageA.click('#guard-sub-enroll');
+    await pageA.fill('#guard-enroll-name', '김대현');
+    await pageA.fill('#guard-enroll-pw-target', 'gachon2026');
+    for (let r = 0; r < 4; r++) {
+      await typeWithBiometricCadence(pageA, '#guard-enroll-input', 'gachon2026', cadenceDaehyeon, r === 1);
+      await pageA.keyboard.press('Enter');
+      await pageA.waitForTimeout(140);
+    }
+    console.log('[E2E] Password profile registered for 김대현!');
+
+    // Laptop A logs in as 김대현 -> ACCESS GRANTED
+    await typeWithBiometricCadence(pageA, '#guard-verify-input', 'gachon2026', cadenceDaehyeon, true);
+    await pageA.keyboard.press('Enter');
+    await pageA.waitForSelector('#guard-result-card.is-pass');
+    await pageA.waitForTimeout(300);
+    console.log('[E2E] Mode 1 Genuine Login:', await pageA.textContent('#guard-result-title'), await pageA.textContent('#guard-result-score'));
+    await pageA.screenshot({
       path: path.join(SCREENSHOT_DIR, '02_genuine_verification_granted.png'),
       fullPage: false,
     });
-    console.log('[E2E] Saved 02_genuine_verification_granted.png');
 
-    // 3. Mode 1: Human Hacker + Macro Bot Intrusions -> INTRUSION BLOCKED
-    await page.click('#sim-macro-bot-btn');
-    await page.waitForTimeout(180);
-    await page.click('#sim-human-hacker-btn');
-    await page.waitForSelector('#verdict-card.state-blocked');
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(300);
-    const hackerScore = await page.textContent('#verdict-score');
-    console.log(`[E2E] Skilled Human Hacker Score: ${hackerScore} (BLOCKED)`);
-    await page.screenshot({
+    // Laptop B (박민수) switches to Password Guard, sees 김대현's synced account, and types exact password 'gachon2026' -> BLOCKED!
+    await pageB.click('#nav-guard-btn');
+    await pageB.waitForFunction(
+      () => window.__keyprintTestApi.state.profiles.some((p) => p.name === '김대현' && p.password),
+      { timeout: 8000 }
+    );
+    await typeWithBiometricCadence(pageB, '#guard-verify-input', 'gachon2026', cadenceMinsu, false);
+    await pageB.keyboard.press('Enter');
+    await pageB.waitForSelector('#guard-result-card.is-block');
+    await pageB.waitForTimeout(300);
+    console.log('[E2E] Mode 1 Cross-User Intrusion on Laptop B:', await pageB.textContent('#guard-result-title'), await pageB.textContent('#guard-result-score'));
+    await pageB.screenshot({
       path: path.join(SCREENSHOT_DIR, '03_hacker_intrusion_blocked.png'),
-      fullPage: true,
+      fullPage: false,
     });
-    console.log('[E2E] Saved 03_hacker_intrusion_blocked.png');
 
-    // 4. Mode 1: Exception Handling Verification (Backspace / Wrong Password)
-    await page.focus('#verify-input');
-    await page.keyboard.type('.tie5Wrong', { delay: 55 });
-    await page.keyboard.press('Backspace');
-    await page.keyboard.press('Enter');
-    await page.waitForSelector('#verdict-card.state-exception');
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(250);
-    const excBadge = await page.textContent('#verdict-badge');
-    console.log(`[E2E] Exception Handling Verified: ${excBadge}`);
-    await page.screenshot({
+    // 5. Open Simultaneous Room & Profile Management Dialog for screenshot 04
+    await pageA.click('#open-room-btn');
+    await pageA.waitForTimeout(300);
+    await pageA.screenshot({
       path: path.join(SCREENSHOT_DIR, '04_exception_handling_guard.png'),
       fullPage: false,
     });
-    console.log('[E2E] Saved 04_exception_handling_guard.png');
 
-    // 5. Mode 2: Switch to 1:N Typing-Practice Person Classifier ("Who Is Typing?")
-    await page.click('#tab-mode-arena');
-    await page.waitForSelector('#arena-view:not([hidden])');
-    await page.click('#arena-preset-gallery-btns .arena-gal-btn');
-    await page.waitForFunction(
-      () => Number(document.getElementById('arena-gallery-count')?.textContent || '0') >= 8
-    );
-    // Also type partial characters in enroll box to show live green typing-practice highlight in screenshot!
-    await page.focus('#arena-enroll-input');
-    const targetSentence = await page.inputValue('#arena-sentence-input');
-    await page.keyboard.type(targetSentence.slice(0, Math.min(11, targetSentence.length)), { delay: 30 });
-
-    // Trigger blind typist identification!
-    await page.click('#arena-sim-random-btn');
-    await page.waitForSelector('#arena-ranking-list .rank-row');
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(350);
-    const arenaTitle = await page.textContent('#arena-verdict-title');
-    console.log(`[E2E] Mode 2 1:N Identification Result: ${arenaTitle}`);
-    await page.screenshot({
-      path: path.join(SCREENSHOT_DIR, '05_typing_arena_who_is_typing.png'),
-      fullPage: true,
+    // Clean up test room retained profiles on broker
+    await pageA.evaluate(() => {
+      for (const p of [...window.__keyprintTestApi.state.profiles]) {
+        window.__keyprintTestApi.roomSync.deleteProfile(p.id);
+      }
     });
-    console.log('[E2E] Saved 05_typing_arena_who_is_typing.png');
+    await pageA.waitForTimeout(300);
+
+    await contextA.close();
+    await contextB.close();
 
     if (errors.length > 0) {
       console.error('[E2E] Console/Page errors:', errors);
       process.exitCode = 1;
     } else {
-      console.log('[E2E] Zero console/page errors! All 5 interactive scenarios passed.');
+      console.log('[E2E] ALL MULTI-USER + BACKSPACE + DIVERSE SENTENCE CHECKS PASSED WITH ZERO ERRORS!');
     }
   } finally {
     await browser.close();

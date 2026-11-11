@@ -1,1154 +1,922 @@
 import {
   KeyPrintEngine,
-  synthesizeBotStroke,
-  validateAndBuildStroke,
+  SmartKeystrokeRecorder,
+  computeTypingAccuracy,
+  mergeTemplateSample,
+  validatePasswordCapture,
+  validateSentenceCapture,
 } from './biometrics.js';
+import {
+  RoomProfileSync,
+  getInitialRoomCode,
+  pickProfileColor,
+  sanitizeRoomCode,
+} from './roomSync.js';
+import { SentenceDeck } from './sentences.js';
 
-const MODIFIER_KEYS = new Set([
-  'Shift',
-  'Control',
-  'Alt',
-  'Meta',
-  'CapsLock',
-  'Tab',
-  'Escape',
-  'ArrowLeft',
-  'ArrowRight',
-  'ArrowUp',
-  'ArrowDown',
-]);
+const TARGET_ARENA_SHOTS = 3;
+const TARGET_PW_SHOTS = 4;
 
-const PHYSICAL_TYPING_CODE_RE =
-  /^(Key[A-Z]|Digit[0-9]|Space|Minus|Equal|BracketLeft|BracketRight|Semicolon|Quote|Backquote|Backslash|Comma|Period|Slash)$/;
-
-class LiveKeystrokeRecorder {
-  constructor(inputEl, { onProgress, onSubmitAttempt } = {}) {
-    this.inputEl = inputEl;
-    this.onProgress = onProgress;
-    this.onSubmitAttempt = onSubmitAttempt;
-    this.reset();
-    this.bind();
-  }
-
-  reset() {
-    this.records = [];
-    this.openKeys = new Map();
-    this.hadRepeat = false;
-    this.hadBackspace = false;
-    this.hadPaste = false;
-    if (this.onProgress) this.onProgress(0, '', 0);
-  }
-
-  bind() {
-    this.inputEl.addEventListener('paste', (e) => {
-      e.preventDefault();
-      this.hadPaste = true;
-      this.onSubmitAttempt({
-        records: [],
-        typedText: this.inputEl.value,
-        hadPaste: true,
-        hadRepeat: false,
-        hadBackspace: false,
-      });
-      this.inputEl.value = '';
-      this.reset();
-    });
-
-    this.inputEl.addEventListener('input', () => {
-      if (this.onProgress) {
-        const cpm = this.estimateLiveCpm();
-        this.onProgress(this.records.length, this.inputEl.value, cpm);
-      }
-    });
-
-    this.inputEl.addEventListener('keydown', (e) => {
-      if (MODIFIER_KEYS.has(e.key)) return;
-
-      if (e.repeat) {
-        this.hadRepeat = true;
-        return;
-      }
-
-      if (e.key === 'Backspace' || e.key === 'Delete') {
-        this.hadBackspace = true;
-        return;
-      }
-
-      const now = performance.now();
-
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        const finalize = () => {
-          const enterRec = { code: 'Enter', label: '⏎', downTime: now, upTime: now + 72.0 };
-          const finalizedRecords = [...this.records, enterRec];
-          const payload = {
-            records: finalizedRecords,
-            typedText: this.inputEl.value,
-            hadPaste: this.hadPaste,
-            hadRepeat: this.hadRepeat,
-            hadBackspace: this.hadBackspace,
-          };
-          this.inputEl.value = '';
-          this.reset();
-          this.onSubmitAttempt(payload);
-        };
-        if (e.isComposing) setTimeout(finalize, 18);
-        else finalize();
-        return;
-      }
-
-      // Support both ASCII/symbol keys AND Korean Hangul IME physical jamo keystrokes
-      if (e.key.length === 1 || e.key === 'Process' || PHYSICAL_TYPING_CODE_RE.test(e.code)) {
-        if (this.inputEl.value.length === 0 && this.records.length > 0 && e.key !== 'Process') {
-          this.reset();
-        }
-        const rec = {
-          code: e.code,
-          label: e.key === ' ' ? '␣' : e.key === 'Process' ? e.code.replace('Key', '') : e.key,
-          downTime: now,
-          upTime: null,
-        };
-        this.records.push(rec);
-        this.openKeys.set(e.code, rec);
-        if (this.onProgress) {
-          this.onProgress(this.records.length, this.inputEl.value, this.estimateLiveCpm());
-        }
-      }
-    });
-
-    this.inputEl.addEventListener('keyup', (e) => {
-      const rec = this.openKeys.get(e.code);
-      if (rec && rec.upTime === null) {
-        rec.upTime = performance.now();
-        this.openKeys.delete(e.code);
-      }
-    });
-  }
-
-  estimateLiveCpm() {
-    if (this.records.length < 2) return 0;
-    const spanSec = (this.records[this.records.length - 1].downTime - this.records[0].downTime) / 1000.0;
-    if (spanSec < 0.05) return 0;
-    return Math.min(1200, Math.round(((this.records.length - 1) / spanSec) * 60));
-  }
-}
-
-// Application State
 const engine = new KeyPrintEngine();
+const deck = new SentenceDeck();
+
 const state = {
-  activeMode: 'guard', // 'guard' | 'arena'
-  targetPassword: '.tie5Roanl',
-  enrolledItems: [],
-  template: null,
-  activePreset: null,
-  threshold: 0.56,
-  calibratedThreshold: 0.56,
-  strictThreshold: 0.68,
-  openSetIdThreshold: 0.52,
+  ready: false,
+  mode: 'arena', // 'arena' | 'guard'
+  arenaSub: 'enroll', // 'enroll' | 'blind'
+  guardSub: 'verify', // 'verify' | 'enroll'
+  lang: 'ko', // 'ko' | 'en'
+  threshold: 0.49,
+  showPasswordPlain: true,
 
-  // Mode 2: 1:N Typing-Practice Arena State
-  arenaSentence: 'we believe that we can c',
-  arenaStagingStrokes: [],
-  arenaGallery: [], // [{ id, name, badge, enrolledItems, template, blindStroke, crossStroke }]
-  arenaActivePresetGallery: null,
-  arenaAutoIndex: 1,
+  // Current prompts
+  arenaEnrollSentence: '',
+  arenaBlindSentence: '',
+
+  // In-progress enrollment buffers
+  arenaEnrollBuffer: { name: '', lang: 'ko', items: [] },
+  pwEnrollBuffer: { name: '', targetPw: '', items: [] },
+
+  // Selected target account for Mode B (Password Guard)
+  selectedGuardId: null,
+  profiles: [],
 };
 
-const el = {
-  announcer: document.getElementById('sr-announcer'),
-  engineStatus: document.getElementById('engine-status'),
-  latency: document.getElementById('inference-latency'),
-  tabGuard: document.getElementById('tab-mode-guard'),
-  tabArena: document.getElementById('tab-mode-arena'),
-  guardView: document.getElementById('guard-view'),
-  arenaView: document.getElementById('arena-view'),
+const $ = (id) => document.getElementById(id);
 
-  // Mode 1 DOM
-  targetPw: document.getElementById('target-password'),
-  resetBtn: document.getElementById('reset-enroll-btn'),
-  presetContainer: document.getElementById('benchmark-preset-buttons'),
-  enrollInput: document.getElementById('enroll-input'),
-  enrollCount: document.getElementById('enroll-count'),
-  liveCounter: document.getElementById('live-key-counter'),
-  enrollDots: document.querySelectorAll('#enroll-dots .dot'),
-  enrollFeedback: document.getElementById('enroll-feedback'),
-  enrollFeedbackText: document.getElementById('enroll-feedback-text'),
-  templateCard: document.getElementById('template-summary-card'),
-  templateOwner: document.getElementById('template-owner-label'),
-  templateCohesion: document.getElementById('template-cohesion'),
-  templateWpm: document.getElementById('template-wpm'),
-  templateHold: document.getElementById('template-hold'),
-  templateRollover: document.getElementById('template-rollover'),
-  thresholdSlider: document.getElementById('threshold-slider'),
-  thresholdDisplay: document.getElementById('threshold-display'),
-  verifyInput: document.getElementById('verify-input'),
-  simGenuineBtn: document.getElementById('sim-genuine-btn'),
-  simGenuineSub: document.getElementById('sim-genuine-sub'),
-  simHumanBtn: document.getElementById('sim-human-hacker-btn'),
-  simMacroBtn: document.getElementById('sim-macro-bot-btn'),
-  simEagleBtn: document.getElementById('sim-eagle-btn'),
-  verdictCard: document.getElementById('verdict-card'),
-  verdictBadge: document.getElementById('verdict-badge'),
-  verdictTitle: document.getElementById('verdict-title'),
-  verdictDesc: document.getElementById('verdict-desc'),
-  verdictScore: document.getElementById('verdict-score'),
-  gaugeMarker: document.getElementById('gauge-threshold-marker'),
-  canvas: document.getElementById('rhythm-canvas'),
-  digraphBars: document.getElementById('digraph-bars'),
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
-  // Mode 2 DOM
-  arenaSentenceInput: document.getElementById('arena-sentence-input'),
-  arenaClearGalleryBtn: document.getElementById('arena-clear-gallery-btn'),
-  arenaPresetGalleryBtns: document.getElementById('arena-preset-gallery-btns'),
-  arenaUserName: document.getElementById('arena-user-name'),
-  arenaRepCount: document.getElementById('arena-rep-count'),
-  arenaLiveCpm: document.getElementById('arena-live-cpm'),
-  arenaLiveAcc: document.getElementById('arena-live-acc'),
-  arenaEnrollPrompt: document.getElementById('arena-enroll-prompt'),
-  arenaEnrollInput: document.getElementById('arena-enroll-input'),
-  arenaEnrollDots: document.querySelectorAll('#arena-enroll-dots .dot'),
-  arenaEnrollFeedback: document.getElementById('arena-enroll-feedback'),
-  arenaEnrollFeedbackText: document.getElementById('arena-enroll-feedback-text'),
-  arenaGalleryCount: document.getElementById('arena-gallery-count'),
-  arenaGalleryGrid: document.getElementById('arena-gallery-grid'),
-  arenaBlindPrompt: document.getElementById('arena-blind-prompt'),
-  arenaBlindInput: document.getElementById('arena-blind-input'),
-  arenaBlindCpm: document.getElementById('arena-blind-cpm'),
-  arenaSimRandomBtn: document.getElementById('arena-sim-random-btn'),
-  arenaSimCrossBtn: document.getElementById('arena-sim-cross-btn'),
-  arenaSimOutsiderBtn: document.getElementById('arena-sim-outsider-btn'),
-  arenaVerdictCard: document.getElementById('arena-verdict-card'),
-  arenaVerdictBadge: document.getElementById('arena-verdict-badge'),
-  arenaVerdictTitle: document.getElementById('arena-verdict-title'),
-  arenaVerdictDesc: document.getElementById('arena-verdict-desc'),
-  arenaVerdictScore: document.getElementById('arena-verdict-score'),
-  arenaThresholdTag: document.getElementById('arena-threshold-tag'),
-  arenaRankingList: document.getElementById('arena-ranking-list'),
-  arenaCanvas: document.getElementById('arena-rhythm-canvas'),
+function renderSentencePrompt(containerEl, targetSentence, typedValue) {
+  const target = String(targetSentence || '');
+  const typed = String(typedValue || '');
+  const parts = [];
 
-  // Shared Audit Log
-  auditTbody: document.getElementById('audit-tbody'),
-  clearLogBtn: document.getElementById('clear-log-btn'),
-};
+  for (let i = 0; i < target.length; i++) {
+    const ch = escapeHtml(target[i]);
+    let cls = 'ch';
+    if (i < typed.length) {
+      cls += typed[i] === target[i] ? ' is-ok' : ' is-err';
+    } else if (i === typed.length) {
+      cls += ' is-caret';
+    }
+    parts.push(`<span class="${cls}">${ch}</span>`);
+  }
+  containerEl.innerHTML = parts.join('');
+}
 
-function announce(msg) {
-  el.announcer.textContent = '';
+function setFeedback(el, message, kind = '') {
+  el.textContent = message || '';
+  el.className = 'feedback-line' + (kind ? ` is-${kind}` : '');
+}
+
+function renderStepDots(containerEl, labelEl, completedCount, totalCount, prefixText) {
+  labelEl.textContent = `${prefixText} ${Math.min(completedCount + 1, totalCount)} / ${totalCount}`;
+  const dots = [];
+  for (let i = 0; i < totalCount; i++) {
+    let cls = 'dot';
+    if (i < completedCount) cls += ' is-done';
+    else if (i === completedCount) cls += ' is-current';
+    dots.push(`<span class="${cls}"></span>`);
+  }
+  containerEl.innerHTML = dots.join('');
+}
+
+// ================= ROOM SYNC SETUP =================
+const roomSync = new RoomProfileSync({
+  onChange: (profiles) => {
+    state.profiles = profiles;
+    ensureSelectedGuardAccount();
+    renderAllRosters();
+    renderModalProfiles();
+  },
+  onStatusChange: ({ status, roomCode, peerCount, profileCount }) => {
+    const syncDot = $('sync-dot');
+    syncDot.className =
+      'sync-dot ' +
+      (status === 'online' ? 'is-online' : status === 'local' ? 'is-local' : 'is-connecting');
+
+    const peerLabel = status === 'online' ? `기기 ${peerCount}대` : '로컬';
+    $('room-pill-label').textContent = `방 #${roomCode} · ${peerLabel} · 프로필 ${profileCount}명`;
+
+    $('modal-room-code').textContent = `#${roomCode}`;
+    $('modal-sync-badge').textContent =
+      status === 'online'
+        ? `실시간 연결됨 · 현재 기기 ${peerCount}대 접속`
+        : status === 'local'
+          ? '로컬 브라우저 저장 모드'
+          : '실시간 서버 연결 중…';
+  },
+});
+
+function getArenaTemplateForProfile(profile, lang) {
+  if (!profile.arena) return null;
+  if (profile.arena[lang]) return profile.arena[lang];
+  if (profile.isSample) {
+    return profile.arena.en || profile.arena.ko || null;
+  }
+  return profile.arena.ko || profile.arena.en || null;
+}
+
+function getArenaCandidates() {
+  return state.profiles
+    .map((p) => {
+      const tmpl = getArenaTemplateForProfile(p, state.lang);
+      return tmpl ? { id: p.id, name: p.name, color: p.color, isSample: p.isSample, template: tmpl } : null;
+    })
+    .filter(Boolean);
+}
+
+function getGuardAccounts() {
+  return state.profiles.filter((p) => p.password && p.password.centroid);
+}
+
+function ensureSelectedGuardAccount() {
+  const accounts = getGuardAccounts();
+  if (accounts.length === 0) {
+    state.selectedGuardId = null;
+    return;
+  }
+  if (!accounts.some((a) => a.id === state.selectedGuardId)) {
+    state.selectedGuardId = accounts[0].id;
+  }
+}
+
+// ================= UI RENDERING =================
+function switchMainMode(mode) {
+  state.mode = mode;
+  const isArena = mode === 'arena';
+  $('view-arena').hidden = !isArena;
+  $('view-guard').hidden = isArena;
+
+  $('nav-arena-btn').classList.toggle('is-active', isArena);
+  $('nav-arena-btn').setAttribute('aria-pressed', String(isArena));
+  $('nav-guard-btn').classList.toggle('is-active', !isArena);
+  $('nav-guard-btn').setAttribute('aria-pressed', String(!isArena));
+
+  if (isArena) {
+    focusActiveArenaInput();
+  } else {
+    renderGuardVerifyState();
+    focusActiveGuardInput();
+  }
+}
+
+function switchArenaSub(sub) {
+  state.arenaSub = sub;
+  const isEnroll = sub === 'enroll';
+  $('arena-enroll-panel').hidden = !isEnroll;
+  $('arena-blind-panel').hidden = isEnroll;
+
+  $('arena-sub-enroll').classList.toggle('is-active', isEnroll);
+  $('arena-sub-enroll').setAttribute('aria-selected', String(isEnroll));
+  $('arena-sub-blind').classList.toggle('is-active', !isEnroll);
+  $('arena-sub-blind').setAttribute('aria-selected', String(!isEnroll));
+
+  focusActiveArenaInput();
+}
+
+function switchGuardSub(sub) {
+  state.guardSub = sub;
+  const isVerify = sub === 'verify';
+  $('guard-verify-panel').hidden = !isVerify;
+  $('guard-enroll-panel').hidden = isVerify;
+  $('guard-threshold-group').hidden = !isVerify;
+
+  $('guard-sub-verify').classList.toggle('is-active', isVerify);
+  $('guard-sub-verify').setAttribute('aria-selected', String(isVerify));
+  $('guard-sub-enroll').classList.toggle('is-active', !isVerify);
+  $('guard-sub-enroll').setAttribute('aria-selected', String(!isVerify));
+
+  renderGuardVerifyState();
+  focusActiveGuardInput();
+}
+
+function focusActiveArenaInput() {
   setTimeout(() => {
-    el.announcer.textContent = msg;
-  }, 60);
-}
-
-function switchMode(mode) {
-  state.activeMode = mode;
-  const isGuard = mode === 'guard';
-  el.tabGuard.classList.toggle('active', isGuard);
-  el.tabGuard.setAttribute('aria-selected', String(isGuard));
-  el.tabArena.classList.toggle('active', !isGuard);
-  el.tabArena.setAttribute('aria-selected', String(!isGuard));
-  el.guardView.hidden = !isGuard;
-  el.arenaView.hidden = isGuard;
-}
-
-function getDigraphLabels(pw) {
-  const chars = [...pw, '⏎'];
-  const labels = [];
-  for (let i = 0; i < chars.length - 1; i++) {
-    const a = chars[i] === ' ' ? '␣' : chars[i];
-    const b = chars[i + 1] === ' ' ? '␣' : chars[i + 1];
-    labels.push(`${a}→${b}`);
-  }
-  return labels;
-}
-
-function renderTypingPrompt(containerEl, targetText, typedSoFar = '') {
-  containerEl.innerHTML = '';
-  const targetChars = [...targetText];
-  const typedChars = [...typedSoFar];
-  let correctCount = 0;
-
-  targetChars.forEach((ch, idx) => {
-    const span = document.createElement('span');
-    span.className = 'tp-char';
-    span.textContent = ch === ' ' ? '␣' : ch;
-    if (idx < typedChars.length) {
-      if (typedChars[idx] === ch) {
-        span.classList.add('correct');
-        correctCount++;
-      } else {
-        span.classList.add('wrong');
-      }
-    } else if (idx === typedChars.length) {
-      span.classList.add('current');
+    if (state.mode !== 'arena') return;
+    if (state.arenaSub === 'enroll') {
+      const nameEl = $('arena-name-input');
+      if (!nameEl.value.trim()) nameEl.focus();
+      else $('arena-enroll-input').focus();
+    } else {
+      $('arena-blind-input').focus();
     }
-    containerEl.appendChild(span);
-  });
-
-  if (typedChars.length === 0) return 100;
-  const denom = Math.max(1, Math.min(targetChars.length, typedChars.length));
-  return Math.round((correctCount / denom) * 100);
+  }, 20);
 }
 
-function setBanner(bannerEl, textEl, kind, icon, text) {
-  bannerEl.className = `feedback-banner ${kind}`;
-  bannerEl.querySelector('.fb-icon').textContent = icon;
-  textEl.textContent = text;
-}
-
-// ============================================================================
-// MODE 1: 1:1 PASSWORD INTRUSION GUARD
-// ============================================================================
-function updateThresholdUI(val) {
-  state.threshold = Number(val);
-  el.thresholdSlider.value = state.threshold.toFixed(2);
-  el.thresholdDisplay.textContent = state.threshold.toFixed(2);
-  const pct = Math.min(98, Math.max(2, Math.round(state.threshold * 100)));
-  el.gaugeMarker.style.left = `${pct}%`;
-}
-
-function resetEnrollment(customPw = null) {
-  if (customPw !== null) {
-    state.targetPassword = customPw;
-    el.targetPw.value = customPw;
-  } else {
-    state.targetPassword = el.targetPw.value.trim();
-  }
-  state.enrolledItems = [];
-  state.template = null;
-  state.activePreset = null;
-
-  document.querySelectorAll('.preset-user-btn').forEach((b) => b.classList.remove('active'));
-  el.enrollCount.textContent = '0';
-  el.enrollDots.forEach((d) => d.classList.remove('filled'));
-  el.templateCard.hidden = true;
-  el.enrollInput.placeholder = `위 암호(${state.targetPassword})를 오타 없이 치고 Enter를 누르세요`;
-
-  el.verifyInput.disabled = true;
-  el.verifyInput.placeholder = '먼저 STEP 1에서 타건 지문을 등록하거나 프리셋을 선택하세요';
-  el.simGenuineBtn.disabled = true;
-  el.simHumanBtn.disabled = true;
-  el.simMacroBtn.disabled = true;
-  el.simEagleBtn.disabled = true;
-
-  setBanner(el.enrollFeedback, el.enrollFeedbackText, 'neutral', '⌨️', `비밀번호 "${state.targetPassword}"를 평소 리듬대로 5회 입력해 주세요.`);
-  drawOscilloscope(el.canvas, null, null, state.targetPassword);
-  el.digraphBars.innerHTML = '<p class="empty-placeholder">검증을 실행하면 어느 키 구간에서 리듬 차이가 발생했는지 표시됩니다.</p>';
-
-  el.verdictCard.className = 'verdict-card state-idle';
-  el.verdictCard.style.setProperty('--score-pct', '0%');
-  el.verdictBadge.textContent = '대기 중';
-  el.verdictTitle.textContent = '검증 대기 중';
-  el.verdictDesc.textContent = '비밀번호를 타이핑하거나 시뮬레이터 버튼을 눌러 추론을 실행하세요.';
-  el.verdictScore.textContent = '--%';
-}
-
-function summarizeStrokeMetrics(template, enrolledItems) {
-  const avgStepSec = template.meanDD.reduce((a, b) => a + b, 0) / template.meanDD.length;
-  const cpm = Math.round(60.0 / Math.max(0.05, avgStepSec));
-  const avgHoldMs = Math.round(
-    (template.meanHold.reduce((a, b) => a + b, 0) / template.meanHold.length) * 1000
-  );
-  const rollCount = enrolledItems.reduce(
-    (acc, it) => acc + it.cleanStroke.uds.filter((u) => u < 0).length,
-    0
-  );
-  const totalTransitions = enrolledItems.length * template.meanUD.length;
-  const rollPct = Math.round((rollCount / Math.max(1, totalTransitions)) * 100);
-  return { cpm, avgHoldMs, rollPct };
-}
-
-function finalizeTemplate(ownerName) {
-  state.template = engine.buildTemplate(state.enrolledItems);
-  el.templateCard.hidden = false;
-  el.templateOwner.textContent = ownerName;
-  el.templateCohesion.textContent = `${(state.template.consistency * 100).toFixed(1)}%`;
-
-  const { cpm, avgHoldMs, rollPct } = summarizeStrokeMetrics(state.template, state.enrolledItems);
-  el.templateWpm.textContent = `${cpm} 타/분`;
-  el.templateHold.textContent = `${avgHoldMs} ms`;
-  el.templateRollover.textContent = `${rollPct}%`;
-
-  el.verifyInput.disabled = false;
-  el.verifyInput.placeholder = `암호(${state.targetPassword})를 타이핑하고 Enter로 본인 인증 테스트!`;
-  el.simGenuineBtn.disabled = false;
-  el.simHumanBtn.disabled = false;
-  el.simMacroBtn.disabled = false;
-  el.simEagleBtn.disabled = false;
-  el.simGenuineSub.textContent = state.activePreset
-    ? `${state.activePreset.subject}의 미학습 타 세션 주입`
-    : '내 등록 리듬 미세 변주 주입';
-
-  drawOscilloscope(el.canvas, state.template, null, state.targetPassword);
-}
-
-async function handleEnrollmentAttempt(payload) {
-  const check = validateAndBuildStroke(payload, state.targetPassword);
-  if (!check.ok) {
-    setBanner(el.enrollFeedback, el.enrollFeedbackText, 'warn', '⚠️', `예외 처리 [${check.code}]: ${check.message}`);
-    announce(check.message);
-    return;
-  }
-
-  if (state.enrolledItems.length >= 5) {
-    state.enrolledItems = [];
-    state.activePreset = null;
-  }
-
-  const { embedding, latencyMs, cleanStroke } = await engine.embedStroke(check.stroke);
-  el.latency.textContent = `${latencyMs} ms`;
-  state.enrolledItems.push({ embedding, cleanStroke });
-
-  const count = state.enrolledItems.length;
-  el.enrollCount.textContent = String(count);
-  el.enrollDots.forEach((d, idx) => d.classList.toggle('filled', idx < count));
-
-  if (count < 5) {
-    setBanner(
-      el.enrollFeedback,
-      el.enrollFeedbackText,
-      'ok',
-      '✅',
-      `${count}/5회 타건 캡처 완료 (추론 ${latencyMs}ms). 동일한 리듬으로 ${5 - count}회 더 입력해 주세요.`
-    );
-    drawOscilloscope(el.canvas, engine.buildTemplate(state.enrolledItems), cleanStroke, state.targetPassword, true);
-  } else {
-    finalizeTemplate(`사용자 직접 등록 프로필 ("${state.targetPassword}")`);
-    setBanner(
-      el.enrollFeedback,
-      el.enrollFeedbackText,
-      'ok',
-      '🔐',
-      '5회 타건 지문 등록 완료! 이제 우측 STEP 2에서 평소 리듬 vs 변칙 타법/해커 침입을 실험해 보세요.'
-    );
-    el.verifyInput.focus();
-  }
-}
-
-async function loadBenchmarkPreset(preset, btnEl) {
-  resetEnrollment(preset.password);
-  state.activePreset = preset;
-  document.querySelectorAll('.preset-user-btn').forEach((b) => b.classList.remove('active'));
-  btnEl.classList.add('active');
-
-  let lastLatency = 0;
-  for (const s of preset.enrollment_strokes) {
-    const res = await engine.embedStroke(s);
-    lastLatency = res.latencyMs;
-    state.enrolledItems.push({ embedding: res.embedding, cleanStroke: res.cleanStroke });
-  }
-  el.latency.textContent = `${lastLatency} ms`;
-  el.enrollCount.textContent = '5';
-  el.enrollDots.forEach((d) => d.classList.add('filled'));
-
-  finalizeTemplate(`${preset.label} (Session 1 등록 템플릿)`);
-  setBanner(
-    el.enrollFeedback,
-    el.enrollFeedbackText,
-    'ok',
-    '⚡',
-    `${preset.label}의 5회 등록 타건이 ONNX로 임베딩되었습니다! 우측 공격 시뮬레이터 또는 직접 타이핑으로 테스트하세요.`
-  );
-}
-
-async function evaluateVerificationStroke(stroke, scenarioLabel) {
-  if (!state.template) return;
-
-  const { embedding, latencyMs, cleanStroke } = await engine.embedStroke(stroke);
-  el.latency.textContent = `${latencyMs} ms`;
-
-  const result = engine.scoreAgainstTemplate(embedding, cleanStroke, state.template, state.threshold);
-  const pct = Math.max(0, Math.min(100, result.similarity * 100));
-
-  el.verdictCard.style.setProperty('--score-pct', `${pct.toFixed(1)}%`);
-  el.verdictScore.textContent = `${pct.toFixed(1)}%`;
-
-  if (result.accepted) {
-    el.verdictCard.className = 'verdict-card state-granted';
-    el.verdictBadge.textContent = '✅ ACCESS GRANTED (본인 인증 승인)';
-    el.verdictTitle.textContent = '정당한 소유자 타건 지문과 일치합니다';
-    el.verdictDesc.textContent = `[${scenarioLabel}] 생체 코사인 일치도 ${pct.toFixed(1)}% ≥ 보안 임계값 ${(state.threshold * 100).toFixed(0)}% (추론 ${latencyMs}ms)`;
-  } else {
-    el.verdictCard.className = 'verdict-card state-blocked';
-    el.verdictBadge.textContent = '🚨 INTRUSION BLOCKED (해커 침입 차단)';
-    el.verdictTitle.textContent = '비밀번호는 맞지만 타건 생체 지문이 불일치합니다!';
-    el.verdictDesc.textContent = `[${scenarioLabel}] 생체 코사인 일치도 ${pct.toFixed(1)}% < 보안 임계값 ${(state.threshold * 100).toFixed(0)}% → 계정 탈취 시도로 판단하여 접속을 거부했습니다.`;
-  }
-
-  announce(`${el.verdictBadge.textContent}. 일치도 ${pct.toFixed(1)}퍼센트.`);
-  drawOscilloscope(el.canvas, state.template, cleanStroke, state.targetPassword, result.accepted);
-  renderDigraphBars(result.digraphDeviations);
-  appendAuditRow(`[1:1 차단] ${scenarioLabel}`, '일치 (Pass)', `${pct.toFixed(1)}% (τ=${(state.threshold * 100).toFixed(0)}%)`, `${latencyMs} ms`, result.accepted ? 'PASS' : 'BLOCK');
-}
-
-async function handleVerifyTyping(payload) {
-  const check = validateAndBuildStroke(payload, state.targetPassword);
-  if (!check.ok) {
-    el.verdictCard.className = 'verdict-card state-exception';
-    el.verdictCard.style.setProperty('--score-pct', '0%');
-    el.verdictBadge.textContent = `⚠️ 입력 예외 감지 (${check.code})`;
-    el.verdictTitle.textContent = '생체 신호 검증 전 입력 예외 처리됨';
-    el.verdictDesc.textContent = check.message;
-    el.verdictScore.textContent = 'N/A';
-    appendAuditRow(
-      '[1:1 차단] 직접 입력',
-      check.code === 'PASSWORD_MISMATCH' ? '불일치 (오타)' : check.code,
-      '--',
-      '--',
-      'WARN'
-    );
-    announce(check.message);
-    return;
-  }
-  await evaluateVerificationStroke(check.stroke, '실시간 키보드 직접 입력');
-}
-
-function renderDigraphBars(deviations) {
-  const labels = getDigraphLabels(state.targetPassword);
-  el.digraphBars.innerHTML = '';
-
-  deviations.forEach((z, idx) => {
-    const cell = document.createElement('div');
-    cell.className = 'dg-cell';
-    const pct = Math.min(100, Math.max(12, Math.round((z / 4.0) * 100)));
-    let color = '#10b981';
-    if (z >= 2.2) color = '#f43f5e';
-    else if (z >= 1.25) color = '#f59e0b';
-
-    cell.innerHTML = `
-      <div class="dg-bar-wrap">
-        <div class="dg-bar-fill" style="--dg-pct: ${pct}%; --dg-color: ${color};"></div>
-      </div>
-      <span class="dg-key">${labels[idx] || `K${idx + 1}`}</span>
-      <span class="dg-val">${z.toFixed(1)}σ</span>
-    `;
-    el.digraphBars.appendChild(cell);
-  });
-}
-
-// ============================================================================
-// MODE 2: 1:N TYPING PRACTICE AUTOMATIC PERSON CLASSIFIER ("WHO IS TYPING?")
-// ============================================================================
-function resetArenaSentence(newPhrase = null) {
-  if (newPhrase !== null) {
-    state.arenaSentence = newPhrase;
-    el.arenaSentenceInput.value = newPhrase;
-  } else {
-    state.arenaSentence = el.arenaSentenceInput.value.trim();
-  }
-  state.arenaStagingStrokes = [];
-  state.arenaGallery = [];
-  state.arenaActivePresetGallery = null;
-  state.arenaAutoIndex = 1;
-
-  document.querySelectorAll('#arena-preset-gallery-btns .preset-user-btn').forEach((b) => b.classList.remove('active'));
-  el.arenaRepCount.textContent = '0';
-  el.arenaEnrollDots.forEach((d) => d.classList.remove('filled'));
-  el.arenaUserName.value = '참가자 A';
-
-  renderTypingPrompt(el.arenaEnrollPrompt, state.arenaSentence, '');
-  renderTypingPrompt(el.arenaBlindPrompt, state.arenaSentence, '');
-  updateArenaGalleryUI();
-
-  setBanner(
-    el.arenaEnrollFeedback,
-    el.arenaEnrollFeedbackText,
-    'neutral',
-    '⌨️',
-    `연습 문장("${state.arenaSentence}")을 참가자별로 3회씩 타이핑해 등록하거나 원클릭 8인 갤러리를 로드하세요.`
-  );
-
-  el.arenaVerdictCard.className = 'verdict-card state-idle';
-  el.arenaVerdictBadge.textContent = '블라인드 추론 대기';
-  el.arenaVerdictTitle.textContent = '누가 타이핑했는지 대기 중입니다';
-  el.arenaVerdictDesc.textContent = '문장을 1회 타이핑하거나 블라인드 시뮬레이터 버튼을 눌러 인물을 분류해 보세요.';
-  el.arenaVerdictScore.textContent = '--%';
-  el.arenaRankingList.innerHTML = '<p class="empty-placeholder">블라인드 타자 추론을 실행하면 등록된 모든 후보 인물의 일치도 순위가 표시됩니다.</p>';
-  drawOscilloscope(el.arenaCanvas, null, null, state.arenaSentence);
-}
-
-function updateArenaGalleryUI(winnerId = null) {
-  const n = state.arenaGallery.length;
-  el.arenaGalleryCount.textContent = String(n);
-
-  const ready = n >= 2;
-  el.arenaBlindInput.disabled = !ready;
-  el.arenaBlindInput.placeholder = ready
-    ? `누군가 나와서 "${state.arenaSentence}"를 1회 타이핑하고 Enter!`
-    : '먼저 2명 이상 등록하거나 원클릭 8인 갤러리를 로드하세요';
-  el.arenaSimRandomBtn.disabled = !ready;
-  el.arenaSimCrossBtn.disabled = !(ready && state.arenaGallery.some((g) => g.crossStroke));
-  el.arenaSimOutsiderBtn.disabled = !ready;
-
-  if (n === 0) {
-    el.arenaGalleryGrid.innerHTML =
-      '<p class="empty-placeholder">아직 등록된 인물이 없습니다. 위 원클릭 8인 갤러리를 불러오거나 직접 3회 타자연습을 완료해 보세요!</p>';
-    return;
-  }
-
-  el.arenaGalleryGrid.innerHTML = '';
-  state.arenaGallery.forEach((profile) => {
-    const card = document.createElement('div');
-    card.className = `gallery-user-card${winnerId === profile.id ? ' winner-highlight' : ''}`;
-    const { cpm, avgHoldMs, rollPct } = summarizeStrokeMetrics(profile.template, profile.enrolledItems);
-
-    card.innerHTML = `
-      <div class="g-card-top">
-        <span class="g-card-name">👤 ${profile.name}</span>
-        <button type="button" class="g-card-del" title="갤러리에서 제거" aria-label="${profile.name} 삭제">✕</button>
-      </div>
-      <span class="g-card-meta">${cpm}타/분 · 홀드 ${avgHoldMs}ms</span>
-      <span class="g-card-meta">롤오버 ${rollPct}% · 🎯 클릭 테스트</span>
-    `;
-
-    card.querySelector('.g-card-del').addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      state.arenaGallery = state.arenaGallery.filter((g) => g.id !== profile.id);
-      updateArenaGalleryUI();
-    });
-
-    card.addEventListener('click', () => {
-      if (state.arenaGallery.length < 2) return;
-      injectProfileBlindTest(profile, false);
-    });
-
-    el.arenaGalleryGrid.appendChild(card);
-  });
-}
-
-async function handleArenaEnrollmentAttempt(payload) {
-  renderTypingPrompt(el.arenaEnrollPrompt, state.arenaSentence, '');
-  const check = validateAndBuildStroke(payload, state.arenaSentence);
-  if (!check.ok) {
-    setBanner(
-      el.arenaEnrollFeedback,
-      el.arenaEnrollFeedbackText,
-      'warn',
-      '⚠️',
-      `타자연습 예외 [${check.code}]: ${check.message}`
-    );
-    announce(check.message);
-    return;
-  }
-
-  const userName = el.arenaUserName.value.trim() || `참가자 ${state.arenaAutoIndex}`;
-  const { embedding, latencyMs, cleanStroke } = await engine.embedStroke(check.stroke);
-  el.latency.textContent = `${latencyMs} ms`;
-  state.arenaStagingStrokes.push({ embedding, cleanStroke });
-
-  const rep = state.arenaStagingStrokes.length;
-  el.arenaRepCount.textContent = String(rep);
-  el.arenaEnrollDots.forEach((d, idx) => d.classList.toggle('filled', idx < rep));
-
-  if (rep < 3) {
-    setBanner(
-      el.arenaEnrollFeedback,
-      el.arenaEnrollFeedbackText,
-      'ok',
-      '✅',
-      `[${userName}] ${rep}/3회 타자연습 완료 (${latencyMs}ms). ${3 - rep}회 더 치면 인물 프로필이 생성됩니다!`
-    );
-  } else {
-    const tmpl = engine.buildTemplate(state.arenaStagingStrokes);
-    const id = `custom_${Date.now()}_${state.arenaAutoIndex}`;
-    state.arenaGallery.push({
-      id,
-      name: userName,
-      badge: '실시간 등록',
-      enrolledItems: [...state.arenaStagingStrokes],
-      template: tmpl,
-      blindStroke: null,
-      crossStroke: null,
-    });
-    state.arenaStagingStrokes = [];
-    state.arenaAutoIndex += 1;
-    const nextLetter = String.fromCharCode(65 + (state.arenaGallery.length % 26));
-    el.arenaUserName.value = `참가자 ${nextLetter}`;
-    el.arenaRepCount.textContent = '0';
-    el.arenaEnrollDots.forEach((d) => d.classList.remove('filled'));
-
-    updateArenaGalleryUI();
-    setBanner(
-      el.arenaEnrollFeedback,
-      el.arenaEnrollFeedbackText,
-      'ok',
-      '🎉',
-      `[${userName}] 갤러리 등록 완료! 다음 참가자를 이어서 등록하거나 우측 STEP B에서 블라인드 분류를 테스트하세요.`
-    );
-  }
-}
-
-async function loadPresetArenaGallery(galleryCfg, btnEl) {
-  resetArenaSentence(galleryCfg.practice_text);
-  state.arenaActivePresetGallery = galleryCfg;
-  document.querySelectorAll('#arena-preset-gallery-btns .preset-user-btn').forEach((b) => b.classList.remove('active'));
-  if (btnEl) btnEl.classList.add('active');
-  document.querySelectorAll('.arena-phrase-chip').forEach((c) => {
-    c.classList.toggle('active', c.dataset.phrase === galleryCfg.practice_text);
-  });
-
-  let lastLat = 0;
-  for (const member of galleryCfg.members) {
-    const enrolledItems = [];
-    for (const s of member.enrollment_strokes) {
-      const res = await engine.embedStroke(s);
-      lastLat = res.latencyMs;
-      enrolledItems.push({ embedding: res.embedding, cleanStroke: res.cleanStroke });
+function focusActiveGuardInput() {
+  setTimeout(() => {
+    if (state.mode !== 'guard') return;
+    if (state.guardSub === 'verify') {
+      if (getGuardAccounts().length > 0) $('guard-verify-input').focus();
+    } else {
+      const nameEl = $('guard-enroll-name');
+      if (!nameEl.value.trim()) nameEl.focus();
+      else $('guard-enroll-input').focus();
     }
-    state.arenaGallery.push({
-      id: member.id,
-      name: member.name,
-      badge: member.badge,
-      enrolledItems,
-      template: engine.buildTemplate(enrolledItems),
-      blindStroke: member.blind_test_stroke,
-      crossStroke: member.cross_sentence_stroke || null,
-    });
-  }
-  el.latency.textContent = `${lastLat} ms`;
-  updateArenaGalleryUI();
-
-  setBanner(
-    el.arenaEnrollFeedback,
-    el.arenaEnrollFeedbackText,
-    'ok',
-    '⚡',
-    `${galleryCfg.title} (${state.arenaGallery.length}명 전원) 등록 완료! 우측 블라인드 시뮬레이터 또는 인물 카드를 클릭해 보세요.`
-  );
+  }, 20);
 }
 
-async function runBlindArenaClassification(stroke, scenarioLabel, expectedProfile = null, isOutsiderExpected = false) {
-  if (state.arenaGallery.length === 0) return;
+function renderAllRosters() {
+  // 1) Arena Roster
+  const arenaList = $('arena-roster-list');
+  const cands = getArenaCandidates();
+  if (cands.length === 0) {
+    arenaList.innerHTML = `<span class="roster-empty">아직 없습니다 — 아래에서 3문장을 연습해 첫 프로필을 등록하세요</span>`;
+  } else {
+    arenaList.innerHTML = cands
+      .map((c) => {
+        const initial = escapeHtml(c.name.trim().charAt(0) || '?');
+        const cnt = c.template.count || 1;
+        return `<button type="button" class="user-chip" data-arena-pick="${escapeHtml(c.name)}" title="클릭하면 이 이름으로 추가 문장을 연습할 수 있습니다">
+          <span class="chip-avatar" style="background:${c.color}">${initial}</span>
+          <span>${escapeHtml(c.name)}</span>
+          <span class="chip-count">${cnt}문장</span>
+        </button>`;
+      })
+      .join('');
 
-  const { embedding, latencyMs, cleanStroke } = await engine.embedStroke(stroke);
-  el.latency.textContent = `${latencyMs} ms`;
+    arenaList.querySelectorAll('[data-arena-pick]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const pickedName = btn.getAttribute('data-arena-pick');
+        if (state.arenaSub !== 'enroll') switchArenaSub('enroll');
+        $('arena-name-input').value = pickedName;
+        resetArenaEnrollProgress();
+        $('arena-enroll-input').focus();
+      });
+    });
+  }
 
-  const idRes = engine.identifyAgainstGallery(
+  // 2) Password Guard Accounts
+  const guardList = $('guard-account-list');
+  const accounts = getGuardAccounts();
+  if (accounts.length === 0) {
+    guardList.innerHTML = `<span class="roster-empty">등록된 보호 계정이 없습니다</span>`;
+  } else {
+    guardList.innerHTML = accounts
+      .map((acc) => {
+        const initial = escapeHtml(acc.name.trim().charAt(0) || '?');
+        const selected = acc.id === state.selectedGuardId && state.guardSub === 'verify';
+        return `<button type="button" class="user-chip ${selected ? 'is-selected' : ''}" data-guard-id="${escapeHtml(acc.id)}">
+          <span class="chip-avatar" style="background:${acc.color || '#18181b'}">${initial}</span>
+          <span>${escapeHtml(acc.name)}</span>
+        </button>`;
+      })
+      .join('');
+
+    guardList.querySelectorAll('[data-guard-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.selectedGuardId = btn.getAttribute('data-guard-id');
+        $('guard-result-card').hidden = true;
+        setFeedback($('guard-verify-feedback'), '');
+        if (state.guardSub !== 'verify') {
+          switchGuardSub('verify');
+        } else {
+          renderAllRosters();
+          renderGuardVerifyState();
+          $('guard-verify-input').focus();
+        }
+      });
+    });
+  }
+
+  renderGuardVerifyState();
+}
+
+function renderGuardVerifyState() {
+  const accounts = getGuardAccounts();
+  const hasAccounts = accounts.length > 0;
+  $('guard-empty-state').hidden = hasAccounts;
+  $('guard-active-box').hidden = !hasAccounts;
+
+  if (!hasAccounts) return;
+  const targetAcc = accounts.find((a) => a.id === state.selectedGuardId) || accounts[0];
+  state.selectedGuardId = targetAcc.id;
+
+  $('guard-target-name').textContent = targetAcc.name;
+  const pw = targetAcc.password.target || '';
+  $('guard-target-pw').textContent = state.showPasswordPlain ? pw : '•'.repeat(pw.length);
+  $('guard-toggle-pw-btn').textContent = state.showPasswordPlain ? '가리기' : '보기';
+  $('guard-verify-input').type = state.showPasswordPlain ? 'text' : 'password';
+}
+
+function renderModalProfiles() {
+  const listEl = $('modal-profile-list');
+  $('modal-profile-count').textContent = String(state.profiles.length);
+
+  const hasSamples = roomSync.hasSamples();
+  $('toggle-samples-btn').textContent = hasSamples
+    ? '샘플 프로필 모두 제거'
+    : '실측 샘플 프로필 4명 추가';
+
+  if (state.profiles.length === 0) {
+    listEl.innerHTML = `<li class="profile-row"><span class="roster-empty">현재 방에 등록된 프로필이 없습니다.</span></li>`;
+    return;
+  }
+
+  listEl.innerHTML = state.profiles
+    .map((p) => {
+      const initial = escapeHtml(p.name.trim().charAt(0) || '?');
+      const badges = [];
+      if (p.arena?.ko) badges.push(`한글 ${p.arena.ko.count}문장`);
+      if (p.arena?.en) badges.push(`영문 ${p.arena.en.count}문장`);
+      if (p.password) badges.push(`암호(${p.password.count}회)`);
+      const refTmpl = p.arena?.ko || p.arena?.en || p.password;
+      const statsTxt = refTmpl
+        ? `평균 ${refTmpl.cpm || 0} 타/분 · 홀드 ${refTmpl.holdMs || 0}ms · 롤오버 ${refTmpl.rolloverPct || 0}%`
+        : '';
+
+      return `<li class="profile-row">
+        <div class="profile-row-left">
+          <span class="chip-avatar" style="background:${p.color || '#2563eb'};width:26px;height:26px;font-size:0.78rem">${initial}</span>
+          <div>
+            <div><strong>${escapeHtml(p.name)}</strong> <span class="chip-count">${badges.join(' · ')}</span></div>
+            <div class="profile-meta-line">${escapeHtml(statsTxt)}</div>
+          </div>
+        </div>
+        <button type="button" class="danger-sm-btn" data-del-id="${escapeHtml(p.id)}">삭제</button>
+      </li>`;
+    })
+    .join('');
+
+  listEl.querySelectorAll('[data-del-id]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-del-id');
+      roomSync.deleteProfile(id);
+    });
+  });
+}
+
+// ================= SENTENCE MANAGEMENT =================
+function dealArenaEnrollSentence() {
+  state.arenaEnrollSentence = deck.next(state.lang);
+  $('arena-enroll-input').value = '';
+  arenaEnrollRecorder.reset();
+  renderSentencePrompt($('arena-enroll-prompt'), state.arenaEnrollSentence, '');
+  $('arena-enroll-cpm').textContent = '0';
+  $('arena-enroll-acc').textContent = '100%';
+  $('arena-enroll-edit-hint').textContent = '오타 시 백스페이스 수정 가능';
+}
+
+function dealArenaBlindSentence() {
+  state.arenaBlindSentence = deck.next(state.lang);
+  $('arena-blind-input').value = '';
+  arenaBlindRecorder.reset();
+  renderSentencePrompt($('arena-blind-prompt'), state.arenaBlindSentence, '');
+  $('arena-blind-cpm').textContent = '0';
+  $('arena-blind-acc').textContent = '100%';
+  $('arena-blind-edit-hint').textContent = '백스페이스 자유 사용';
+}
+
+function resetArenaEnrollProgress() {
+  const typedName = $('arena-name-input').value.trim();
+  state.arenaEnrollBuffer = { name: typedName, lang: state.lang, items: [] };
+  renderStepDots($('arena-step-dots'), $('arena-step-text'), 0, TARGET_ARENA_SHOTS, '문장');
+}
+
+function switchLanguage(lang) {
+  state.lang = lang;
+  $('lang-ko-btn').classList.toggle('is-active', lang === 'ko');
+  $('lang-en-btn').classList.toggle('is-active', lang === 'en');
+
+  resetArenaEnrollProgress();
+  dealArenaEnrollSentence();
+  dealArenaBlindSentence();
+  $('arena-result-card').hidden = true;
+  setFeedback($('arena-enroll-feedback'), '');
+  setFeedback($('arena-blind-feedback'), '');
+  renderAllRosters();
+  focusActiveArenaInput();
+}
+
+// ================= KEYSTROKE RECORDERS =================
+const arenaEnrollRecorder = new SmartKeystrokeRecorder($('arena-enroll-input'), {
+  onLiveUpdate: (live) => {
+    renderSentencePrompt($('arena-enroll-prompt'), state.arenaEnrollSentence, live.text);
+    $('arena-enroll-cpm').textContent = String(live.cpm);
+    $('arena-enroll-acc').textContent = `${computeTypingAccuracy(
+      live.text,
+      state.arenaEnrollSentence.slice(0, Math.max(1, live.text.length))
+    )}%`;
+    $('arena-enroll-edit-hint').textContent =
+      live.backspaceCount > 0
+        ? `백스페이스 ${live.backspaceCount}회 수정 보정됨`
+        : '오타 시 백스페이스 수정 가능';
+  },
+  onSubmit: () => handleArenaEnrollSubmit(),
+});
+
+const arenaBlindRecorder = new SmartKeystrokeRecorder($('arena-blind-input'), {
+  onLiveUpdate: (live) => {
+    renderSentencePrompt($('arena-blind-prompt'), state.arenaBlindSentence, live.text);
+    $('arena-blind-cpm').textContent = String(live.cpm);
+    $('arena-blind-acc').textContent = `${computeTypingAccuracy(
+      live.text,
+      state.arenaBlindSentence.slice(0, Math.max(1, live.text.length))
+    )}%`;
+    $('arena-blind-edit-hint').textContent =
+      live.backspaceCount > 0
+        ? `백스페이스 ${live.backspaceCount}회 수정 보정됨`
+        : '백스페이스 자유 사용';
+  },
+  onSubmit: () => handleArenaBlindSubmit(),
+});
+
+const guardVerifyRecorder = new SmartKeystrokeRecorder($('guard-verify-input'), {
+  onSubmit: () => handleGuardVerifySubmit(),
+});
+
+const guardEnrollRecorder = new SmartKeystrokeRecorder($('guard-enroll-input'), {
+  onSubmit: () => handleGuardEnrollSubmit(),
+});
+
+// ================= ACTION HANDLERS =================
+async function handleArenaEnrollSubmit() {
+  if (!state.ready) return;
+  const name = $('arena-name-input').value.trim();
+  if (!name) {
+    setFeedback($('arena-enroll-feedback'), '참가자 이름을 먼저 입력해 주세요.', 'error');
+    $('arena-name-input').focus();
+    return;
+  }
+
+  // If name changed mid-buffer, start fresh buffer for the new name
+  if (state.arenaEnrollBuffer.name !== name || state.arenaEnrollBuffer.lang !== state.lang) {
+    state.arenaEnrollBuffer = { name, lang: state.lang, items: [] };
+  }
+
+  const capture = arenaEnrollRecorder.extractCleanStroke();
+  const check = validateSentenceCapture(capture, state.arenaEnrollSentence);
+  if (!check.ok) {
+    setFeedback($('arena-enroll-feedback'), check.message, 'error');
+    if (check.code === 'PASTE_BLOCKED') {
+      $('arena-enroll-input').value = '';
+      arenaEnrollRecorder.reset();
+    }
+    return;
+  }
+
+  const { embedding } = await engine.embedStroke(capture.stroke);
+  state.arenaEnrollBuffer.items.push({
     embedding,
-    cleanStroke,
-    state.arenaGallery,
-    state.openSetIdThreshold
-  );
-  if (!idRes) return;
+    cpm: capture.cpm,
+    holdMs: capture.holdMs,
+    rolloverPct: capture.rolloverPct,
+    backspaceCount: capture.backspaceCount,
+  });
 
-  const top = idRes.winner;
-  const topPct = Math.max(0, Math.min(100, top.similarity * 100));
-  el.arenaVerdictScore.textContent = `${topPct.toFixed(1)}%`;
+  const done = state.arenaEnrollBuffer.items.length;
+  const existing = roomSync.findProfileByName(name);
 
-  let auditStatus = 'PASS';
-  if (!idRes.identified) {
-    el.arenaVerdictCard.className = 'verdict-card state-exception';
-    el.arenaVerdictBadge.textContent = '🕵️ UNKNOWN TYPIST (미등록 외부인 기각)';
-    el.arenaVerdictTitle.textContent = `갤러리 내 일치하는 인물이 없습니다 (1위 후보 ${top.name}: ${topPct.toFixed(1)}%)`;
-    el.arenaVerdictDesc.textContent = isOutsiderExpected
-      ? `[${scenarioLabel}] 최고 일치도(${topPct.toFixed(1)}%) < 기각 임계값(${(state.openSetIdThreshold * 100).toFixed(0)}%) → 미등록 외부인을 정확히 분리했습니다! ✅`
-      : `[${scenarioLabel}] 모든 등록 인물의 생체 임계값(${(state.openSetIdThreshold * 100).toFixed(0)}%) 미만으로 판정되었습니다.`;
-    updateArenaGalleryUI(null);
-    auditStatus = isOutsiderExpected ? 'PASS' : 'WARN';
-  } else {
-    const matchedTruth = !expectedProfile || expectedProfile.id === top.id;
-    el.arenaVerdictCard.className = matchedTruth ? 'verdict-card state-granted' : 'verdict-card state-blocked';
-    const truthTag = expectedProfile
-      ? matchedTruth
-        ? ' · ✅ 실제 정답 일치!'
-        : ` · ❌ 실제: ${expectedProfile.name}`
-      : '';
-    el.arenaVerdictBadge.textContent = `🎯 1:N 예측 완료 (후보 ${state.arenaGallery.length}명 중 1위${truthTag})`;
-    el.arenaVerdictTitle.textContent = `타이핑한 사람: ${top.name} (상대 신뢰도 ${(top.posterior * 100).toFixed(1)}%)`;
-    el.arenaVerdictDesc.textContent = `[${scenarioLabel}] 1위 일치도 ${topPct.toFixed(1)}% (2위 대비 +${(idRes.margin * 100).toFixed(1)}%p 우위 · 추론 ${latencyMs}ms)`;
-    updateArenaGalleryUI(top.id);
-    auditStatus = matchedTruth && !isOutsiderExpected ? 'PASS' : 'BLOCK';
+  // If adding to an existing profile that already has a template in this language, commit immediately per sentence!
+  if (existing && existing.arena?.[state.lang]) {
+    let mergedTmpl = existing.arena[state.lang];
+    for (const item of state.arenaEnrollBuffer.items) {
+      mergedTmpl = mergeTemplateSample(mergedTmpl, item);
+    }
+    roomSync.upsertProfile({
+      ...existing,
+      arena: {
+        ...(existing.arena || {}),
+        [state.lang]: mergedTmpl,
+      },
+    });
+    state.arenaEnrollBuffer.items = [];
+    dealArenaEnrollSentence();
+    setFeedback(
+      $('arena-enroll-feedback'),
+      `'${name}' 프로필에 문장이 추가 반영되었습니다 (총 ${mergedTmpl.count}문장).`,
+      'success'
+    );
+    return;
   }
 
-  renderArenaRankingList(idRes.rankings, idRes.identified);
-  drawOscilloscope(el.arenaCanvas, top.template, cleanStroke, state.arenaSentence, idRes.identified);
-  appendAuditRow(
-    `[1:N 식별] ${scenarioLabel}`,
-    '일치 (Pass)',
-    idRes.identified ? `예측: ${top.name} (${topPct.toFixed(1)}%)` : `미등록 외부인 (${topPct.toFixed(1)}%)`,
-    `${latencyMs} ms`,
-    auditStatus
+  if (done < TARGET_ARENA_SHOTS) {
+    renderStepDots($('arena-step-dots'), $('arena-step-text'), done, TARGET_ARENA_SHOTS, '문장');
+    dealArenaEnrollSentence();
+    const bsNote =
+      capture.backspaceCount > 0 ? ` (백스페이스 ${capture.backspaceCount}회 자동 보정)` : '';
+    setFeedback(
+      $('arena-enroll-feedback'),
+      `${done}/${TARGET_ARENA_SHOTS} 완료${bsNote} — 다음 문장을 이어서 타이핑해 주세요.`,
+      'success'
+    );
+    return;
+  }
+
+  // Completed 3 diverse sentences -> save & broadcast profile!
+  let tmpl = existing?.arena?.[state.lang] || null;
+  for (const item of state.arenaEnrollBuffer.items) {
+    tmpl = mergeTemplateSample(tmpl, item);
+  }
+
+  const profileObj = existing
+    ? {
+        ...existing,
+        arena: { ...(existing.arena || {}), [state.lang]: tmpl },
+      }
+    : {
+        id: `u_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        name,
+        color: pickProfileColor(name),
+        isSample: false,
+        password: null,
+        arena: { [state.lang]: tmpl },
+      };
+
+  roomSync.upsertProfile(profileObj);
+
+  // Reset for the next person
+  $('arena-name-input').value = '';
+  resetArenaEnrollProgress();
+  dealArenaEnrollSentence();
+  setFeedback(
+    $('arena-enroll-feedback'),
+    `'${name}' 프로필이 실시간 등록되었습니다! 다음 참가자를 등록하거나 [2. 누가 쳤을까?] 탭에서 판별해 보세요.`,
+    'success'
   );
 }
 
-function renderArenaRankingList(rankings, isIdentified) {
-  el.arenaRankingList.innerHTML = '';
-  rankings.forEach((item, idx) => {
-    const pct = Math.max(4, Math.min(100, item.similarity * 100));
-    const isTop = idx === 0 && isIdentified;
-    const color = isTop ? '#10b981' : idx === 0 ? '#f59e0b' : '#38bdf8';
+async function handleArenaBlindSubmit() {
+  if (!state.ready) return;
+  const candidates = getArenaCandidates();
+  if (candidates.length === 0) {
+    setFeedback(
+      $('arena-blind-feedback'),
+      '등록된 참가자가 없습니다. [1. 프로필 등록]에서 먼저 연습하거나 우측 상단에서 샘플 프로필을 추가해 보세요.',
+      'error'
+    );
+    return;
+  }
 
-    const row = document.createElement('div');
-    row.className = `rank-row${isTop ? ' is-top1' : ''}`;
-    row.innerHTML = `
-      <span class="rank-num">${item.rank}위</span>
-      <span class="rank-name">${isTop ? '🏆 ' : ''}${item.name}</span>
-      <div class="rank-bar-track">
-        <div class="rank-bar-fill" style="--rk-pct: ${pct.toFixed(1)}%; --rk-color: ${color};"></div>
-      </div>
-      <span class="rank-score">${pct.toFixed(1)}% <small style="color:#94a3b8;">(${Math.round(item.posterior * 100)}%)</small></span>
-    `;
-    el.arenaRankingList.appendChild(row);
+  const capture = arenaBlindRecorder.extractCleanStroke();
+  const check = validateSentenceCapture(capture, state.arenaBlindSentence);
+  if (!check.ok) {
+    setFeedback($('arena-blind-feedback'), check.message, 'error');
+    if (check.code === 'PASTE_BLOCKED') {
+      $('arena-blind-input').value = '';
+      arenaBlindRecorder.reset();
+    }
+    return;
+  }
+
+  setFeedback($('arena-blind-feedback'), '');
+  const { embedding, latencyMs } = await engine.embedStroke(capture.stroke);
+  const res = engine.identifyTypist(embedding, candidates, {
+    openSetThreshold: 0.42,
+  });
+
+  renderArenaResult(res, {
+    cpm: capture.cpm,
+    accuracy: check.accuracy,
+    backspaceCount: capture.backspaceCount,
+    cleanDigraphs: capture.cleanDigraphCount,
+    latencyMs,
+  });
+
+  // Immediately prepare a fresh unseen sentence for the next round
+  dealArenaBlindSentence();
+}
+
+function renderArenaResult(res, stats) {
+  const card = $('arena-result-card');
+  card.hidden = false;
+
+  const pct = Math.round(res.winner.similarity * 1000) / 10;
+  $('arena-result-score').textContent = `${pct.toFixed(1)}%`;
+
+  if (res.identified) {
+    card.className = 'result-card is-pass';
+    $('arena-result-kicker').textContent = `후보 ${res.rankings.length}명 중 1위 일치`;
+    $('arena-result-title').textContent = `지금 타이핑한 사람은 '${res.winner.name}'님입니다`;
+  } else {
+    card.className = 'result-card is-block';
+    $('arena-result-kicker').textContent = '미등록 외부인 기각 (Open-Set Rejection)';
+    $('arena-result-title').textContent = '등록되지 않은 새로운 사용자의 타이핑입니다';
+  }
+
+  const topList = res.rankings.slice(0, 5);
+  $('arena-ranking-bars').innerHTML = topList
+    .map((r, idx) => {
+      const sPct = Math.max(4, Math.min(100, Math.round(r.similarity * 100)));
+      const fillStyle =
+        idx === 0 && res.identified
+          ? `width:${sPct}%;background:${r.color || '#059669'}`
+          : `width:${sPct}%;background:#9ca3af`;
+      return `<div class="rank-item">
+        <span class="rank-name">${idx + 1}. ${escapeHtml(r.name)}</span>
+        <div class="rank-track"><div class="rank-fill" style="${fillStyle}"></div></div>
+        <span class="rank-val">${(r.similarity * 100).toFixed(1)}%</span>
+      </div>`;
+    })
+    .join('');
+
+  const editTxt =
+    stats.backspaceCount > 0 ? `백스페이스 ${stats.backspaceCount}회 자동 보정` : '무수정 타이핑';
+  $('arena-result-meta').textContent = `${stats.cpm} 타/분 · 정확도 ${stats.accuracy}% · ${editTxt} (유효 전이 ${stats.cleanDigraphs}구간) · 추론 ${stats.latencyMs}ms`;
+}
+
+async function handleGuardEnrollSubmit() {
+  if (!state.ready) return;
+  const name = $('guard-enroll-name').value.trim();
+  const targetPw = $('guard-enroll-pw-target').value;
+
+  if (!name) {
+    setFeedback($('guard-enroll-feedback'), '사용자 이름을 먼저 입력해 주세요.', 'error');
+    $('guard-enroll-name').focus();
+    return;
+  }
+
+  if (
+    state.pwEnrollBuffer.name !== name ||
+    state.pwEnrollBuffer.targetPw !== targetPw
+  ) {
+    state.pwEnrollBuffer = { name, targetPw, items: [] };
+  }
+
+  const capture = guardEnrollRecorder.extractCleanStroke();
+  const check = validatePasswordCapture(capture, targetPw);
+  if (!check.ok) {
+    setFeedback($('guard-enroll-feedback'), check.message, 'error');
+    $('guard-enroll-input').value = '';
+    guardEnrollRecorder.reset();
+    return;
+  }
+
+  const { embedding } = await engine.embedStroke(capture.stroke);
+  state.pwEnrollBuffer.items.push({
+    embedding,
+    cpm: capture.cpm,
+    holdMs: capture.holdMs,
+    rolloverPct: capture.rolloverPct,
+  });
+
+  $('guard-enroll-input').value = '';
+  guardEnrollRecorder.reset();
+
+  const done = state.pwEnrollBuffer.items.length;
+  if (done < TARGET_PW_SHOTS) {
+    renderStepDots($('guard-step-dots'), $('guard-step-text'), done, TARGET_PW_SHOTS, '리듬 등록');
+    const bsNote =
+      capture.backspaceCount > 0 ? ` (백스페이스 ${capture.backspaceCount}회 보정됨)` : '';
+    setFeedback(
+      $('guard-enroll-feedback'),
+      `${done}/${TARGET_PW_SHOTS}회 입력 완료${bsNote} — 평소 리듬대로 한 번 더 입력해 주세요.`,
+      'success'
+    );
+    return;
+  }
+
+  // Merge 4 password strokes into profile
+  let pwTmpl = null;
+  for (const item of state.pwEnrollBuffer.items) {
+    pwTmpl = mergeTemplateSample(pwTmpl, item);
+  }
+  pwTmpl.target = targetPw;
+
+  const existing = roomSync.findProfileByName(name);
+  const saved = roomSync.upsertProfile(
+    existing
+      ? { ...existing, password: pwTmpl }
+      : {
+          id: `u_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+          name,
+          color: pickProfileColor(name),
+          isSample: false,
+          password: pwTmpl,
+          arena: {},
+        }
+  );
+
+  state.pwEnrollBuffer = { name: '', targetPw: '', items: [] };
+  $('guard-enroll-name').value = '';
+  renderStepDots($('guard-step-dots'), $('guard-step-text'), 0, TARGET_PW_SHOTS, '리듬 등록');
+  setFeedback($('guard-enroll-feedback'), '');
+
+  state.selectedGuardId = saved.id;
+  switchGuardSub('verify');
+  setFeedback(
+    $('guard-verify-feedback'),
+    `'${name}' 계정의 타이핑 지문이 등록되었습니다! 본인과 다른 사람이 번갈아 입력해 비교해 보세요.`,
+    'success'
+  );
+}
+
+async function handleGuardVerifySubmit() {
+  if (!state.ready) return;
+  const accounts = getGuardAccounts();
+  if (accounts.length === 0) return;
+
+  const targetAcc = accounts.find((a) => a.id === state.selectedGuardId) || accounts[0];
+  const expectedPw = targetAcc.password.target;
+
+  const capture = guardVerifyRecorder.extractCleanStroke();
+  const check = validatePasswordCapture(capture, expectedPw);
+
+  $('guard-verify-input').value = '';
+  guardVerifyRecorder.reset();
+
+  if (!check.ok) {
+    setFeedback($('guard-verify-feedback'), check.message, 'error');
+    return;
+  }
+
+  setFeedback($('guard-verify-feedback'), '');
+  const { embedding, latencyMs } = await engine.embedStroke(capture.stroke);
+  const res = engine.scoreTemplate(embedding, targetAcc.password, {
+    domain: 'password',
+    threshold: state.threshold,
+  });
+
+  // Check if another registered user's rhythm matches closer when blocked
+  let closerOther = null;
+  if (!res.accepted && accounts.length > 1) {
+    const others = accounts
+      .filter((a) => a.id !== targetAcc.id)
+      .map((a) => ({
+        name: a.name,
+        sim: engine.scoreTemplate(embedding, a.password, {
+          domain: 'password',
+          threshold: state.threshold,
+        }).similarity,
+      }))
+      .sort((a, b) => b.sim - a.sim);
+    if (others[0] && others[0].sim > res.similarity + 0.08 && others[0].sim >= 0.45) {
+      closerOther = others[0];
+    }
+  }
+
+  const card = $('guard-result-card');
+  card.hidden = false;
+  const pct = (res.similarity * 100).toFixed(1);
+  $('guard-result-score').textContent = `${pct}%`;
+
+  if (res.accepted) {
+    card.className = 'result-card is-pass';
+    $('guard-result-kicker').textContent = 'ACCESS GRANTED · 본인 인증 승인';
+    $('guard-result-title').textContent = `${targetAcc.name}님의 타이핑 리듬과 일치합니다`;
+    $('guard-result-desc').textContent = `비밀번호 문자열과 손가락 전환 리듬이 모두 기준치(${Math.round(
+      state.threshold * 100
+    )}%)를 통과했습니다.`;
+  } else {
+    card.className = 'result-card is-block';
+    $('guard-result-kicker').textContent = 'INTRUSION BLOCKED · 침입 차단';
+    $('guard-result-title').textContent = '비밀번호는 맞지만 타이핑 지문이 불일치합니다';
+    const hint = closerOther
+      ? ` 입력된 리듬은 등록된 '${closerOther.name}'님의 타건 패턴(${(closerOther.sim * 100).toFixed(
+          0
+        )}%)에 더 가깝습니다.`
+      : '';
+    $('guard-result-desc').textContent = `유출된 비밀번호를 알고 입력했으나 ${
+      targetAcc.name
+    }님의 고유 홀드·전환 리듬과 달라 접속을 차단했습니다.${hint}`;
+  }
+
+  const editTxt =
+    capture.backspaceCount > 0 ? `백스페이스 ${capture.backspaceCount}회 보정` : '무수정 입력';
+  $('guard-result-meta').textContent = `${capture.cpm} 타/분 · 홀드 ${capture.holdMs}ms · 롤오버 ${capture.rolloverPct}% · ${editTxt} · 추론 ${latencyMs}ms`;
+}
+
+// ================= EVENT WIRING & INIT =================
+function bindEvents() {
+  $('nav-arena-btn').addEventListener('click', () => switchMainMode('arena'));
+  $('nav-guard-btn').addEventListener('click', () => switchMainMode('guard'));
+
+  $('arena-sub-enroll').addEventListener('click', () => switchArenaSub('enroll'));
+  $('arena-sub-blind').addEventListener('click', () => switchArenaSub('blind'));
+
+  $('guard-sub-verify').addEventListener('click', () => switchGuardSub('verify'));
+  $('guard-sub-enroll').addEventListener('click', () => switchGuardSub('enroll'));
+
+  $('lang-ko-btn').addEventListener('click', () => switchLanguage('ko'));
+  $('lang-en-btn').addEventListener('click', () => switchLanguage('en'));
+
+  $('arena-next-sentence-btn').addEventListener('click', () => {
+    dealArenaEnrollSentence();
+    $('arena-enroll-input').focus();
+  });
+
+  $('arena-blind-shuffle-btn').addEventListener('click', () => {
+    dealArenaBlindSentence();
+    $('arena-blind-input').focus();
+  });
+
+  $('arena-retry-btn').addEventListener('click', () => {
+    $('arena-result-card').hidden = true;
+    dealArenaBlindSentence();
+    $('arena-blind-input').focus();
+  });
+
+  $('arena-name-input').addEventListener('input', () => {
+    const val = $('arena-name-input').value.trim();
+    if (val !== state.arenaEnrollBuffer.name) {
+      resetArenaEnrollProgress();
+    }
+  });
+
+  $('guard-enroll-pw-target').addEventListener('input', () => {
+    state.pwEnrollBuffer = {
+      name: $('guard-enroll-name').value.trim(),
+      targetPw: $('guard-enroll-pw-target').value,
+      items: [],
+    };
+    renderStepDots($('guard-step-dots'), $('guard-step-text'), 0, TARGET_PW_SHOTS, '리듬 등록');
+  });
+
+  $('guard-toggle-pw-btn').addEventListener('click', () => {
+    state.showPasswordPlain = !state.showPasswordPlain;
+    renderGuardVerifyState();
+  });
+
+  document.querySelectorAll('.tau-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tau-btn').forEach((b) => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+      state.threshold = Number(btn.getAttribute('data-tau'));
+    });
+  });
+
+  $('guard-go-enroll-btn').addEventListener('click', () => switchGuardSub('enroll'));
+  $('guard-load-samples-btn').addEventListener('click', () => {
+    if (engine.config?.mvp_sample_profiles) {
+      roomSync.loadSamples(engine.config.mvp_sample_profiles);
+    }
+  });
+
+  // Modal Dialog Controls
+  const dialog = $('room-dialog');
+  const openModal = () => {
+    renderModalProfiles();
+    dialog.showModal();
+  };
+  $('open-room-btn').addEventListener('click', openModal);
+  $('arena-manage-link').addEventListener('click', openModal);
+  $('guard-manage-link').addEventListener('click', openModal);
+  $('close-room-btn').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) dialog.close();
+  });
+
+  $('copy-invite-btn').addEventListener('click', async () => {
+    const shareUrl = roomSync.getShareUrl();
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      $('copy-invite-btn').textContent = '링크 복사 완료!';
+      setTimeout(() => {
+        $('copy-invite-btn').textContent = '초대 링크 복사';
+      }, 1800);
+    } catch {
+      window.prompt('아래 초대 링크를 복사해 공유하세요:', shareUrl);
+    }
+  });
+
+  $('change-room-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const raw = $('room-code-input').value;
+    if (!raw.trim()) return;
+    roomSync.connect(sanitizeRoomCode(raw));
+    $('room-code-input').value = '';
+  });
+
+  $('toggle-samples-btn').addEventListener('click', () => {
+    if (roomSync.hasSamples()) {
+      roomSync.removeSamples();
+    } else if (engine.config?.mvp_sample_profiles) {
+      roomSync.loadSamples(engine.config.mvp_sample_profiles);
+    }
+    renderModalProfiles();
   });
 }
 
-async function injectProfileBlindTest(profile, useCrossSentence = false) {
-  let stroke = useCrossSentence && profile.crossStroke ? profile.crossStroke : profile.blindStroke;
-  if (!stroke) {
-    // Natural biological perturbation of user's custom enrolled stroke
-    const base = profile.enrolledItems[0].cleanStroke;
-    const holds = base.holds.map((h) => h * (0.96 + Math.random() * 0.08));
-    const dds = base.dds.map((d) => d * (0.95 + Math.random() * 0.10));
-    const uds = dds.map((d, i) => d - holds[i]);
-    stroke = { holds, dds, uds };
-  }
-  const label = useCrossSentence
-    ? `타 세션·타 문장 블라인드 (${profile.name})`
-    : `블라인드 타건 주입 (실제: ${profile.name})`;
-  await runBlindArenaClassification(stroke, label, profile, false);
-}
-
-async function handleArenaBlindTyping(payload) {
-  renderTypingPrompt(el.arenaBlindPrompt, state.arenaSentence, '');
-  const check = validateAndBuildStroke(payload, state.arenaSentence);
-  if (!check.ok) {
-    el.arenaVerdictCard.className = 'verdict-card state-exception';
-    el.arenaVerdictBadge.textContent = `⚠️ 입력 예외 감지 (${check.code})`;
-    el.arenaVerdictTitle.textContent = '타자연습 문장 예외 처리됨';
-    el.arenaVerdictDesc.textContent = check.message;
-    el.arenaVerdictScore.textContent = 'N/A';
-    return;
-  }
-  await runBlindArenaClassification(check.stroke, '실시간 키보드 블라인드 타이핑', null, false);
-}
-
-// ============================================================================
-// SHARED OSCILLOSCOPE & AUDIT TRAIL
-// ============================================================================
-function drawOscilloscope(canvas, template, queryStroke, labelText, isAccepted = false) {
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width;
-  const h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-
-  const pad = { left: 46, right: 20, top: 20, bottom: 32 };
-  const plotW = w - pad.left - pad.right;
-  const plotH = h - pad.top - pad.bottom;
-
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.14)';
-  ctx.lineWidth = 1;
-  for (let g = 0; g <= 4; g++) {
-    const y = pad.top + (plotH * g) / 4;
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(w - pad.right, y);
-    ctx.stroke();
-  }
-
-  if (!template) {
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '13px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('프로필이 등록되면 실시간 타건 생체 리듬 파형이 여기에 렌더링됩니다.', w / 2, h / 2);
-    return;
-  }
-
-  const m = template.meanDD.length;
-  const labels = getDigraphLabels(labelText || '');
-  const allVals = [
-    ...template.meanDD.map((v, i) => (v + template.stdDD[i]) * 1000),
-    ...(queryStroke ? queryStroke.dds.map((v) => v * 1000) : []),
-  ];
-  const maxMs = Math.max(360, Math.min(1300, Math.ceil(Math.max(...allVals) * 1.15)));
-
-  const xAt = (i) => pad.left + (m === 1 ? plotW / 2 : (plotW * i) / (m - 1));
-  const yAt = (ms) => pad.top + plotH - (Math.min(maxMs, Math.max(0, ms)) / maxMs) * plotH;
-
-  ctx.fillStyle = '#94a3b8';
-  ctx.font = '11px ui-monospace, monospace';
-  ctx.textAlign = 'right';
-  for (let g = 0; g <= 4; g++) {
-    const msVal = Math.round((maxMs * (4 - g)) / 4);
-    const y = pad.top + (plotH * g) / 4;
-    ctx.fillText(`${msVal}ms`, pad.left - 6, y + 4);
-  }
-
-  ctx.textAlign = 'center';
-  const stepStride = m > 14 ? Math.ceil(m / 10) : 1;
-  for (let i = 0; i < m; i += stepStride) {
-    ctx.fillText(labels[i] || `K${i + 1}`, xAt(i), h - 10);
-  }
-
-  ctx.fillStyle = 'rgba(56, 189, 248, 0.16)';
-  ctx.beginPath();
-  for (let i = 0; i < m; i++) {
-    const upper = (template.meanDD[i] + template.stdDD[i]) * 1000;
-    if (i === 0) ctx.moveTo(xAt(i), yAt(upper));
-    else ctx.lineTo(xAt(i), yAt(upper));
-  }
-  for (let i = m - 1; i >= 0; i--) {
-    const lower = Math.max(10, (template.meanDD[i] - template.stdDD[i]) * 1000);
-    ctx.lineTo(xAt(i), yAt(lower));
-  }
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.strokeStyle = '#38bdf8';
-  ctx.lineWidth = 2.3;
-  ctx.beginPath();
-  for (let i = 0; i < m; i++) {
-    const ms = template.meanDD[i] * 1000;
-    if (i === 0) ctx.moveTo(xAt(i), yAt(ms));
-    else ctx.lineTo(xAt(i), yAt(ms));
-  }
-  ctx.stroke();
-
-  if (queryStroke) {
-    const qLen = Math.min(m, queryStroke.dds.length);
-    const qColor = isAccepted ? '#10b981' : '#f43f5e';
-    ctx.strokeStyle = qColor;
-    ctx.lineWidth = 2.5;
-    ctx.setLineDash(isAccepted ? [] : [6, 4]);
-    ctx.beginPath();
-    for (let i = 0; i < qLen; i++) {
-      const ms = queryStroke.dds[i] * 1000;
-      if (i === 0) ctx.moveTo(xAt(i), yAt(ms));
-      else ctx.lineTo(xAt(i), yAt(ms));
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    for (let i = 0; i < qLen; i++) {
-      const ms = queryStroke.dds[i] * 1000;
-      const isRollover = queryStroke.uds[i] < 0;
-      ctx.fillStyle = isRollover ? '#a855f7' : qColor;
-      ctx.beginPath();
-      ctx.arc(xAt(i), yAt(ms), isRollover ? 4.8 : 3.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-}
-
-function appendAuditRow(scenario, pwCheck, scoreStr, latencyStr, status) {
-  const emptyRow = document.getElementById('audit-empty-row');
-  if (emptyRow) emptyRow.remove();
-
-  const tr = document.createElement('tr');
-  const timeStr = new Date().toLocaleTimeString('ko-KR', { hour12: false });
-
-  let statusHtml = '<span class="pill-pass">✅ 정상 승인/일치</span>';
-  if (status === 'BLOCK') statusHtml = '<span class="pill-block">🚨 침입/불일치 차단</span>';
-  else if (status === 'WARN') statusHtml = '<span class="pill-warn">⚠️ 예외/외부인 분리</span>';
-
-  tr.innerHTML = `
-    <td><code>${timeStr}</code></td>
-    <td>${scenario}</td>
-    <td>${pwCheck}</td>
-    <td><code>${scoreStr}</code></td>
-    <td><code>${latencyStr}</code></td>
-    <td>${statusHtml}</td>
-  `;
-  el.auditTbody.prepend(tr);
-}
+// Expose programmatic helper for E2E verification without adding UI clutter
+window.__keyprintTestApi = {
+  engine,
+  roomSync,
+  state,
+};
 
 async function bootstrap() {
-  el.tabGuard.addEventListener('click', () => switchMode('guard'));
-  el.tabArena.addEventListener('click', () => switchMode('arena'));
+  bindEvents();
+  dealArenaEnrollSentence();
+  dealArenaBlindSentence();
+
+  const initialRoom = getInitialRoomCode();
+  roomSync.connect(initialRoom);
 
   try {
-    const cfg = await engine.init();
-    state.calibratedThreshold = cfg.calibrated_threshold;
-    state.strictThreshold = cfg.strict_threshold;
-    state.openSetIdThreshold = cfg.open_set_id_threshold ?? Math.max(0.42, cfg.calibrated_threshold - 0.04);
-    updateThresholdUI(cfg.calibrated_threshold);
-    el.arenaThresholdTag.textContent = `외부인 기각 임계값 τ=${state.openSetIdThreshold.toFixed(2)}`;
-
-    el.engineStatus.textContent = `ONNX WASM 활성 (${engine.loadTimeMs}ms)`;
-    el.engineStatus.className = 't-val status-ready';
-
-    // Mode 1 Preset Buttons
-    cfg.benchmark_presets.forEach((preset, idx) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'preset-user-btn';
-      btn.innerHTML = `<strong>👤 피험자 ${preset.subject}</strong><br><span style="color:#94a3b8;font-size:0.72rem;">Unseen Test #${idx + 1}</span>`;
-      btn.addEventListener('click', () => loadBenchmarkPreset(preset, btn));
-      el.presetContainer.appendChild(btn);
-    });
-
-    // Mode 2 Preset 8-Person Gallery Buttons
-    (cfg.typing_arena_galleries || []).forEach((gal) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'preset-user-btn arena-gal-btn';
-      btn.dataset.galleryId = gal.gallery_id;
-      btn.innerHTML = `<strong>⚡ ${gal.title}</strong><br><span style="color:#94a3b8;font-size:0.72rem;">${gal.description}</span>`;
-      btn.addEventListener('click', () => loadPresetArenaGallery(gal, btn));
-      el.arenaPresetGalleryBtns.appendChild(btn);
-    });
-
-    drawOscilloscope(el.canvas, null, null, state.targetPassword);
-    resetArenaSentence(state.arenaSentence);
+    await engine.init();
+    state.ready = true;
+    $('engine-pill').classList.add('is-ready');
+    $('engine-status-text').textContent = `ONNX 준비 완료 (${engine.loadTimeMs}ms)`;
   } catch (err) {
-    el.engineStatus.textContent = '모델 로드 오류';
-    el.engineStatus.className = 't-val status-error';
-    setBanner(el.enrollFeedback, el.enrollFeedbackText, 'err', '❌', `ONNX 초기화 실패: ${err.message}`);
+    $('engine-status-text').textContent = '모델 로드 실패';
+    console.error(err);
   }
-
-  // Bind Mode 1 Recorders
-  new LiveKeystrokeRecorder(el.enrollInput, {
-    onProgress: (cnt) => {
-      el.liveCounter.textContent = cnt > 0 ? `${cnt}키 입력 중...` : '대기 중';
-    },
-    onSubmitAttempt: handleEnrollmentAttempt,
-  });
-  new LiveKeystrokeRecorder(el.verifyInput, {
-    onSubmitAttempt: handleVerifyTyping,
-  });
-
-  // Bind Mode 2 Recorders with Live Typing Tutor Prompt Highlight!
-  new LiveKeystrokeRecorder(el.arenaEnrollInput, {
-    onProgress: (_, typed, cpm) => {
-      const acc = renderTypingPrompt(el.arenaEnrollPrompt, state.arenaSentence, typed);
-      el.arenaLiveCpm.textContent = `${cpm} 타/분`;
-      el.arenaLiveAcc.textContent = `정확도 ${acc}%`;
-    },
-    onSubmitAttempt: handleArenaEnrollmentAttempt,
-  });
-  new LiveKeystrokeRecorder(el.arenaBlindInput, {
-    onProgress: (_, typed, cpm) => {
-      renderTypingPrompt(el.arenaBlindPrompt, state.arenaSentence, typed);
-      el.arenaBlindCpm.textContent = cpm > 0 ? `실시간 ${cpm} 타/분` : '실시간 측정 대기';
-    },
-    onSubmitAttempt: handleArenaBlindTyping,
-  });
-
-  // Mode 1 Controls
-  document.querySelectorAll('.pw-chip').forEach((chip) => {
-    chip.addEventListener('click', () => resetEnrollment(chip.dataset.pw));
-  });
-  el.targetPw.addEventListener('change', () => {
-    if (el.targetPw.value.trim().length < 6) {
-      setBanner(el.enrollFeedback, el.enrollFeedbackText, 'warn', '⚠️', '비밀번호는 최소 6자 이상으로 설정해 주세요.');
-      return;
-    }
-    resetEnrollment();
-  });
-  el.resetBtn.addEventListener('click', () => resetEnrollment());
-
-  el.thresholdSlider.addEventListener('input', (e) => {
-    document.querySelectorAll('.th-chip').forEach((c) => c.classList.remove('active'));
-    updateThresholdUI(e.target.value);
-  });
-  document.querySelectorAll('.th-chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      document.querySelectorAll('.th-chip').forEach((c) => c.classList.remove('active'));
-      chip.classList.add('active');
-      if (chip.dataset.mode === 'lenient') updateThresholdUI(Math.max(0.18, state.calibratedThreshold - 0.10));
-      else if (chip.dataset.mode === 'strict') updateThresholdUI(Math.min(0.90, state.calibratedThreshold + 0.10));
-      else updateThresholdUI(state.calibratedThreshold);
-    });
-  });
-
-  el.simGenuineBtn.addEventListener('click', async () => {
-    if (!state.template) return;
-    if (state.activePreset) {
-      await evaluateVerificationStroke(
-        state.activePreset.genuine_test_stroke,
-        `본인 정상 타건 (${state.activePreset.subject} 미학습 세션 6)`
-      );
-    } else {
-      const base = state.enrolledItems[0].cleanStroke;
-      const holds = base.holds.map((h) => h * (0.96 + Math.random() * 0.08));
-      const dds = base.dds.map((d) => d * (0.95 + Math.random() * 0.10));
-      const uds = dds.map((d, i) => d - holds[i]);
-      await evaluateVerificationStroke({ holds, dds, uds }, '본인 정상 리듬 시뮬레이션');
-    }
-  });
-
-  el.simHumanBtn.addEventListener('click', async () => {
-    if (!state.template) return;
-    if (state.activePreset) {
-      await evaluateVerificationStroke(
-        state.activePreset.skilled_impostor_stroke,
-        `숙련 인간 해커 (${state.activePreset.impostor_subject} 동일 암호 타이핑)`
-      );
-    } else {
-      const numKeys = state.targetPassword.length + 1;
-      await evaluateVerificationStroke(
-        synthesizeBotStroke(numKeys, 'gaussian_mimic'),
-        '타인 유출 암호 타이핑 공격'
-      );
-    }
-  });
-
-  el.simMacroBtn.addEventListener('click', async () => {
-    if (!state.template) return;
-    const numKeys = state.targetPassword.length + 1;
-    await evaluateVerificationStroke(
-      synthesizeBotStroke(numKeys, 'uniform_macro'),
-      '정밀 매크로 봇 (Constant-Delay Script)'
-    );
-  });
-
-  el.simEagleBtn.addEventListener('click', async () => {
-    if (!state.template) return;
-    const numKeys = state.targetPassword.length + 1;
-    await evaluateVerificationStroke(
-      synthesizeBotStroke(numKeys, 'hunt_and_peck'),
-      '독수리 타법 침입자 (메모지 유출 공격)'
-    );
-  });
-
-  // Mode 2 Controls
-  document.querySelectorAll('.arena-phrase-chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      document.querySelectorAll('.arena-phrase-chip').forEach((c) => c.classList.remove('active'));
-      chip.classList.add('active');
-      resetArenaSentence(chip.dataset.phrase);
-    });
-  });
-  el.arenaSentenceInput.addEventListener('change', () => {
-    if (el.arenaSentenceInput.value.trim().length < 6) return;
-    document.querySelectorAll('.arena-phrase-chip').forEach((c) => c.classList.remove('active'));
-    resetArenaSentence();
-  });
-  el.arenaClearGalleryBtn.addEventListener('click', () => resetArenaSentence());
-
-  let rrIndex = 0;
-  el.arenaSimRandomBtn.addEventListener('click', async () => {
-    if (state.arenaGallery.length < 2) return;
-    const target = state.arenaGallery[rrIndex % state.arenaGallery.length];
-    rrIndex += 1;
-    await injectProfileBlindTest(target, false);
-  });
-
-  el.arenaSimCrossBtn.addEventListener('click', async () => {
-    const candidates = state.arenaGallery.filter((g) => g.crossStroke);
-    if (candidates.length === 0) return;
-    const target = candidates[rrIndex % candidates.length];
-    rrIndex += 1;
-    await injectProfileBlindTest(target, true);
-  });
-
-  el.arenaSimOutsiderBtn.addEventListener('click', async () => {
-    if (state.arenaGallery.length < 2) return;
-    if (state.arenaActivePresetGallery?.outsider_stroke) {
-      const out = state.arenaActivePresetGallery.outsider_stroke;
-      await runBlindArenaClassification(out, out.name, null, true);
-    } else {
-      const numKeys = state.arenaSentence.length + 1;
-      await runBlindArenaClassification(
-        synthesizeBotStroke(numKeys, 'hunt_and_peck'),
-        '미등록 외부인 타이핑 시뮬레이션',
-        null,
-        true
-      );
-    }
-  });
-
-  el.clearLogBtn.addEventListener('click', () => {
-    el.auditTbody.innerHTML =
-      '<tr id="audit-empty-row"><td colspan="6" class="empty-cell">아직 실행된 인증·분류 기록이 없습니다.</td></tr>';
-  });
 }
 
 bootstrap();
