@@ -1,0 +1,22 @@
+{
+  "name": "keyprint-guard-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "sync-ort": "node -e \"const fs=require('fs'),p=require('path');fs.mkdirSync('public/ort',{recursive:true});for(const f of fs.readdirSync('node_modules/onnxruntime-web/dist')){if(f.endsWith('.wasm')||f.endsWith('.mjs'))fs.copyFileSync(p.join('node_modules/onnxruntime-web/dist',f),p.join('public/ort',f));}\"",
+    "predev": "npm run sync-ort",
+    "dev": "vite",
+    "prebuild": "npm run sync-ort",
+    "build": "vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.20.1"
+  },
+  "devDependencies": {
+    "marked": "^18.2.0",
+    "playwright-core": "^1.65.0",
+    "vite": "^6.2.0"
+  }
+}

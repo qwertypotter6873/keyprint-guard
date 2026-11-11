@@ -1,0 +1,153 @@
+{
+  "seed": 42,
+  "dataset_rows": 20400,
+  "dataset_cols": 34,
+  "num_subjects_total": 51,
+  "split_counts": {
+    "train_subjects": 35,
+    "train_samples": 14000,
+    "val_subjects": 6,
+    "val_samples": 2400,
+    "test_subjects": 10,
+    "test_samples": 4000
+  },
+  "keyrecs_sentence_corpus": {
+    "total_valid_subjects": 96,
+    "train_subjects": 68,
+    "train_sentence_chunks": 9215,
+    "train_fixed_strokes": 13588,
+    "val_subjects": 10,
+    "val_sentence_chunks": 1213,
+    "test_subjects": 18,
+    "test_sentence_chunks": 2420,
+    "sentence_window_keys": 25,
+    "sentence_digraphs": 24
+  },
+  "subjects_split": {
+    "train": [
+      "s002",
+      "s003",
+      "s005",
+      "s007",
+      "s008",
+      "s010",
+      "s012",
+      "s013",
+      "s016",
+      "s017",
+      "s018",
+      "s020",
+      "s021",
+      "s022",
+      "s025",
+      "s030",
+      "s031",
+      "s032",
+      "s033",
+      "s035",
+      "s036",
+      "s037",
+      "s038",
+      "s039",
+      "s040",
+      "s042",
+      "s043",
+      "s047",
+      "s050",
+      "s051",
+      "s052",
+      "s053",
+      "s054",
+      "s055",
+      "s056"
+    ],
+    "val": [
+      "s004",
+      "s027",
+      "s029",
+      "s041",
+      "s046",
+      "s048"
+    ],
+    "test": [
+      "s011",
+      "s015",
+      "s019",
+      "s024",
+      "s026",
+      "s028",
+      "s034",
+      "s044",
+      "s049",
+      "s057"
+    ]
+  },
+  "outlier_bounds": {
+    "H": [
+      0.012,
+      0.22030020000000075
+    ],
+    "DD": [
+      0.015,
+      1.2384055000000052
+    ],
+    "UD": [
+      -0.12830075,
+      1.1584
+    ]
+  },
+  "preprocessing_before_after": {
+    "before_mean_skewness": 8.9625,
+    "after_mean_skewness": 2.2239,
+    "before_max_skewness": 73.2828,
+    "after_max_skewness": 4.2503,
+    "before_mean_kurtosis": 609.0242,
+    "after_mean_kurtosis": 9.8677,
+    "rollover_ratio_pct": 10.84
+  },
+  "channel_names": [
+    "H_curr",
+    "H_next",
+    "DD",
+    "UD",
+    "Rel_H",
+    "Rel_DD",
+    "Duty_Ratio",
+    "Rollover_Mag",
+    "Local_Accel"
+  ],
+  "digraph_labels": [
+    ".→t",
+    "t→i",
+    "i→e",
+    "e→5",
+    "5→R",
+    "R→o",
+    "o→a",
+    "a→n",
+    "n→l",
+    "l→Enter"
+  ],
+  "channel_mean": [
+    0.093197,
+    0.092999,
+    0.243566,
+    0.150293,
+    1.000694,
+    1.0,
+    0.584778,
+    0.004128,
+    0.001402
+  ],
+  "channel_std": [
+    0.031189,
+    0.031126,
+    0.199264,
+    0.203536,
+    0.23756,
+    0.654957,
+    0.426299,
+    0.013563,
+    0.242921
+  ]
+}

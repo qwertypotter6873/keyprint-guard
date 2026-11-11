@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KeyPrint Guard &amp; Arena | 타이핑 지문 해커 차단기 &amp; 타자연습 인물 식별기</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232563eb'/%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-size='36'%3E%F0%9F%94%90%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+  <div id="sr-announcer" class="visually-hidden" aria-live="polite"></div>
+
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <div class="brand">
+        <span class="brand-badge" aria-hidden="true">🔐</span>
+        <div>
+          <h1>KeyPrint Guard &amp; Arena</h1>
+          <p class="subtitle">64-D 타건 생체 임베딩 기반 유출 암호 해커 차단(1:1) &amp; 타자연습 인물 자동 분류(1:N) AI</p>
+        </div>
+      </div>
+
+      <div class="telemetry-strip" role="region" aria-label="ONNX 모델 실시간 상태">
+        <div class="telemetry-pill">
+          <span class="t-label">추론 엔진</span>
+          <strong id="engine-status" class="t-val status-loading">ONNX 로딩 중...</strong>
+        </div>
+        <div class="telemetry-pill">
+          <span class="t-label">임베딩 차원</span>
+          <strong class="t-val">64-D Hypersphere</strong>
+        </div>
+        <div class="telemetry-pill">
+          <span class="t-label">최근 추론 지연</span>
+          <strong id="inference-latency" class="t-val">-- ms</strong>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="container mode-switcher-wrap">
+    <nav class="mode-tabs" role="tablist" aria-label="서비스 모드 전환">
+      <button type="button" id="tab-mode-guard" class="mode-tab active" role="tab" aria-selected="true" aria-controls="guard-view">
+        <span class="mode-icon" aria-hidden="true">🛡️</span>
+        <span>
+          <strong>모드 1: 유출 암호 해커 차단기 (1:1 인증)</strong>
+          <small>비밀번호가 유출되어도 타건 리듬이 다르면 침입 즉시 차단</small>
+        </span>
+      </button>
+      <button type="button" id="tab-mode-arena" class="mode-tab" role="tab" aria-selected="false" aria-controls="arena-view">
+        <span class="mode-icon" aria-hidden="true">🎯</span>
+        <span>
+          <strong>모드 2: 타자연습 인물 자동 분류기 (1:N 누가 쳤을까?)</strong>
+          <small>여러 사람이 타자연습을 해두면 나중에 같은 문장만 쳐도 사람을 식별</small>
+        </span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- =========================================================================
+       MODE 1: 1:1 PASSWORD INTRUSION GUARD
+       ========================================================================= -->
+  <main id="guard-view" class="container main-grid" role="tabpanel" aria-labelledby="tab-mode-guard">
+    <section class="guide-banner" aria-labelledby="guide-heading">
+      <details open>
+        <summary id="guide-heading">
+          <span>📖 [모드 1] 유출 암호 해커 차단기 사용 안내 (클릭하여 접기/펼치기)</span>
+        </summary>
+        <div class="guide-content">
+          <ol class="steps-list">
+            <li><strong>1단계 (타건 지문 등록)</strong>: 원하는 비밀번호(6자 이상)를 정하고 <strong>평소 양손 타이핑 리듬대로 5회 입력(Enter)</strong>하거나, <strong>[원클릭 CMU 미학습 피험자 로드]</strong> 버튼을 눌러 즉시 생체 템플릿을 생성합니다.</li>
+            <li><strong>2단계 (본인 인증 vs 침입 실험)</strong>: 검증 입력창에 평소대로 타이핑하면 <strong>승인</strong>되지만, <em>검지 한 손가락(독수리 타법)</em>이나 <em>타인·매크로 봇</em>이 똑같은 암호를 치면 문자열이 일치해도 <strong>해커 침입으로 즉시 차단</strong>됩니다.</li>
+            <li><strong>입력 예외 처리</strong>: 복사·붙여넣기(Paste), 백스페이스 수정, 키 길게 누름(Key Repeat), 2.8초 이상 입력 중단, 오타 입력은 생체 신호 오염 방지를 위해 실시간 예외 처리됩니다.</li>
+          </ol>
+        </div>
+      </details>
+    </section>
+
+    <!-- Left Column: Step 1 Enrollment -->
+    <section class="panel" aria-labelledby="enroll-heading">
+      <div class="panel-header">
+        <span class="step-tag">STEP 1</span>
+        <h2 id="enroll-heading">타건 생체 지문 등록 (5-Shot Enrollment)</h2>
+      </div>
+
+      <div class="field-group">
+        <div class="label-row">
+          <label for="target-password">보호할 대상 비밀번호 설정 (6~24자)</label>
+          <div class="preset-pw-group" role="group" aria-label="암호 예시 선택">
+            <button type="button" class="chip-btn pw-chip" data-pw=".tie5Roanl">.tie5Roanl (벤치마크)</button>
+            <button type="button" class="chip-btn pw-chip" data-pw="gachon2026!">gachon2026!</button>
+            <button type="button" class="chip-btn pw-chip" data-pw="keyprint99#">keyprint99#</button>
+          </div>
+        </div>
+        <div class="pw-config-row">
+          <input
+            type="text"
+            id="target-password"
+            value=".tie5Roanl"
+            minlength="6"
+            maxlength="24"
+            spellcheck="false"
+            aria-describedby="pw-config-hint"
+          >
+          <button type="button" id="reset-enroll-btn" class="btn btn-secondary">초기화</button>
+        </div>
+        <span id="pw-config-hint" class="hint-text">암호를 변경하면 기존 등록 템플릿이 초기화됩니다. 가변 길이 1D-ResSE-CNN 구조로 어떤 암호든 즉시 임베딩합니다.</span>
+      </div>
+
+      <div class="preset-box">
+        <div class="preset-header">
+          <h3>⚡ 채점자·방문자용 원클릭 벤치마크 템플릿 로드</h3>
+          <span class="badge-subtle">CMU Unseen Test 피험자</span>
+        </div>
+        <p class="hint-text">직접 5번 타이핑하지 않아도, 모델이 학습 때 한 번도 본 적 없는 실제 테스트셋 피험자의 5회 등록 타건을 즉시 불러옵니다.</p>
+        <div id="benchmark-preset-buttons" class="preset-btn-row"></div>
+      </div>
+
+      <div class="enroll-capture-box">
+        <div class="label-row">
+          <label for="enroll-input">직접 타이핑하여 내 타건 지문 등록 (<span id="enroll-count">0</span> / 5회 완료)</label>
+          <span id="live-key-counter" class="mono-tag">대기 중</span>
+        </div>
+        <input
+          type="text"
+          id="enroll-input"
+          class="typing-box"
+          placeholder="위 암호(.tie5Roanl)를 오타 없이 치고 Enter를 누르세요"
+          autocomplete="new-password"
+          spellcheck="false"
+        >
+        <div class="progress-dots" id="enroll-dots" aria-label="등록 진행도">
+          <span class="dot">1</span>
+          <span class="dot">2</span>
+          <span class="dot">3</span>
+          <span class="dot">4</span>
+          <span class="dot">5</span>
+        </div>
+        <div id="enroll-feedback" class="feedback-banner neutral" role="status">
+          <span class="fb-icon" aria-hidden="true">⌨️</span>
+          <span id="enroll-feedback-text">입력창을 클릭하고 평소 손가락 리듬대로 비밀번호 입력 후 Enter를 눌러주세요.</span>
+        </div>
+      </div>
+
+      <div id="template-summary-card" class="template-card" hidden>
+        <div class="template-card-top">
+          <div>
+            <span class="template-badge">✅ 생체 템플릿 활성화됨</span>
+            <h3 id="template-owner-label">사용자 직접 등록 프로필</h3>
+          </div>
+          <div class="template-stat">
+            <span>내부 응집도(Cohesion)</span>
+            <strong id="template-cohesion">--%</strong>
+          </div>
+        </div>
+        <div class="template-metrics-grid">
+          <div>
+            <span>평균 타자 속도</span>
+            <strong id="template-wpm">-- 타/분</strong>
+          </div>
+          <div>
+            <span>평균 키 홀드(Hold)</span>
+            <strong id="template-hold">-- ms</strong>
+          </div>
+          <div>
+            <span>연타 롤오버(UD&lt;0) 비율</span>
+            <strong id="template-rollover">--%</strong>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: Step 2 Live Verification & Attack Arena -->
+    <section class="panel" aria-labelledby="verify-heading">
+      <div class="panel-header">
+        <span class="step-tag step-tag-accent">STEP 2</span>
+        <h2 id="verify-heading">실시간 본인 인증 &amp; 해커 침입 방어 아레나</h2>
+      </div>
+
+      <div class="threshold-bar">
+        <div class="label-row">
+          <label for="threshold-slider">보안 민감도 임계값 (Threshold τ): <strong id="threshold-display">0.56</strong></label>
+          <div class="preset-pw-group">
+            <button type="button" class="chip-btn th-chip" data-mode="lenient">편의 우선</button>
+            <button type="button" class="chip-btn th-chip active" data-mode="calibrated">검증셋 최적값</button>
+            <button type="button" class="chip-btn th-chip" data-mode="strict">금융 고보안</button>
+          </div>
+        </div>
+        <input type="range" id="threshold-slider" min="0.15" max="0.92" step="0.01" value="0.56">
+      </div>
+
+      <div class="verify-capture-box" id="verify-section">
+        <label for="verify-input">실시간 로그인 검증 입력창 (암호 입력 후 Enter)</label>
+        <input
+          type="text"
+          id="verify-input"
+          class="typing-box verify-typing-box"
+          placeholder="먼저 STEP 1에서 타건 지문을 등록하거나 프리셋을 선택하세요"
+          autocomplete="current-password"
+          spellcheck="false"
+          disabled
+        >
+      </div>
+
+      <div class="attack-sim-box">
+        <h3>🧪 원클릭 공격·인증 시뮬레이터 (동일 비밀번호 100% 입력 가정)</h3>
+        <p class="hint-text">해커가 피싱·유출로 비밀번호 문자열을 이미 알고 있는 상황에서 KeyPrintNet이 타건 리듬만으로 구별하는지 실험합니다.</p>
+        <div class="sim-btn-grid">
+          <button type="button" id="sim-genuine-btn" class="btn sim-btn sim-genuine" disabled>
+            <span>🟢 본인 정상 타건 주입</span>
+            <small id="sim-genuine-sub">다른 세션 실제 타건</small>
+          </button>
+          <button type="button" id="sim-human-hacker-btn" class="btn sim-btn sim-danger" disabled>
+            <span>🕵️ 숙련 인간 해커 공격</span>
+            <small>유출 암호 타인 타이핑</small>
+          </button>
+          <button type="button" id="sim-macro-bot-btn" class="btn sim-btn sim-danger" disabled>
+            <span>🤖 정밀 매크로 봇 공격</span>
+            <small>일정 간격 자동화 스크립트</small>
+          </button>
+          <button type="button" id="sim-eagle-btn" class="btn sim-btn sim-warn" disabled>
+            <span>🦅 독수리 타법 침입</span>
+            <small>메모지 보고 한 손가락 입력</small>
+          </button>
+        </div>
+      </div>
+
+      <div id="verdict-card" class="verdict-card state-idle" role="region" aria-label="생체 인증 판정 결과" style="--score-pct: 0%;">
+        <div class="verdict-header">
+          <div>
+            <span id="verdict-badge" class="verdict-badge">대기 중</span>
+            <h3 id="verdict-title">검증 대기 중</h3>
+            <p id="verdict-desc">비밀번호를 타이핑하거나 시뮬레이터 버튼을 눌러 추론을 실행하세요.</p>
+          </div>
+          <div class="score-readout">
+            <span class="score-label">생체 코사인 일치도</span>
+            <strong id="verdict-score">--%</strong>
+          </div>
+        </div>
+        <div class="gauge-track" aria-hidden="true">
+          <div class="gauge-fill"></div>
+          <div id="gauge-threshold-marker" class="gauge-marker" style="left: 56%;"></div>
+        </div>
+      </div>
+
+      <div class="viz-block">
+        <div class="viz-title-row">
+          <h3>📈 실시간 타건 리듬 오실로스코프 (본인 템플릿 ±1σ vs 현재 입력)</h3>
+          <div class="legend-inline">
+            <span class="leg-item"><i class="swatch swatch-blue"></i>등록 템플릿 평균</span>
+            <span class="leg-item"><i class="swatch swatch-query"></i>현재 입력 파형</span>
+            <span class="leg-item"><i class="swatch swatch-roll"></i>연타 롤오버(UD&lt;0)</span>
+          </div>
+        </div>
+        <canvas id="rhythm-canvas" width="680" height="210" aria-label="키 전환 구간별 타이밍 파형 비교 그래프"></canvas>
+      </div>
+
+      <div class="viz-block">
+        <h3>🔍 키 전환 구간별 리듬 괴리도 (Z-Score 이상 탐지 히트맵)</h3>
+        <div id="digraph-bars" class="digraph-bars-grid">
+          <p class="empty-placeholder">검증을 실행하면 어느 키 구간에서 리듬 차이가 발생했는지 표시됩니다.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- =========================================================================
+       MODE 2: 1:N TYPING PRACTICE AUTOMATIC PERSON CLASSIFIER ("WHO IS TYPING?")
+       ========================================================================= -->
+  <main id="arena-view" class="container main-grid" role="tabpanel" aria-labelledby="tab-mode-arena" hidden>
+    <section class="guide-banner" aria-labelledby="arena-guide-heading">
+      <details open>
+        <summary id="arena-guide-heading">
+          <span>🎯 [모드 2] 타자연습 인물 자동 분류기 원리 및 사용법 ("같은 문장을 쳐도 누구인지 맞힌다!")</span>
+        </summary>
+        <div class="guide-content">
+          <ol class="steps-list">
+            <li><strong>STEP A (타자연습 프로필 등록)</strong>: 연습 문장을 고른 뒤 참가자 이름(예: <code>김대현</code>, <code>친구 A</code>)을 적고 <strong>3회씩 타자연습</strong>하여 갤러리에 등록하거나, <strong>[⚡ 원클릭 미학습 8인 갤러리 로드]</strong>를 클릭합니다.</li>
+            <li><strong>STEP B (블라인드 인물 식별)</strong>: 우측 블라인드 타자창에 누군가 나와서 문장을 <strong>단 1회</strong> 타이핑하면, <code>KeyPrintNet</code>이 키 홀드·전환 리듬·롤오버 습관만으로 <strong>등록된 후보 중 누구인지 Top-1~N 순위</strong>로 즉시 맞힙니다!</li>
+            <li><strong>미등록 외부인 기각(Open-Set)</strong>: 갤러리에 없는 외부인이 치면 억지로 찍지 않고 <strong>미등록 외부인(Unknown Typist)</strong>으로 분리합니다.</li>
+          </ol>
+        </div>
+      </details>
+    </section>
+
+    <!-- Left Column: Typing Practice & Multi-Person Gallery Registration -->
+    <section class="panel" aria-labelledby="arena-enroll-heading">
+      <div class="panel-header">
+        <span class="step-tag">STEP A</span>
+        <h2 id="arena-enroll-heading">타자연습 문장 설정 &amp; 다중 인물 갤러리 등록</h2>
+      </div>
+
+      <div class="field-group">
+        <div class="label-row">
+          <label for="arena-sentence-input">공통 타자연습 문장 (8~45자 · 영문/한글 모두 가능)</label>
+          <div class="preset-pw-group" role="group" aria-label="타자연습 예문 선택">
+            <button type="button" class="chip-btn arena-phrase-chip active" data-phrase="we believe that we can c">영문 에세이 (KeyRecs)</button>
+            <button type="button" class="chip-btn arena-phrase-chip" data-phrase="the quick brown fox jumps">영문 표준 연습</button>
+            <button type="button" class="chip-btn arena-phrase-chip" data-phrase="machine learning rocks!">AI 타자연습</button>
+            <button type="button" class="chip-btn arena-phrase-chip" data-phrase="가는 말이 고와야 오는 말이 곱다">한글 속담 연습</button>
+          </div>
+        </div>
+        <div class="pw-config-row">
+          <input
+            type="text"
+            id="arena-sentence-input"
+            value="we believe that we can c"
+            minlength="6"
+            maxlength="45"
+            spellcheck="false"
+          >
+          <button type="button" id="arena-clear-gallery-btn" class="btn btn-secondary">갤러리 초기화</button>
+        </div>
+      </div>
+
+      <div class="preset-box">
+        <div class="preset-header">
+          <h3>⚡ 원클릭 실측 8인 타자연습 갤러리 불러오기</h3>
+          <span class="badge-subtle">미학습 실제 피험자 8명</span>
+        </div>
+        <p class="hint-text">혼자 테스트 중이어도 실제 벤치마크 미학습 피험자 8명의 타자연습 프로필을 즉시 불러와 1:8 블라인드 분류를 실험할 수 있습니다.</p>
+        <div class="preset-btn-row" id="arena-preset-gallery-btns"></div>
+      </div>
+
+      <div class="enroll-capture-box arena-tutor-box">
+        <div class="label-row">
+          <label for="arena-user-name">새 참가자 직접 타자연습 등록 (<span id="arena-rep-count">0</span> / 3회 완료)</label>
+          <div class="live-tutor-stats">
+            <span class="mono-tag" id="arena-live-cpm">0 타/분</span>
+            <span class="mono-tag" id="arena-live-acc">정확도 100%</span>
+          </div>
+        </div>
+        <div class="pw-config-row">
+          <input
+            type="text"
+            id="arena-user-name"
+            placeholder="참가자 이름 (예: 김대현, 친구 B)"
+            value="참가자 A"
+            maxlength="20"
+            style="max-width: 210px;"
+          >
+          <span class="hint-text" style="align-self: center;">이름을 지정하고 아래 문장을 3번 따라 치세요 (Enter 제출)</span>
+        </div>
+
+        <div id="arena-enroll-prompt" class="typing-prompt-display" aria-hidden="true"></div>
+
+        <input
+          type="text"
+          id="arena-enroll-input"
+          class="typing-box"
+          placeholder="위 연습 문장을 그대로 따라 치고 Enter를 누르세요 (3회 반복)"
+          autocomplete="off"
+          spellcheck="false"
+        >
+        <div class="progress-dots" id="arena-enroll-dots">
+          <span class="dot">1회차 연습</span>
+          <span class="dot">2회차 연습</span>
+          <span class="dot">3회차 완료</span>
+        </div>
+        <div id="arena-enroll-feedback" class="feedback-banner neutral" role="status">
+          <span class="fb-icon" aria-hidden="true">⌨️</span>
+          <span id="arena-enroll-feedback-text">참가자 이름을 입력하고 연습 문장을 3회 타이핑하면 인물 갤러리에 추가됩니다.</span>
+        </div>
+      </div>
+
+      <div class="viz-block">
+        <div class="label-row">
+          <h3>👥 등록된 타이핑 인물 갤러리 (<span id="arena-gallery-count">0</span>명 등록됨)</h3>
+          <span class="hint-text">카드를 클릭하면 해당 인물의 실제 블라인드 타건을 즉시 테스트합니다</span>
+        </div>
+        <div id="arena-gallery-grid" class="gallery-cards-grid">
+          <p class="empty-placeholder">아직 등록된 인물이 없습니다. 위 원클릭 8인 갤러리를 불러오거나 직접 3회 타자연습을 완료해 보세요!</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: Blind Typing Test & 1:N Ranking Leaderboard -->
+    <section class="panel" aria-labelledby="arena-test-heading">
+      <div class="panel-header">
+        <span class="step-tag step-tag-accent">STEP B</span>
+        <h2 id="arena-test-heading">블라인드 타자 추론 — 지금 치는 사람은 누구?</h2>
+      </div>
+
+      <div class="verify-capture-box arena-tutor-box">
+        <div class="label-row">
+          <label for="arena-blind-input">블라인드 타자 입력창 (문장 1회 입력 후 Enter)</label>
+          <span class="mono-tag" id="arena-blind-cpm">실시간 측정 대기</span>
+        </div>
+        <div id="arena-blind-prompt" class="typing-prompt-display" aria-hidden="true"></div>
+        <input
+          type="text"
+          id="arena-blind-input"
+          class="typing-box verify-typing-box"
+          placeholder="먼저 좌측에서 2명 이상 등록하거나 원클릭 8인 갤러리를 로드하세요"
+          autocomplete="off"
+          spellcheck="false"
+          disabled
+        >
+      </div>
+
+      <div class="attack-sim-box">
+        <h3>🎲 원클릭 블라인드 타건 시뮬레이터 (미학습 테스트셋 실측 데이터)</h3>
+        <p class="hint-text">갤러리에 등록된 8명 중 무작위 인물의 미학습 타건을 주입하거나, 아예 등록되지 않은 제9의 외부인 타건을 주입해 분류 정확도를 검증합니다.</p>
+        <div class="sim-btn-grid arena-sim-grid">
+          <button type="button" id="arena-sim-random-btn" class="btn sim-btn sim-genuine" disabled>
+            <span>🎲 무작위 등록 인물 블라인드 주입</span>
+            <small>8명 중 누구의 타건인지 맞히기</small>
+          </button>
+          <button type="button" id="arena-sim-cross-btn" class="btn sim-btn sim-genuine" disabled>
+            <span>🔄 다른 날·다른 문장 타건 주입</span>
+            <small>세션 2 새로운 문장으로 인물 식별</small>
+          </button>
+          <button type="button" id="arena-sim-outsider-btn" class="btn sim-btn sim-warn" disabled>
+            <span>🕵️ 미등록 제9의 외부인 주입</span>
+            <small>갤러리 외 인물 Open-Set 기각 검증</small>
+          </button>
+        </div>
+      </div>
+
+      <div id="arena-verdict-card" class="verdict-card state-idle" role="region" aria-label="1대N 인물 분류 결과">
+        <div class="verdict-header">
+          <div>
+            <span id="arena-verdict-badge" class="verdict-badge">블라인드 추론 대기</span>
+            <h3 id="arena-verdict-title">누가 타이핑했는지 대기 중입니다</h3>
+            <p id="arena-verdict-desc">문장을 1회 타이핑하거나 블라인드 시뮬레이터 버튼을 눌러 인물을 분류해 보세요.</p>
+          </div>
+          <div class="score-readout">
+            <span class="score-label">1위 생체 일치도</span>
+            <strong id="arena-verdict-score">--%</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="viz-block">
+        <div class="viz-title-row">
+          <h3>🏆 후보 인물 전원 실시간 생체 일치도 랭킹 (1:N Leaderboard)</h3>
+          <span class="mono-tag" id="arena-threshold-tag">외부인 기각 임계값 τ=0.52</span>
+        </div>
+        <div id="arena-ranking-list" class="ranking-list">
+          <p class="empty-placeholder">블라인드 타자 추론을 실행하면 등록된 모든 후보 인물의 일치도 순위가 표시됩니다.</p>
+        </div>
+      </div>
+
+      <div class="viz-block">
+        <div class="viz-title-row">
+          <h3>📈 1위 예측 인물 템플릿(±1σ) vs 현재 블라인드 타건 리듬 비교</h3>
+          <div class="legend-inline">
+            <span class="leg-item"><i class="swatch swatch-blue"></i>1위 후보 평균 리듬</span>
+            <span class="leg-item"><i class="swatch swatch-query"></i>현재 블라인드 파형</span>
+            <span class="leg-item"><i class="swatch swatch-roll"></i>연타 롤오버(UD&lt;0)</span>
+          </div>
+        </div>
+        <canvas id="arena-rhythm-canvas" width="680" height="195" aria-label="1위 예측 인물과 현재 타건의 파형 비교"></canvas>
+      </div>
+    </section>
+  </main>
+
+  <!-- Shared Security & Identification Audit Trail -->
+  <section class="container audit-outer" aria-labelledby="audit-heading">
+    <div class="panel full-span">
+      <div class="panel-header-between">
+        <div>
+          <h2 id="audit-heading">🛡️ 실시간 생체 인증·인물 식별 감사 로그 (WASM Local Audit Trail)</h2>
+          <p class="hint-text">브라우저 내부 WebAssembly(ONNX Runtime Web)에서 서버 전송 없이 100% 로컬 추론된 기록입니다.</p>
+        </div>
+        <button type="button" id="clear-log-btn" class="btn btn-secondary">로그 비우기</button>
+      </div>
+      <div class="table-wrap" tabindex="0" role="region" aria-labelledby="audit-heading">
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>시각</th>
+              <th>모드 / 시나리오</th>
+              <th>입력 문구 검증</th>
+              <th>생체 일치도 / 예측 결과</th>
+              <th>ONNX 추론 시간</th>
+              <th>최종 판정</th>
+            </tr>
+          </thead>
+          <tbody id="audit-tbody">
+            <tr id="audit-empty-row">
+              <td colspan="6" class="empty-cell">아직 실행된 인증·분류 기록이 없습니다.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer container">
+    <p>가천대학교 기계학습 프로그래밍 기말 프로젝트 · <strong>201935607 김대현</strong> · Model: <code>KeyPrintNet (Positional Multi-Scale ResSE-1DCNN + ASP/DCT + SubCenter-CosFace + AS-Norm)</code> · Datasets: <cite>CMU Keystroke Benchmark &amp; KeyRecs Sentence Corpus</cite></p>
+  </footer>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

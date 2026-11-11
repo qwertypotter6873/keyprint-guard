@@ -1,0 +1,18 @@
+{
+  "student_id": "201935607",
+  "name": "김대현",
+  "title": "KeyPrint Guard & Arena: 타이핑 생체 지문 임베딩 기반 실시간 해커 침입 차단(1:1) 및 타자연습 인물 자동 분류(1:N) 시스템",
+  "github_url": "https://github.com/qwertypotter6873/keyprint-guard",
+  "demo_url": "https://qwertypotter6873.github.io/keyprint-guard/",
+  "data_type": "tabular_sequence (keystroke_dynamics_biometrics)",
+  "training": "scratch (deep_metric_learning)",
+  "models": [
+    "ScaledManhattanDetector (Baseline 1 - Statistical Anomaly & Distance Classifier)",
+    "Vanilla1DCNN (Baseline 2 - Scratch Softmax Cross-Entropy)",
+    "KeyPrintNet (Proposed - Positional MultiScale ResSE-1DCNN + ASP/1D-DCT + Domain-Split SubCenter-CosFace + AS-Norm)"
+  ],
+  "primary_metric": {
+    "name": "Macro F1-Score",
+    "value": 0.861
+  }
+}
