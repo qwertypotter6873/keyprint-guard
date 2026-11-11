@@ -23,6 +23,33 @@ export function computeTypingAccuracy(typed, target) {
   return Math.round((matches / len) * 100);
 }
 
+const CODE_SHORT_LABELS = {
+  Space: '␣',
+  Period: '.',
+  Comma: ',',
+  Slash: '/',
+  Semicolon: ';',
+  Quote: "'",
+  BracketLeft: '[',
+  BracketRight: ']',
+  Minus: '-',
+  Equal: '=',
+  Backquote: '`',
+  Backslash: '\\',
+};
+
+function formatKeyLabel(key, code) {
+  if (code === 'Space' || key === ' ') return '␣';
+  if (key && key !== 'Process' && key !== 'Unidentified' && [...key].length === 1) {
+    return key;
+  }
+  if (CODE_SHORT_LABELS[code]) return CODE_SHORT_LABELS[code];
+  if (code?.startsWith('Key')) return code.slice(3);
+  if (code?.startsWith('Digit')) return code.slice(5);
+  if (code?.startsWith('Numpad')) return code.slice(6);
+  return code || '?';
+}
+
 /**
  * Backspace-resilient physical keystroke recorder.
  * - Captures sub-ms physical scan codes (works identically for English & Korean 2-beolsik IME).
@@ -40,7 +67,8 @@ export class SmartKeystrokeRecorder {
   }
 
   reset() {
-    this.stack = []; // Surviving physical strokes: { code, downTime, upTime, cleanFromPrev }
+    this.stack = []; // Surviving physical strokes: { code, label, downTime, upTime, cleanFromPrev, editedBefore, pausedBefore }
+    this.poppedStrokes = []; // Mistyped strokes removed via Backspace (for visualization)
     this.activeDown = new Map(); // code -> stack reference
     this.justEdited = false;
     this.backspaceCount = 0;
@@ -77,7 +105,9 @@ export class SmartKeystrokeRecorder {
         this.backspaceCount += 1;
         this.justEdited = true;
         if (this.stack.length > 0) {
-          this.stack.pop();
+          const popped = this.stack.pop();
+          popped.poppedAt = now;
+          this.poppedStrokes.push(popped);
         }
         return;
       }
@@ -90,6 +120,7 @@ export class SmartKeystrokeRecorder {
       // If input was cleared externally (e.g. select-all + delete), resync stack
       if (this.inputEl.value.length === 0 && this.stack.length > 3) {
         this.stack = [];
+        this.poppedStrokes = [];
         this.justEdited = false;
       }
 
@@ -99,8 +130,11 @@ export class SmartKeystrokeRecorder {
 
       const entry = {
         code: e.code,
+        label: formatKeyLabel(e.key, e.code),
         downTime: now,
         upTime: null,
+        editedBefore: this.stack.length > 0 && this.justEdited,
+        pausedBefore: hadLongPause,
         cleanFromPrev: this.stack.length === 0 ? true : !this.justEdited && !hadLongPause,
       };
 
@@ -148,6 +182,58 @@ export class SmartKeystrokeRecorder {
       backspaceCount: this.backspaceCount,
       hadPaste: this.hadPaste,
       keyCount: this.stack.length,
+    };
+  }
+
+  /**
+   * Build visualizable keystroke timeline (surviving strokes + popped typos + stitch points)
+   * with display timestamps compressed across long pauses so Piano-Roll stays readable.
+   */
+  buildVisualTimeline() {
+    if (this.stack.length === 0) return { events: [], poppedEvents: [] };
+    const t0 = this.stack[0].downTime;
+    const events = [];
+    let compressedOffset = 0;
+
+    for (let i = 0; i < this.stack.length; i++) {
+      const cur = this.stack[i];
+      const prev = i > 0 ? this.stack[i - 1] : null;
+      const up = cur.upTime ?? cur.downTime + 80.0;
+      const holdMs = Math.max(12, Math.min(600, up - cur.downTime));
+
+      let rawGapFromPrevDown = prev ? cur.downTime - prev.downTime : 0;
+      if (prev && (!cur.cleanFromPrev || rawGapFromPrevDown > 520)) {
+        // Compress long thinking/editing pause on visual timeline while marking stitch!
+        const visualGap = 155;
+        compressedOffset += rawGapFromPrevDown - visualGap;
+      }
+
+      const startMs = Math.max(0, cur.downTime - t0 - compressedOffset);
+      const endMs = startMs + holdMs;
+      const prevEvent = events.length > 0 ? events[events.length - 1] : null;
+      const udMs =
+        prev && cur.cleanFromPrev ? cur.downTime - (prev.upTime ?? prev.downTime + 80.0) : null;
+      const ddMs = prev && cur.cleanFromPrev ? cur.downTime - prev.downTime : null;
+
+      events.push({
+        idx: i,
+        code: cur.code,
+        label: cur.label || formatKeyLabel('', cur.code),
+        startMs: Math.round(startMs),
+        endMs: Math.round(endMs),
+        holdMs: Math.round(holdMs),
+        ddMs: ddMs !== null ? Math.round(ddMs) : null,
+        udMs: udMs !== null ? Math.round(udMs) : null,
+        isRollover: udMs !== null && udMs < 0,
+        stitchedBefore: i > 0 && !cur.cleanFromPrev,
+        editedBefore: Boolean(cur.editedBefore),
+        visualOverlapPrev: prevEvent && cur.cleanFromPrev && startMs < prevEvent.endMs,
+      });
+    }
+
+    return {
+      events,
+      poppedCount: this.poppedStrokes.length,
     };
   }
 
@@ -205,6 +291,7 @@ export class SmartKeystrokeRecorder {
       cpm,
       holdMs: meanHoldMs,
       rolloverPct,
+      timeline: this.buildVisualTimeline(),
       stroke: {
         holds,
         dds,

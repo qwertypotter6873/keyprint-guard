@@ -26,6 +26,9 @@
         <button type="button" id="nav-guard-btn" class="mode-tab" aria-pressed="false">
           비밀번호 침입 방어
         </button>
+        <button type="button" id="nav-principles-btn" class="mode-tab" aria-pressed="false">
+          원리 &amp; 프로필 구조
+        </button>
       </nav>
 
       <button type="button" id="open-room-btn" class="room-pill">
@@ -175,7 +178,10 @@
 
             <div class="result-footer">
               <span id="arena-result-meta" class="result-meta"></span>
-              <button type="button" id="arena-retry-btn" class="ghost-sm-btn">다음 문장으로 계속 ↻</button>
+              <div class="result-actions">
+                <button type="button" id="arena-inspect-viz-btn" class="text-btn">원리 &amp; 내 지문 보기 →</button>
+                <button type="button" id="arena-retry-btn" class="ghost-sm-btn">다음 문장으로 계속 ↻</button>
+              </div>
             </div>
           </div>
         </div>
@@ -267,6 +273,7 @@
               <p id="guard-result-desc" class="result-desc"></p>
               <div class="result-footer">
                 <span id="guard-result-meta" class="result-meta"></span>
+                <button type="button" id="guard-inspect-viz-btn" class="text-btn">원리 &amp; 내 지문 보기 →</button>
               </div>
             </div>
           </div>
@@ -330,6 +337,197 @@
           <p id="guard-enroll-feedback" class="feedback-line" aria-live="polite"></p>
         </div>
       </section>
+
+      <!-- =========================================================
+           MODE C: 원리 & 프로필 구조 시각화 (Interactive Visual Explainer)
+           ========================================================= -->
+      <section id="view-principles" class="viz-stack" aria-labelledby="principles-heading" hidden>
+        <div class="viz-hero surface-card">
+          <div class="viz-flow-pills" aria-hidden="true">
+            <span class="flow-pill">01 물리 타건 &amp; 오타 봉합</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-pill">02 속도 불변 9채널 · KeyPrintNet</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-pill">03 다중 문장 프로필 수렴 &amp; 분리</span>
+          </div>
+          <h2 id="principles-heading" class="viz-hero-title">
+            글자가 매번 달라도 손가락의 생체 지문은 남습니다
+          </h2>
+          <p class="viz-hero-desc">
+            키를 누르고 떼는 수 밀리초(ms)의 근육 습관이 어떻게 오타 수정과 타자 속도 변화를 이겨내고
+            <strong>나만의 64차원 생체 프로필</strong>로 만들어지는지 직접 조작하며 확인해 보세요.
+          </p>
+        </div>
+
+        <!-- STEP 01: Signal Capture, Rollover & Backspace Stitching -->
+        <article class="surface-card viz-card" aria-labelledby="viz-step1-title">
+          <div class="viz-card-head">
+            <div>
+              <span class="step-kicker">STEP 01 · 손끝에서 생체 신호로</span>
+              <h3 id="viz-step1-title" class="viz-card-title">
+                건반 피아노 롤 타임라인 &amp; 오타·속도 보정 원리
+              </h3>
+            </div>
+
+            <div class="lang-switch" role="group" aria-label="신호 시각화 방식">
+              <button type="button" id="viz-wave-tab-piano" class="lang-btn is-active">
+                건반 타임라인 (ms)
+              </button>
+              <button type="button" id="viz-wave-tab-tempo" class="lang-btn">
+                속도 불변 정규화 파형
+              </button>
+            </div>
+          </div>
+
+          <!-- 1-Line Live Micro-Sandbox -->
+          <div class="viz-sandbox">
+            <div class="viz-sandbox-top">
+              <span id="viz-signal-badge" class="source-badge">예시 파형 로드됨</span>
+              <div class="preset-group">
+                <button type="button" id="viz-preset-fast-btn" class="ghost-sm-btn is-selected-ghost">
+                  예시: 고속 + 오타봉합
+                </button>
+                <button type="button" id="viz-preset-slow-btn" class="ghost-sm-btn">
+                  예시: 느리게 칠 때 (×0.6배속)
+                </button>
+              </div>
+            </div>
+
+            <input
+              type="text"
+              id="viz-sandbox-input"
+              class="typing-input viz-sandbox-input"
+              placeholder="여기에 아무 문장이나 직접 타이핑해 보세요 (일부러 오타 + 백스페이스도 섞어보세요)"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+            >
+          </div>
+
+          <div id="viz-step1-svg" class="viz-svg-stage"></div>
+
+          <div class="viz-legend-bar">
+            <div class="legend-items">
+              <span class="legend-chip"><i class="lg-dot is-ink"></i>일반 홀드(Hold)</span>
+              <span class="legend-chip"><i class="lg-dot is-blue"></i>연타 롤오버(UD &lt; 0, 앞 키 떼기 전 타건)</span>
+              <span class="legend-chip"><i class="lg-dot is-amber"></i>백스페이스 오타 격리·봉합</span>
+            </div>
+            <span id="viz-step1-stats" class="viz-micro-stats"></span>
+          </div>
+
+          <details class="viz-details">
+            <summary>추출되는 9채널 생체역학 특징 텐서 [1, 9, L] 및 KeyPrintNet 구조 보기</summary>
+            <div class="details-grid">
+              <div class="detail-col">
+                <strong>① 물리 타이밍 (Ch 0~3)</strong>
+                <p>현재·다음 키 누름 시간(<code>H_curr</code>, <code>H_next</code>), 키 간격(<code>DD</code>), 비행 시간(<code>UD</code>)을 서브밀리초 단위로 포착합니다.</p>
+              </div>
+              <div class="detail-col">
+                <strong>② 속도 불변·봉합 역학 (Ch 4~8)</strong>
+                <p>문장 평균 대비 상대 비율(<code>Rel_H</code>, <code>Rel_DD</code>), 듀티비, 롤오버 크기와 함께 백스페이스 봉합점의 가속도(<code>Local_Accel</code>)를 <code>0</code>으로 리셋해 인위적 튀는 값을 차단합니다.</p>
+              </div>
+              <div class="detail-col">
+                <strong>③ KeyPrintNet (592KB ONNX)</strong>
+                <p>상대 위치 고조파 + 다중 스케일 잔차 SE-Conv1D + 6모드 DCT 스펙트럼 풀링으로 문장 길이에 무관하게 <code>64-D</code> 단위 초구면 벡터로 압축합니다.</p>
+              </div>
+            </div>
+          </details>
+        </article>
+
+        <!-- STEP 02: How Profile Is Built (Multi-Sentence Barcode -> Centroid) -->
+        <article class="surface-card viz-card" aria-labelledby="viz-step2-title">
+          <div class="viz-card-head">
+            <div>
+              <span class="step-kicker">STEP 02 · 프로필은 어떻게 만들어지는가</span>
+              <h3 id="viz-step2-title" class="viz-card-title">
+                서로 다른 문장들이 하나의 '대표 지문(Centroid)'으로 수렴하는 과정
+              </h3>
+            </div>
+
+            <div id="viz-shot-scrubber" class="lang-switch" role="group" aria-label="누적 문장 수 비교"></div>
+          </div>
+
+          <div class="roster-bar viz-roster-bar">
+            <div class="viz-roster-top">
+              <span class="roster-label">분석할 프로필 선택</span>
+              <span id="viz-profile-source-hint" class="muted-hint"></span>
+            </div>
+            <div id="viz-profile-chips" class="roster-chips"></div>
+          </div>
+
+          <p class="viz-explain-note">
+            매번 전혀 다른 글자의 문장을 쳐도 <code>64-D</code> 임베딩 바코드를 나란히 세워보면
+            <strong>개인 고유의 불변 차원(세로 강조 열)</strong>이 반복해서 나타납니다.
+            여러 문장을 누적 평균·정규화(L2 Centroid)하면 글자 배열 때문에 생긴 일시적 노이즈는 상쇄되고 선명한 대표 프로필만 남습니다.
+          </p>
+
+          <div id="viz-step2-svg" class="viz-svg-stage"></div>
+
+          <div class="viz-stat-grid">
+            <div class="viz-stat-tile is-highlight">
+              <span class="tile-label">프로필 수렴 안정도</span>
+              <strong id="viz-stat-stability" class="tile-val">—</strong>
+              <span id="viz-stat-stability-sub" class="tile-sub">누적 샘플 수에 따른 중심 수렴률</span>
+            </div>
+            <div class="viz-stat-tile">
+              <span class="tile-label">문장 간 지문 일관성</span>
+              <strong id="viz-stat-coherence" class="tile-val">—</strong>
+              <span class="tile-sub">서로 다른 문장 간 평균 유사도</span>
+            </div>
+            <div class="viz-stat-tile">
+              <span class="tile-label">평균 홀드 습관</span>
+              <strong id="viz-stat-hold" class="tile-val">—</strong>
+              <span class="tile-sub">키를 누르고 있는 물리 시간</span>
+            </div>
+            <div class="viz-stat-tile">
+              <span class="tile-label">연타 롤오버 빈도</span>
+              <strong id="viz-stat-rollover" class="tile-val">—</strong>
+              <span class="tile-sub">앞 키 떼기 전 다음 키 중첩 비율</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- STEP 03: Live Multi-User 2D Hypersphere Constellation Map -->
+        <article class="surface-card viz-card" aria-labelledby="viz-step3-title">
+          <div class="viz-card-head">
+            <div>
+              <span class="step-kicker">STEP 03 · 왜 다른 문장을 쳐도 사람이 구별되는가</span>
+              <h3 id="viz-step3-title" class="viz-card-title">
+                실시간 참가자 64차원 초구면 생체 지문 지도 (2D 주성분 투영)
+              </h3>
+            </div>
+
+            <div class="lang-switch" role="group" aria-label="투영 도메인 선택">
+              <button type="button" id="viz-map-domain-arena" class="lang-btn is-active">
+                타자연습 문장 공간
+              </button>
+              <button type="button" id="viz-map-domain-guard" class="lang-btn">
+                비밀번호 공간
+              </button>
+            </div>
+          </div>
+
+          <p class="viz-explain-note">
+            작은 점(<code>○</code>)은 각 참가자가 <strong>서로 다른 문장</strong>을 쳤을 때의 개별 벡터이고,
+            큰 원(<code>●</code>)은 완성된 <strong>대표 프로필 중심점(Centroid)</strong>입니다.
+            동시 접속 방에 새 참가자가 등록되거나 새 문장을 치면(<code>★</code>) 지도 위에 실시간으로 반영됩니다.
+          </p>
+
+          <div id="viz-step3-svg" class="viz-svg-stage"></div>
+
+          <div class="viz-legend-bar">
+            <div class="legend-items">
+              <span class="legend-chip"><i class="lg-dot is-ink"></i>대표 프로필 중심(Centroid)</span>
+              <span class="legend-chip"><i class="lg-dot is-hollow"></i>서로 다른 개별 문장 샘플</span>
+              <span class="legend-chip"><span class="lg-star" aria-hidden="true">★</span>방금 입력한 실시간 타건</span>
+            </div>
+            <button type="button" id="viz-jump-sandbox-btn" class="ghost-sm-btn">
+              ↑ 내 타건 직접 쳐서 지도에 찍어보기
+            </button>
+          </div>
+        </article>
+      </section>
     </main>
 
     <footer class="foot">
@@ -389,6 +587,8 @@
       </section>
     </div>
   </dialog>
+
+  <div id="viz-tooltip" class="viz-tooltip" role="tooltip" hidden></div>
 
   <script type="module" src="./src/main.js"></script>
 </body>

@@ -276,11 +276,52 @@ async function run() {
       path: path.join(SCREENSHOT_DIR, '04_exception_handling_guard.png'),
       fullPage: false,
     });
+    await pageA.click('#toggle-samples-btn');
+    await pageA.waitForTimeout(150);
+    await pageA.click('#close-room-btn');
+    await pageA.waitForTimeout(200);
+
+    // 6. Interactive Principles & Profile Structure Visualizer Tab (#view-principles)
+    await pageA.click('#nav-principles-btn');
+    await pageA.waitForSelector('#view-principles:not([hidden])');
+    await pageA.click('#viz-preset-fast-btn');
+    await pageA.waitForTimeout(220);
+
+    // Verify live sandbox typing updates Step 1 & Step 3 in real time, then restore Korean preset for clean visual
+    await typeWithBiometricCadence(pageA, '#viz-sandbox-input', 'keyprint live rhythm', cadenceDaehyeon, true);
+    await pageA.waitForTimeout(280);
+    const liveBadge = await pageA.textContent('#viz-signal-badge');
+    if (!liveBadge || liveBadge.includes('예시 파형')) {
+      throw new Error(`Expected live sandbox badge update, got: ${liveBadge}`);
+    }
+    await pageA.click('#viz-preset-fast-btn');
+    await pageA.waitForTimeout(200);
+
+    // Verify zero-latency custom hover tooltip across Step 2 64-D barcode columns
+    const barcodeHit = pageA.locator('#viz-step2-svg .viz-col-hit').nth(12);
+    await barcodeHit.scrollIntoViewIfNeeded();
+    await barcodeHit.hover();
+    await pageA.waitForTimeout(120);
+    const tooltipVisible = await pageA.locator('#viz-tooltip').isVisible();
+    if (!tooltipVisible) {
+      throw new Error('Expected #viz-tooltip to be visible when hovering Step 2 barcode column');
+    }
+    console.log('[E2E] Principles & Profile Structure tab + hover tooltips verified!');
+
+    await pageA.evaluate(() => window.scrollTo(0, 0));
+    await pageA.mouse.move(4, 4);
+    await pageA.waitForTimeout(150);
+    await pageA.screenshot({
+      path: path.join(SCREENSHOT_DIR, '06_principles_and_profile_viz.png'),
+      fullPage: true,
+    });
 
     // Clean up test room retained profiles on broker
     await pageA.evaluate(() => {
       for (const p of [...window.__keyprintTestApi.state.profiles]) {
-        window.__keyprintTestApi.roomSync.deleteProfile(p.id);
+        if (!p.isSample) {
+          window.__keyprintTestApi.roomSync.deleteProfile(p.id);
+        }
       }
     });
     await pageA.waitForTimeout(300);

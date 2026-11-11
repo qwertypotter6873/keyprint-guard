@@ -13,6 +13,13 @@ import {
   sanitizeRoomCode,
 } from './roomSync.js';
 import { SentenceDeck } from './sentences.js';
+import {
+  createPresetCapture,
+  renderHypersphereMapSvg,
+  renderPianoRollSvg,
+  renderProfileBarcodeSvg,
+  renderTempoInvarianceSvg,
+} from './visualizer.js';
 
 const TARGET_ARENA_SHOTS = 3;
 const TARGET_PW_SHOTS = 4;
@@ -22,7 +29,7 @@ const deck = new SentenceDeck();
 
 const state = {
   ready: false,
-  mode: 'arena', // 'arena' | 'guard'
+  mode: 'arena', // 'arena' | 'guard' | 'principles'
   arenaSub: 'enroll', // 'enroll' | 'blind'
   guardSub: 'verify', // 'verify' | 'enroll'
   lang: 'ko', // 'ko' | 'en'
@@ -40,6 +47,16 @@ const state = {
   // Selected target account for Mode B (Password Guard)
   selectedGuardId: null,
   profiles: [],
+
+  // Mode C: Interactive Visual Explainer & Profile Formation State
+  viz: {
+    waveTab: 'piano', // 'piano' | 'tempo'
+    capture: createPresetCapture('normal'),
+    selectedProfileId: null,
+    shotCount: 99,
+    mapDomain: 'arena', // 'arena' | 'guard'
+    lastQuery: null, // { embedding, label, domain }
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -93,6 +110,9 @@ const roomSync = new RoomProfileSync({
     ensureSelectedGuardAccount();
     renderAllRosters();
     renderModalProfiles();
+    if (state.mode === 'principles') {
+      renderPrinciplesView();
+    }
   },
   onStatusChange: ({ status, roomCode, peerCount, profileCount }) => {
     const syncDot = $('sync-dot');
@@ -147,22 +167,39 @@ function ensureSelectedGuardAccount() {
 }
 
 // ================= UI RENDERING =================
-function switchMainMode(mode) {
-  state.mode = mode;
-  const isArena = mode === 'arena';
+function switchMainMode(mode, { syncUrl = true } = {}) {
+  const validMode = ['arena', 'guard', 'principles'].includes(mode) ? mode : 'arena';
+  state.mode = validMode;
+
+  const isArena = validMode === 'arena';
+  const isGuard = validMode === 'guard';
+  const isPrinciples = validMode === 'principles';
+
   $('view-arena').hidden = !isArena;
-  $('view-guard').hidden = isArena;
+  $('view-guard').hidden = !isGuard;
+  $('view-principles').hidden = !isPrinciples;
 
   $('nav-arena-btn').classList.toggle('is-active', isArena);
   $('nav-arena-btn').setAttribute('aria-pressed', String(isArena));
-  $('nav-guard-btn').classList.toggle('is-active', !isArena);
-  $('nav-guard-btn').setAttribute('aria-pressed', String(!isArena));
+  $('nav-guard-btn').classList.toggle('is-active', isGuard);
+  $('nav-guard-btn').setAttribute('aria-pressed', String(isGuard));
+  $('nav-principles-btn').classList.toggle('is-active', isPrinciples);
+  $('nav-principles-btn').setAttribute('aria-pressed', String(isPrinciples));
+
+  if (syncUrl) {
+    const url = new URL(window.location.href);
+    if (validMode === 'arena') url.searchParams.delete('tab');
+    else url.searchParams.set('tab', validMode);
+    window.history.replaceState({}, '', url.toString());
+  }
 
   if (isArena) {
     focusActiveArenaInput();
-  } else {
+  } else if (isGuard) {
     renderGuardVerifyState();
     focusActiveGuardInput();
+  } else {
+    renderPrinciplesView();
   }
 }
 
@@ -462,6 +499,16 @@ async function handleArenaEnrollSubmit() {
   }
 
   const { embedding } = await engine.embedStroke(capture.stroke);
+  state.viz.capture = {
+    ...capture,
+    isPreset: false,
+    sourceLabel: `내 실시간 타건 · '${name}' 프로필 등록 문장`,
+  };
+  state.viz.lastQuery = {
+    embedding,
+    label: `${name} 방금 입력`,
+    domain: 'arena',
+  };
   state.arenaEnrollBuffer.items.push({
     embedding,
     cpm: capture.cpm,
@@ -567,6 +614,17 @@ async function handleArenaBlindSubmit() {
 
   setFeedback($('arena-blind-feedback'), '');
   const { embedding, latencyMs } = await engine.embedStroke(capture.stroke);
+  state.viz.capture = {
+    ...capture,
+    isPreset: false,
+    sourceLabel: '내 실시간 타건 · 누가 쳤을까? 판별 문장',
+  };
+  state.viz.mapDomain = 'arena';
+  state.viz.lastQuery = {
+    embedding,
+    label: '방금 판별 타건',
+    domain: 'arena',
+  };
   const res = engine.identifyTypist(embedding, candidates, {
     openSetThreshold: 0.42,
   });
@@ -728,6 +786,17 @@ async function handleGuardVerifySubmit() {
 
   setFeedback($('guard-verify-feedback'), '');
   const { embedding, latencyMs } = await engine.embedStroke(capture.stroke);
+  state.viz.capture = {
+    ...capture,
+    isPreset: false,
+    sourceLabel: `내 실시간 타건 · '${targetAcc.name}' 암호 검증`,
+  };
+  state.viz.mapDomain = 'guard';
+  state.viz.lastQuery = {
+    embedding,
+    label: '방금 입력한 암호',
+    domain: 'guard',
+  };
   const res = engine.scoreTemplate(embedding, targetAcc.password, {
     domain: 'password',
     threshold: state.threshold,
@@ -782,10 +851,363 @@ async function handleGuardVerifySubmit() {
   $('guard-result-meta').textContent = `${capture.cpm} 타/분 · 홀드 ${capture.holdMs}ms · 롤오버 ${capture.rolloverPct}% · ${editTxt} · 추론 ${latencyMs}ms`;
 }
 
+// ================= MODE C: VISUAL EXPLAINER & PROFILE FORMATION =================
+let vizEmbedTimer = null;
+
+const vizSandboxRecorder = new SmartKeystrokeRecorder($('viz-sandbox-input'), {
+  onLiveUpdate: () => {
+    if (vizSandboxRecorder.stack.length < 2) return;
+    const cap = vizSandboxRecorder.extractCleanStroke();
+    state.viz.capture = {
+      ...cap,
+      isPreset: false,
+      sourceLabel: '내 실시간 타건 (입력 즉시 갱신 중)',
+    };
+    renderVizStep1();
+
+    if (vizEmbedTimer) clearTimeout(vizEmbedTimer);
+    if (state.ready && cap.cleanDigraphCount >= 4) {
+      vizEmbedTimer = setTimeout(async () => {
+        try {
+          const { embedding } = await engine.embedStroke(cap.stroke);
+          state.viz.lastQuery = {
+            embedding,
+            label: '방금 입력한 내 타건',
+            domain: state.viz.mapDomain,
+          };
+          renderVizStep3();
+        } catch {
+          // ignore transient short-stroke inference errors
+        }
+      }, 150);
+    }
+  },
+  onSubmit: async () => {
+    const cap = vizSandboxRecorder.extractCleanStroke();
+    if (cap.cleanDigraphCount < 2) return;
+    state.viz.capture = {
+      ...cap,
+      isPreset: false,
+      sourceLabel: '내 실시간 타건 분석 완료',
+    };
+    renderVizStep1();
+    if (state.ready && cap.cleanDigraphCount >= 4) {
+      const { embedding } = await engine.embedStroke(cap.stroke);
+      state.viz.lastQuery = {
+        embedding,
+        label: '방금 입력한 내 타건',
+        domain: state.viz.mapDomain,
+      };
+      renderVizStep3();
+    }
+  },
+});
+
+function getVizProfilePool() {
+  const realList = state.profiles || [];
+  const sampleFallback = engine.config?.mvp_sample_profiles || [];
+  if (realList.length >= 2) {
+    return { list: realList, usingFallback: false };
+  }
+  const existingIds = new Set(realList.map((p) => p.id));
+  const merged = [...realList, ...sampleFallback.filter((s) => !existingIds.has(s.id))];
+  return {
+    list: merged,
+    usingFallback: merged.length > realList.length,
+  };
+}
+
+function pickTemplateForViz(profile, preferDomain = 'arena') {
+  if (!profile) return { tmpl: null, unitLabel: '문장' };
+  if (preferDomain === 'guard' && profile.password?.centroid) {
+    return { tmpl: profile.password, unitLabel: '암호' };
+  }
+  const arenaTmpl = profile.arena?.ko || profile.arena?.en || null;
+  if (arenaTmpl?.centroid) {
+    return { tmpl: arenaTmpl, unitLabel: '문장' };
+  }
+  if (profile.password?.centroid) {
+    return { tmpl: profile.password, unitLabel: '암호' };
+  }
+  return { tmpl: null, unitLabel: '샘플' };
+}
+
+function renderVizStep1() {
+  const cap = state.viz.capture;
+  const badge = $('viz-signal-badge');
+  badge.textContent = cap.sourceLabel || '예시 파형';
+  badge.classList.toggle('is-live', !cap.isPreset);
+
+  $('viz-preset-fast-btn').classList.toggle(
+    'is-selected-ghost',
+    Boolean(cap.isPreset && cap.presetMode === 'normal')
+  );
+  $('viz-preset-slow-btn').classList.toggle(
+    'is-selected-ghost',
+    Boolean(cap.isPreset && cap.presetMode === 'slow')
+  );
+
+  $('viz-wave-tab-piano').classList.toggle('is-active', state.viz.waveTab === 'piano');
+  $('viz-wave-tab-tempo').classList.toggle('is-active', state.viz.waveTab === 'tempo');
+
+  const step1Wrap = $('viz-step1-svg');
+  step1Wrap.innerHTML =
+    state.viz.waveTab === 'piano'
+      ? renderPianoRollSvg(cap)
+      : renderTempoInvarianceSvg(cap);
+  if (state.viz.waveTab === 'piano' && !cap.isPreset) {
+    step1Wrap.scrollTop = step1Wrap.scrollHeight;
+  }
+
+  const bsNote =
+    cap.backspaceCount > 0 ? `백스페이스 ${cap.backspaceCount}회 봉합` : '무수정';
+  $('viz-step1-stats').textContent = `${cap.cpm} 타/분 · 평균 홀드 ${cap.holdMs}ms · 롤오버 ${cap.rolloverPct}% · ${bsNote} · 전이 ${cap.cleanDigraphCount}구간`;
+}
+
+function renderVizStep2() {
+  const { list, usingFallback } = getVizProfilePool();
+  $('viz-profile-source-hint').textContent = usingFallback
+    ? '실측 샘플 프리뷰 포함 (참가자 등록 시 자동 반영)'
+    : `현재 방 참가자 ${list.length}명 실시간 데이터`;
+
+  if (list.length === 0) {
+    $('viz-profile-chips').innerHTML = `<span class="roster-empty">모델 프로필 준비 중…</span>`;
+    $('viz-step2-svg').innerHTML = `<div class="viz-empty">프로필 데이터를 불러오는 중입니다.</div>`;
+    return;
+  }
+
+  if (!list.some((p) => p.id === state.viz.selectedProfileId)) {
+    const rich =
+      list.find((p) => (pickTemplateForViz(p, state.viz.mapDomain).tmpl?.exemplars?.length || 0) >= 3) ||
+      list[0];
+    state.viz.selectedProfileId = rich.id;
+  }
+  const selected = list.find((p) => p.id === state.viz.selectedProfileId) || list[0];
+  const { tmpl, unitLabel } = pickTemplateForViz(selected, state.viz.mapDomain);
+
+  // Render profile selector chips
+  $('viz-profile-chips').innerHTML = list
+    .map((p) => {
+      const initial = escapeHtml(p.name.trim().charAt(0) || '?');
+      const active = p.id === selected.id;
+      return `<button type="button" class="user-chip ${active ? 'is-selected' : ''}" data-viz-prof="${escapeHtml(p.id)}">
+        <span class="chip-avatar" style="background:${p.color || '#2563eb'}">${initial}</span>
+        <span>${escapeHtml(p.name)}</span>
+      </button>`;
+    })
+    .join('');
+
+  $('viz-profile-chips').querySelectorAll('[data-viz-prof]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.viz.selectedProfileId = btn.getAttribute('data-viz-prof');
+      state.viz.shotCount = 99; // default to full convergence when switching user
+      renderVizStep2();
+    });
+  });
+
+  const totalEx = Math.max(1, tmpl?.exemplars?.length || 1);
+  const clampedShots = Math.max(1, Math.min(state.viz.shotCount, totalEx));
+
+  // Render cumulative shot scrubber buttons (1 -> 2 -> N 완성)
+  const stepOptions = [];
+  for (let k = 1; k <= Math.min(4, totalEx); k++) {
+    const isLast = k === Math.min(4, totalEx);
+    const actualK = isLast ? totalEx : k;
+    const label = isLast
+      ? `${actualK}${unitLabel} 완성`
+      : `${k}${unitLabel}`;
+    const isAct = isLast ? clampedShots >= k : clampedShots === k;
+    stepOptions.push(
+      `<button type="button" class="lang-btn ${isAct ? 'is-active' : ''}" data-viz-shots="${actualK}">${label}</button>`
+    );
+  }
+  $('viz-shot-scrubber').innerHTML = stepOptions.join('');
+  $('viz-shot-scrubber').querySelectorAll('[data-viz-shots]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.viz.shotCount = Number(btn.getAttribute('data-viz-shots'));
+      renderVizStep2();
+    });
+  });
+
+  const { svg, info } = renderProfileBarcodeSvg(tmpl, {
+    color: selected.color || '#2563eb',
+    stepCount: clampedShots,
+    unitLabel,
+  });
+  $('viz-step2-svg').innerHTML = svg;
+
+  $('viz-stat-stability').textContent = `${info.stabilityPct.toFixed(1)}%`;
+  $('viz-stat-stability-sub').textContent =
+    info.activeCount === 1
+      ? '단일 샘플 — 문장 고유 편차 포함'
+      : `${info.activeCount}개 누적 — 문장 노이즈 상쇄됨`;
+  $('viz-stat-coherence').textContent = `${info.pairwiseCosPct.toFixed(1)}%`;
+  $('viz-stat-hold').textContent = `${tmpl?.holdMs || 0} ms`;
+  $('viz-stat-rollover').textContent = `${tmpl?.rolloverPct || 0}% (${tmpl?.cpm || 0}타/분)`;
+}
+
+function renderVizStep3() {
+  const isArenaMap = state.viz.mapDomain === 'arena';
+  $('viz-map-domain-arena').classList.toggle('is-active', isArenaMap);
+  $('viz-map-domain-guard').classList.toggle('is-active', !isArenaMap);
+
+  const { list } = getVizProfilePool();
+  const entries = list
+    .map((p) => {
+      const tmpl = isArenaMap
+        ? p.arena?.ko || p.arena?.en || null
+        : p.password || null;
+      if (!tmpl?.centroid) return null;
+      return {
+        id: p.id,
+        name: p.name,
+        color: p.color || '#2563eb',
+        isSample: Boolean(p.isSample),
+        centroid: tmpl.centroid,
+        exemplars: tmpl.exemplars || [],
+        template: tmpl,
+      };
+    })
+    .filter(Boolean);
+
+  let queryPoint = null;
+  if (state.viz.lastQuery?.embedding && entries.length > 0 && state.ready) {
+    const scored = engine.identifyTypist(
+      state.viz.lastQuery.embedding,
+      entries,
+      { openSetThreshold: isArenaMap ? 0.42 : state.threshold }
+    );
+    if (scored?.winner) {
+      queryPoint = {
+        embedding: state.viz.lastQuery.embedding,
+        label: state.viz.lastQuery.label || '방금 입력한 타건',
+        winnerId: scored.winner.id,
+        winnerName: scored.winner.name,
+        similarityPct: (scored.winner.similarity * 100).toFixed(1),
+        identified: scored.identified,
+      };
+    }
+  }
+
+  $('viz-step3-svg').innerHTML = renderHypersphereMapSvg(entries, queryPoint);
+}
+
+function renderPrinciplesView() {
+  renderVizStep1();
+  renderVizStep2();
+  renderVizStep3();
+}
+
+async function applyVizPreset(mode) {
+  $('viz-sandbox-input').value = '';
+  vizSandboxRecorder.reset();
+  const cap = createPresetCapture(mode);
+  state.viz.capture = cap;
+  renderVizStep1();
+  if (state.ready) {
+    const { embedding } = await engine.embedStroke(cap.stroke);
+    state.viz.lastQuery = {
+      embedding,
+      label: mode === 'slow' ? '예시 타건 (저속)' : '예시 타건 (고속)',
+      domain: state.viz.mapDomain,
+    };
+    renderVizStep3();
+  }
+}
+
 // ================= EVENT WIRING & INIT =================
 function bindEvents() {
   $('nav-arena-btn').addEventListener('click', () => switchMainMode('arena'));
   $('nav-guard-btn').addEventListener('click', () => switchMainMode('guard'));
+  $('nav-principles-btn').addEventListener('click', () => switchMainMode('principles'));
+
+  $('arena-inspect-viz-btn').addEventListener('click', () => {
+    switchMainMode('principles');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  $('guard-inspect-viz-btn').addEventListener('click', () => {
+    state.viz.mapDomain = 'guard';
+    switchMainMode('principles');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  $('viz-wave-tab-piano').addEventListener('click', () => {
+    state.viz.waveTab = 'piano';
+    renderVizStep1();
+  });
+  $('viz-wave-tab-tempo').addEventListener('click', () => {
+    state.viz.waveTab = 'tempo';
+    renderVizStep1();
+  });
+  $('viz-preset-fast-btn').addEventListener('click', () => applyVizPreset('normal'));
+  $('viz-preset-slow-btn').addEventListener('click', () => applyVizPreset('slow'));
+
+  $('viz-map-domain-arena').addEventListener('click', () => {
+    state.viz.mapDomain = 'arena';
+    renderVizStep2();
+    renderVizStep3();
+  });
+  $('viz-map-domain-guard').addEventListener('click', () => {
+    state.viz.mapDomain = 'guard';
+    renderVizStep2();
+    renderVizStep3();
+  });
+
+  $('viz-jump-sandbox-btn').addEventListener('click', () => {
+    const input = $('viz-sandbox-input');
+    input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => input.focus(), 220);
+  });
+
+  // Delegated zero-latency hover tooltip for all SVG charts in #view-principles
+  const tipEl = $('viz-tooltip');
+  const vizSection = $('view-principles');
+  let activeHit = null;
+
+  const hideVizTip = () => {
+    activeHit = null;
+    if (tipEl) tipEl.hidden = true;
+  };
+
+  vizSection.addEventListener('pointermove', (e) => {
+    const hit = e.target?.closest?.('[data-tip-title]');
+    if (!hit) {
+      hideVizTip();
+      return;
+    }
+    if (hit !== activeHit) {
+      activeHit = hit;
+      const title = hit.getAttribute('data-tip-title') || '';
+      const rawLines = (hit.getAttribute('data-tip-lines') || '')
+        .split('||')
+        .filter(Boolean);
+      const lineHtml = rawLines
+        .map((ln) => {
+          const isStrong = ln.startsWith('*');
+          const clean = isStrong ? ln.slice(1) : ln;
+          return `<div class="viz-tip-line${isStrong ? ' is-strong' : ''}">${escapeHtml(clean)}</div>`;
+        })
+        .join('');
+      tipEl.innerHTML = `<div class="viz-tip-title">${escapeHtml(title)}</div>${lineHtml}`;
+      tipEl.hidden = false;
+    }
+
+    const pad = 14;
+    const w = tipEl.offsetWidth || 220;
+    const h = tipEl.offsetHeight || 80;
+    let left = e.clientX + pad;
+    let top = e.clientY + pad;
+    if (left + w > window.innerWidth - 12) {
+      left = Math.max(12, e.clientX - w - pad);
+    }
+    if (top + h > window.innerHeight - 12) {
+      top = Math.max(12, e.clientY - h - pad);
+    }
+    tipEl.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
+  });
+
+  vizSection.addEventListener('pointerleave', hideVizTip);
+  window.addEventListener('scroll', hideVizTip, { passive: true });
 
   $('arena-sub-enroll').addEventListener('click', () => switchArenaSub('enroll'));
   $('arena-sub-blind').addEventListener('click', () => switchArenaSub('blind'));
@@ -901,6 +1323,7 @@ window.__keyprintTestApi = {
 };
 
 async function bootstrap() {
+  const initialTabParam = new URLSearchParams(window.location.search).get('tab');
   bindEvents();
   dealArenaEnrollSentence();
   dealArenaBlindSentence();
@@ -908,11 +1331,30 @@ async function bootstrap() {
   const initialRoom = getInitialRoomCode();
   roomSync.connect(initialRoom);
 
+  if (initialTabParam === 'principles' || initialTabParam === 'how') {
+    switchMainMode('principles', { syncUrl: true });
+  } else if (initialTabParam === 'guard') {
+    switchMainMode('guard', { syncUrl: true });
+  }
+
   try {
     await engine.init();
     state.ready = true;
     $('engine-pill').classList.add('is-ready');
     $('engine-status-text').textContent = `ONNX 준비 완료 (${engine.loadTimeMs}ms)`;
+
+    // Compute real ONNX 64-D embedding for the initial preset capture so Step 3 map shows ★ immediately
+    if (!state.viz.lastQuery && state.viz.capture?.stroke) {
+      const { embedding } = await engine.embedStroke(state.viz.capture.stroke);
+      state.viz.lastQuery = {
+        embedding,
+        label: '예시 타건 지문',
+        domain: 'arena',
+      };
+    }
+    if (state.mode === 'principles') {
+      renderPrinciplesView();
+    }
   } catch (err) {
     $('engine-status-text').textContent = '모델 로드 실패';
     console.error(err);

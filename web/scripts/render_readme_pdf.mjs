@@ -128,10 +128,13 @@ async function generatePdf() {
     }
     img {
       max-width: 100%;
+      max-height: 215mm;
+      width: auto;
       height: auto;
+      display: block;
       border-radius: 6px;
       border: 1px solid #e2e8f0;
-      margin: 8px 0;
+      margin: 8px auto;
       break-inside: avoid;
     }
     a {

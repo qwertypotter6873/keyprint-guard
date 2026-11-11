@@ -233,6 +233,13 @@
 
 ![타인 유출 비밀번호 입력 시 침입 차단 화면](assets/screenshots/03_hacker_intrusion_blocked.png)
 
+#### ③ 원리 & 프로필 구조 인터랙티브 시각화 (`Signal-to-Profile XAI Explorer`)
+- **Step 1 — 타건 신호 해부 & 속도 불변성 (`Piano-Roll & Tempo Invariance`)**: 키를 누르고 떼는 전 구간 시퀀스를 끊김 없이 피아노롤 타임라인으로 펼쳐 보여주며, 앞 키를 떼기 전 다음 키를 겹쳐 누르는 **연타 롤오버(`UD < 0`)**, 오타 수정 시 오염된 전이만 도려내고 이어 붙이는 **백스페이스 봉합(`✂ 가속도 0 리셋`)**, 그리고 타자 속도가 느려져도 개인 고유 박자 비율(`Rel_DD = DD / 평균DD`)이 그대로 보존되는 원리를 실시간 샌드박스 타이핑과 마우스 호버 툴팁으로 직접 검증할 수 있습니다.
+- **Step 2 — 64차원 프로필 생성 · 누적 수렴 (`64-D Barcode-to-Centroid`)**: 서로 다른 연습 문장(`#1∼#N`)에서 추출된 실제 `KeyPrintNet` `64-D` 임베딩 바코드들이 누적 평균 및 초구면 정규화(`L2 Centroid`)를 거치며 문장별 일시적 흔들림은 상쇄되고 <strong>개인 고유 불변 차원(`Top-8 Signature Dimensions`)</strong>만 또렷하게 남는 과정을 단계별 버튼(`1문장 → 완성`)과 `D1∼D64` 차원별 정밀 호버 인스펙터로 탐색합니다.
+- **Step 3 — 64차원 초구면 인물 지형도 (`Live 2D PCA Constellation`)**: 현재 방에 등록된 참가자들의 대표 중심점(`●`)과 개별 문장 샘플(`○`), 그리고 방금 입력한 실시간 타건 쿼리(`★`)를 브라우저 내 실시간 2D 주성분(`PCA`) 지형도 위에 투영하여 `1:N` 인물 식별과 `1:1` 침입 차단의 기하학적 판정 근거를 투명하게 제시합니다.
+
+![원리 및 프로필 생성 구조 인터랙티브 시각화 화면](assets/screenshots/06_principles_and_profile_viz.png)
+
 ### 6.2 실시간 다중 기기 동시 접속(`Room Sync`) 및 입력 예외·보정 처리
 혼자서 다른 사람의 타이핑 습관을 일관되게 흉내 내기 어렵다는 행동 생체인식의 특성을 고려하여, <strong>여러 대의 노트북·PC에서 동시에 접속해 프로필을 실시간 공유·관리할 수 있는 방 동기화(`MQTT-over-WSS Retained Topic` + `BroadcastChannel` + `localStorage`)</strong>와 방어적 입력 처리를 구현하였습니다.
 
@@ -287,16 +294,17 @@ keyprint-guard/
 │   └── evaluation_report.json                 # 전체 정량 평가 결과 및 학습 로그 리포트
 ├── assets/
 │   ├── figures/fig1..fig7_*.png               # 7종 데이터·학습·평가·오류 분석 시각화 그래프
-│   └── screenshots/01..05_*.png               # 5종 실제 웹 프로토타입 구동 스크린샷
+│   └── screenshots/01..06_*.png               # 6종 실제 웹 프로토타입 구동 스크린샷
 └── web/                                       # Vite + ONNX Runtime Web 미니멀 MVP 애플리케이션
-    ├── index.html                             # 타자연습 인물 식별(1:N) & 비밀번호 침입 방어(1:1) UI
+    ├── index.html                             # 타자연습 식별(1:N) · 암호 방어(1:1) · 원리 시각화 UI
     ├── package.json                           # 웹 빌드 스크립트 (sync-ort 자동 동기화 포함)
     ├── src/biometrics.js                      # 백스페이스 복원 리코더, 9채널 변환, ONNX 추론 엔진
+    ├── src/visualizer.js                      # 피아노롤, 64-D 바코드 수렴, 실시간 2D 초구면 투영 렌더러
     ├── src/roomSync.js                        # 다중 기기 실시간 방 동기화 (MQTT-over-WSS / Local)
     ├── src/sentences.js                       # 한글·영문 다양한 타자연습 문장 셔플 덱
-    ├── src/main.js                            # 다중 프로필 관리, 실시간 타자연습 및 판별 컨트롤러
+    ├── src/main.js                            # 다중 프로필 관리, 실시간 타자연습·판별·시각화 컨트롤러
     ├── src/style.css                          # 미니멀 스튜디오 스타일시트
-    └── scripts/e2e_verify_and_capture.mjs     # 2대 브라우저 동시 접속 + 백스페이스 자동 E2E 검증기
+    └── scripts/e2e_verify_and_capture.mjs     # 2대 브라우저 동시 접속 + 백스페이스 + 원리 탭 자동 E2E 검증기
 ```
 
 ### 8.2 머신러닝 파이프라인 재현 (전처리 · 직접 학습 · 평가 · ONNX 변환)
@@ -321,7 +329,7 @@ npm install
 # 개발 서버 실행 (predev 훅이 ONNX WASM 런타임을 public/ort/에 자동 복사합니다)
 npm run dev
 
-# 프로덕션 정적 빌드 및 Headless Chrome 5대 시나리오 무오류 검증
+# 프로덕션 정적 빌드 및 Headless Chrome 6대 시나리오 무오류 검증
 npm run build
 node scripts/e2e_verify_and_capture.mjs
 ```
