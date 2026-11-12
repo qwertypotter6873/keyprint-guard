@@ -12,6 +12,7 @@ Master execution script for KeyPrint Guard & Arena:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -49,10 +50,25 @@ from feature_eval import (
     tune_beta_identification,
     tune_beta_password,
     eval_password_transfer,
+    open_set_eval,
+    open_set_matrix,
+    tune_open_set_rule,
+)
+from password_synth import (
+    DISPLAY_SLOPE,
+    adaptation_eval,
+    calibrate_dual,
+    choose_strings,
+    digraph_tables,
+    evaluate_strings,
+    person_speed,
+    string_trials,
 )
 from keyboard_layout import CMU_PASSWORD_CODES, export_layout_for_web, pairs_from_codes
 from models import KeyPrintNet, ScaledManhattanDetector, Vanilla1DCNN
 from preprocessing import (
+    KEYRECS_DD_COLS,
+    KEYRECS_HOLD_COLS,
     CHANNEL_NAMES,
     DIGRAPH_LABELS,
     N_CHANNELS,
@@ -69,6 +85,12 @@ from preprocessing import (
 
 MODEL_VERSION = "kp17-touch-behavior-v1"
 WEB_CAPTURE_CHARS = 68  # average length of the web app's practice sentences
+ARENA_ENROLL_SENTENCES = 5  # typing practice: sentences per profile
+ARENA_QUERY_SENTENCES = 2  # typing practice: sentences typed before "who is typing?" is answered
+PASSWORD_FRR_TARGET = 0.10  # dual password score: tau = Validation genuine quantile
+# KEYPRINT_REUSE_WEIGHTS=1 re-evaluates with the saved encoders instead of retraining (MPS training is
+# not bit-reproducible, so this keeps every previously reported number for unchanged components).
+REUSE_WEIGHTS = os.environ.get("KEYPRINT_REUSE_WEIGHTS") == "1"
 from train_and_evaluate import (
     build_verification_trials,
     compute_cohort_centroids,
@@ -923,17 +945,26 @@ def main() -> None:
     print(f"[Result 1:1] ScaledManhattan Test: {metrics_manhattan}")
 
     # 2. Baseline 2: Scratch Vanilla 1D-CNN (Cross-Entropy)
-    vanilla_model, hist_vanilla = train_vanilla_baseline(
-        splits["train"],
-        splits["val"],
-        val_trials,
-        device,
-        epochs=35,
-        batch_size=256,
-        sentence_train=sent_train,
-        kr_fixed_train=kr_fixed_train,
-    )
-    torch.save(vanilla_model.cpu().state_dict(), models_dir / "vanilla_1dcnn.pt")
+    prev_report = json.loads((models_dir / "evaluation_report.json").read_text(encoding="utf-8")) if REUSE_WEIGHTS else None
+    if REUSE_WEIGHTS:
+        vanilla_model = Vanilla1DCNN(in_channels=splits["train"].seq_scaled.shape[1], embed_dim=64)
+        vanilla_model.load_state_dict(torch.load(models_dir / "vanilla_1dcnn.pt", map_location="cpu", weights_only=True))
+        vanilla_model.to(device).eval()
+        hist_vanilla = prev_report["histories"]["Vanilla1DCNN"]
+        print("[Reuse] loaded saved Vanilla1DCNN weights + history")
+    else:
+        vanilla_model, hist_vanilla = train_vanilla_baseline(
+            splits["train"],
+            splits["val"],
+            val_trials,
+            device,
+            epochs=35,
+            batch_size=256,
+            sentence_train=sent_train,
+            kr_fixed_train=kr_fixed_train,
+        )
+    if not REUSE_WEIGHTS:
+        torch.save(vanilla_model.cpu().state_dict(), models_dir / "vanilla_1dcnn.pt")
     vanilla_model.to(device)
 
     val_emb_v = encode_sequences(vanilla_model, splits["val"].seq_scaled, device)
@@ -948,27 +979,35 @@ def main() -> None:
     print(f"[Result 1:1] Vanilla1DCNN Test: {metrics_vanilla}")
 
     # 3. Proposed Model: KeyPrintNet (Multi-Corpus + Positional ResSE-1DCNN + ASP/DCT + SubCenter-CosFace + AS-Norm)
-    keyprint_model, hist_keyprint = train_keyprint_net(
-        splits["train"],
-        splits["val"],
-        val_trials,
-        bounds,
-        chan_mean,
-        chan_std,
-        device,
-        epochs=35,
-        batch_size=256,
-        use_augmentation=True,
-        raw_channels_only=False,
-        sentence_train=sent_train,
-        kr_fixed_train=kr_fixed_train,
-        sentence_val=sent_val,
-        tag="KeyPrintNet",
-        in_channels=N_CHANNELS,
-        touch_prob=TOUCH_PROB,
-        touch_hold=float(meta["touch_hold_impute_sec"]),
-    )
-    torch.save(keyprint_model.cpu().state_dict(), models_dir / "keyprint_net.pt")
+    if REUSE_WEIGHTS:
+        keyprint_model = KeyPrintNet(in_channels=N_CHANNELS, hidden_channels=80, embed_dim=64, dropout=0.18)
+        keyprint_model.load_state_dict(torch.load(models_dir / "keyprint_net.pt", map_location="cpu", weights_only=True))
+        keyprint_model.to(device).eval()
+        hist_keyprint = prev_report["histories"]["KeyPrintNet"]
+        print("[Reuse] loaded saved KeyPrintNet weights + history")
+    else:
+        keyprint_model, hist_keyprint = train_keyprint_net(
+            splits["train"],
+            splits["val"],
+            val_trials,
+            bounds,
+            chan_mean,
+            chan_std,
+            device,
+            epochs=35,
+            batch_size=256,
+            use_augmentation=True,
+            raw_channels_only=False,
+            sentence_train=sent_train,
+            kr_fixed_train=kr_fixed_train,
+            sentence_val=sent_val,
+            tag="KeyPrintNet",
+            in_channels=N_CHANNELS,
+            touch_prob=TOUCH_PROB,
+            touch_hold=float(meta["touch_hold_impute_sec"]),
+        )
+    if not REUSE_WEIGHTS:
+        torch.save(keyprint_model.cpu().state_dict(), models_dir / "keyprint_net.pt")
     keyprint_model.to(device)
 
     train_emb_k = encode_sequences(keyprint_model, splits["train"].seq_scaled, device)
@@ -1357,6 +1396,76 @@ def main() -> None:
     open_set_touch = calibrate_open_set_threshold(banks["val_touch"], "emb", sent_cohort_touch, behavior_model, beta_touch)
     print(f"[Arena] open-set threshold on Validation: keyboard={open_set} touch={open_set_touch}")
 
+    # 6c. Deployed protocols that reject more impostors (README section 5.6)
+    # (a) Passwords: users pick their own string, so the score is calibrated on many strings typed by
+    #     real people (digraph synthesis from their free text), not on the single CMU password.
+    pw_rng = np.random.default_rng(SEED)
+    pw_tabs = digraph_tables(raw_sessions, kr_subjs["val"] + kr_subjs["test"])
+    pw_people = {sp: [p for p in kr_subjs[sp] if (p, 1) in pw_tabs and (p, 2) in pw_tabs] for sp in ("val", "test")}
+    pw_strings = {"val": choose_strings(raw_sessions, pw_tabs, pw_people["val"], 30, 30, pw_rng)}
+    pw_strings["test"] = choose_strings(raw_sessions, pw_tabs, pw_people["test"], 30, 30, pw_rng,
+                                        exclude=set(pw_strings["val"]["word"] + pw_strings["val"]["random"]))
+    emb9 = lambda T: encode_variable(legacy_model, list(T), device, L9)  # noqa: E731
+    emb17 = lambda T: encode_variable(keyprint_model, list(T), device, N_CHANNELS)  # noqa: E731
+    pw_cohorts = {"kb": cohort_l, "touch": cohort_l_touch}
+    pw_deployed_thr = {"kb": metrics_legacy["threshold"], "touch": password_touch["legacy_9ch_imputed_holds"]["threshold"]}
+    pw_rows = {sp: string_trials(raw_sessions, pw_tabs, pw_people[sp], pw_strings[sp], emb9, emb17, bounds, chan_mean, chan_std,
+                                 touch_hold, pw_cohorts, pw_rng) for sp in ("val", "test")}
+    pw_dual = calibrate_dual(pw_rows["val"], PASSWORD_FRR_TARGET)
+    pw_speed = person_speed(pw_tabs, pw_people["val"] + pw_people["test"])
+    pw_string_eval = evaluate_strings(pw_rows["test"], pw_dual, pw_deployed_thr, pw_speed)
+    print(f"[Password strings] dual calibration {pw_dual} | test {pw_string_eval}")
+
+    # (b) Template adaptation: a strict threshold rejects the owner once they get fluent at a new string
+    #     (KeyRecs fixed text typed 100x per session). Accepted attempts with z >= tau + margin join the
+    #     template; the margin is chosen on Validation people.
+    kf = pd.read_csv(root / "data" / "raw" / "KeyRecs-fixed-text.csv")
+    kf.columns = [c.strip() for c in kf.columns]
+    kf = kf.dropna(subset=KEYRECS_HOLD_COLS + KEYRECS_DD_COLS).reset_index(drop=True)
+    kf["rep"] = kf.groupby(["participant", "session"]).cumcount()
+    adapt_margins = (0.0, 0.5, 1.0, 1.5)
+    pw_adapt = {}
+    for sp in ("val", "test"):
+        sub = kf[kf["participant"].isin(kr_subjs[sp])].reset_index(drop=True)
+        hh = np.clip(sub[KEYRECS_HOLD_COLS].values.astype(np.float32), *bounds["H"])
+        dd = np.clip(sub[KEYRECS_DD_COLS].values.astype(np.float32), *bounds["DD"])
+        pw_adapt[sp] = {
+            mode: adaptation_eval(hh, dd, sub["participant"].values, sub["session"].values, sub["rep"].values, "vpwjkeurkb",
+                                  emb9, emb17, bounds, chan_mean, chan_std, touch_hold, pw_dual, pw_deployed_thr, pw_cohorts,
+                                  adapt_margins, np.random.default_rng(SEED), mode)
+            for mode in ("kb", "touch")
+        }
+
+    def _adapt_cost(r):
+        frr = np.mean([v for k, v in r.items() if k.startswith("frr_")])
+        return 0.5 * (frr + r["far"])
+
+    adapt_margin = min(adapt_margins, key=lambda mg: sum(_adapt_cost(pw_adapt["val"][md][f"dual_adapt_margin_{mg:g}"]) for md in ("kb", "touch")))
+    print(f"[Password adaptation] margin chosen on Validation = {adapt_margin} | test {pw_adapt['test']}")
+
+    # (c) Typing practice: 5 enrolment sentences, 2 query sentences, threshold + top1-top2 margin, tuned on
+    #     Validation to keep the single-sentence protocol's correct-accept rate while rejecting more outsiders.
+    arena_protocol = {}
+    for dev, vb, tb, coh, bta, old_thr in (
+        ("keyboard", banks["val"], banks["test"], sent_cohort, beta_kb, open_set["threshold"]),
+        ("touch", banks["val_touch"], banks["test_touch"], sent_cohort_touch, beta_touch, open_set_touch["threshold"]),
+    ):
+        mats = {
+            (sp, k, q): open_set_matrix(b, "emb", coh, behavior_model, bta, k, q)
+            for sp, b in (("val", vb), ("test", tb))
+            for k, q in ((3, 1), (ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES))
+        }
+        old_val = open_set_eval(mats[("val", 3, 1)], 5, old_thr, 0.0)
+        rule = tune_open_set_rule(mats[("val", ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES)], 5, old_val["correct_accept"])
+        arena_protocol[dev] = {"rule": rule, "validation_target_correct_accept": old_val["correct_accept"]}
+        for g in (3, 5, 10):
+            arena_protocol[dev][f"gallery_{g}"] = {
+                "single_sentence_enroll3": open_set_eval(mats[("test", 3, 1)], g, old_thr, 0.0),
+                "two_sentences_enroll5_margin": open_set_eval(mats[("test", ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES)], g,
+                                                              rule["threshold"], rule["margin"]),
+            }
+    print(f"[Arena protocol] {arena_protocol}")
+
     web_identification = {
         "keyboard": {
             "legacy_9ch": eval_web_identification(banks["test"], "emb_legacy", sent_cohort_legacy),
@@ -1388,12 +1497,12 @@ def main() -> None:
 
     kr_cands = {}
     for pid, sess in banks["test"].items():
-        if len(sess[1]) >= 5 and len(sess[2]) >= 2:
-            st = [capture_stats(c) for c in sess[1][:4]]
+        if len(sess[1]) >= ARENA_ENROLL_SENTENCES + 1 and len(sess[2]) >= 2:
+            st = [capture_stats(c) for c in sess[1][:ARENA_ENROLL_SENTENCES]]
             kr_cands[pid] = {
                 "cpm": float(np.mean([x["cpm"] for x in st])),
                 "rollover": float(np.mean([x["rolloverPct"] for x in st])),
-                "cv": dd_cv(sess[1][:4]),
+                "cv": dd_cv(sess[1][:ARENA_ENROLL_SENTENCES]),
             }
     test_df = splits["test"].df
     cmu_cands, cmu_rows = {}, {}
@@ -1422,7 +1531,7 @@ def main() -> None:
     ]
     mvp_sample_profiles = []
     for (name, color), kr_id, cmu_id in zip(sample_meta, _pick(kr_cands), _pick(cmu_cands)):
-        e_caps = banks["test"][kr_id][1][:4]
+        e_caps = banks["test"][kr_id][1][:ARENA_ENROLL_SENTENCES]
         beh = None
         for c in e_caps:
             beh = merge(beh, c["behavior"])
@@ -1436,6 +1545,8 @@ def main() -> None:
             pw_beh = merge(pw_beh, test_stats_cmu[i])
         pw_tmpl = template_payload(test_emb_l[idx], caps, pw_beh)
         pw_tmpl["target"] = ".tie5Roanl"
+        t17 = template_payload(test_emb_k[idx], caps, pw_beh)
+        pw_tmpl["enc17"] = {"centroid": t17["centroid"], "exemplars": t17["exemplars"]}
         g_row = test_df.iloc[g_i]
         pw_tmpl["testGenuineStroke"] = {
             **stroke_payload(fixed_stroke_capture(g_row[hold_cols_b], g_row[dd_cols_b], g_row[ud_cols_b], CMU_PASSWORD_CODES)),
@@ -1461,6 +1572,7 @@ def main() -> None:
         root / "web" / "scripts" / "fixtures" / "feature_parity.json",
         [fx_raw[0:150], fx_raw[600:760], fx_raw[1500:1640]],
         bounds, touch_hold, chan_mean, chan_std, behavior_model, beta_kb,
+        dual_params=pw_dual, display_slope=DISPLAY_SLOPE,
     )
 
     feature_upgrade = {
@@ -1491,6 +1603,14 @@ def main() -> None:
         "web_faithful_identification": web_identification,
         "arena_open_set": {"keyboard": open_set, "touch": open_set_touch},
         "web_capture_chars": WEB_CAPTURE_CHARS,
+        "password_user_strings": {
+            "strings": pw_strings,
+            "frr_target": PASSWORD_FRR_TARGET,
+            "dual_calibration": pw_dual,
+            "test": pw_string_eval,
+        },
+        "password_adaptation": {"margins": list(adapt_margins), "chosen_margin": adapt_margin, **pw_adapt},
+        "arena_protocol": {"enroll_sentences": ARENA_ENROLL_SENTENCES, "query_sentences": ARENA_QUERY_SENTENCES, **arena_protocol},
     }
 
     # 7. Export ONNX + Verify Numerical Parity + Export Web Assets
@@ -1542,8 +1662,21 @@ def main() -> None:
             },
             "sentence_cohort_centroids_touch": _r5(sent_cohort_touch),
             "behavior_profile": {**behavior_model.to_json(), "beta": betas},
-            "arena_open_set_threshold": open_set["threshold"],
-            "arena_open_set_threshold_touch": open_set_touch["threshold"],
+            "arena_open_set_threshold": arena_protocol["keyboard"]["rule"]["threshold"],
+            "arena_open_set_threshold_touch": arena_protocol["touch"]["rule"]["threshold"],
+            "arena_margin": arena_protocol["keyboard"]["rule"]["margin"],
+            "arena_margin_touch": arena_protocol["touch"]["rule"]["margin"],
+            "arena_enroll_sentences": ARENA_ENROLL_SENTENCES,
+            "arena_query_sentences": ARENA_QUERY_SENTENCES,
+            "password_dual": {
+                "keyboard": pw_dual["kb"],
+                "touch": pw_dual["touch"],
+                "slope": DISPLAY_SLOPE,
+                "adapt_margin": adapt_margin,
+                "adapt_keep": 12,
+                "frr_target": PASSWORD_FRR_TARGET,
+                "touch_reference_only": True,
+            },
             "calibrated_threshold_touch": password_touch["legacy_9ch_imputed_holds"]["threshold"],
             "mvp_sample_profiles": mvp_sample_profiles,
             "feature_metrics": {

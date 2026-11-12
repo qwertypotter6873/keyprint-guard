@@ -324,6 +324,52 @@ export function fuseScore(similarity, llr, beta) {
   return 1 / (1 + Math.exp(-logit));
 }
 
+function dotVec(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
+}
+
+/** Template similarity shared by every score: 0.65·cos(centroid) + 0.35·max cos(exemplar). */
+export function rawTemplateSimilarity(embedding, template) {
+  const c = dotVec(embedding, template.centroid);
+  let ex = c;
+  if (Array.isArray(template.exemplars) && template.exemplars.length > 0) {
+    ex = -1;
+    for (const e of template.exemplars) ex = Math.max(ex, dotVec(embedding, e));
+  }
+  return { raw: 0.65 * c + 0.35 * ex, centroidSim: c, exemplarSim: ex };
+}
+
+/**
+ * Password score for user-chosen strings (README §5.6): both encoders' template similarities are
+ * standardised by impostor statistics measured on many strings typed by real people and summed,
+ *   z = (raw9 − μ9)/σ9 + (raw17 − μ17)/σ17,
+ * then shown as similarity = sigmoid(slope·(z − τ)), so 0.5 is the calibrated decision point.
+ */
+export function dualPasswordScore(emb9, emb17, tmpl9, tmpl17, prm, slope = 1.0) {
+  const r9 = rawTemplateSimilarity(emb9, tmpl9);
+  const r17 = rawTemplateSimilarity(emb17, tmpl17);
+  const z = (r9.raw - prm.mu9) / prm.sd9 + (r17.raw - prm.mu17) / prm.sd17;
+  return { z, raw9: r9.raw, raw17: r17.raw, centroidSim: r9.centroidSim, similarity: 1 / (1 + Math.exp(-slope * (z - prm.tau))) };
+}
+
+/** Several captures typed in a row scored as one query: mean embedding, re-normalised. */
+export function combineEmbeddings(list) {
+  const dim = list[0].length;
+  const out = new Array(dim).fill(0);
+  for (const e of list) for (let d = 0; d < dim; d++) out[d] += e[d];
+  const n = Math.hypot(...out) || 1e-8;
+  return out.map((v) => v / n);
+}
+
+/** Open-set rule: the top candidate must clear the threshold AND lead the runner-up by `margin`. */
+export function openSetAccept(scoresDesc, threshold, margin = 0) {
+  if (!scoresDesc.length) return false;
+  const second = scoresDesc.length > 1 ? scoresDesc[1] : -Infinity;
+  return scoresDesc[0] >= threshold && scoresDesc[0] - second >= margin;
+}
+
 /** Human-readable summary of a behaviour profile for the UI. */
 export function describeBehavior(stats) {
   if (!stats) return null;

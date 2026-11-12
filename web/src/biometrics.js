@@ -2,9 +2,13 @@ import * as ort from 'onnxruntime-web';
 import {
   behaviorLlr,
   buildInputTensor,
+  dualPasswordScore,
   fuseScore,
   mergeBehavior,
+  openSetAccept,
 } from './features.js';
+
+export { combineEmbeddings } from './features.js';
 
 export { SmartKeystrokeRecorder } from './recorder.js';
 export { describeBehavior } from './features.js';
@@ -25,12 +29,11 @@ function dot(a, b) {
  * fixed passwords and diverse multi-sentence typing practice!). Behavioural statistics are
  * pooled as (sum, count) so the evidence behind every feature keeps accumulating.
  */
-export function mergeTemplateSample(existing, { embedding, cpm, holdMs, rolloverPct, behavior, inputMode }) {
-  const prevExemplars = existing?.exemplars ? [...existing.exemplars] : [];
+function appendExemplar(prev, embedding, keep = 12) {
+  const prevExemplars = prev?.exemplars ? [...prev.exemplars] : [];
   prevExemplars.push(embedding.map((v) => Math.round(v * 100000) / 100000));
   // Keep up to 12 most recent exemplars so synced payload stays tiny (~2 KB)
-  const exemplars = prevExemplars.slice(-12);
-
+  const exemplars = prevExemplars.slice(-keep);
   const dim = embedding.length;
   const centroid = new Array(dim).fill(0);
   for (const ex of exemplars) {
@@ -40,6 +43,16 @@ export function mergeTemplateSample(existing, { embedding, cpm, holdMs, rollover
   for (let d = 0; d < dim; d++) {
     centroid[d] = Math.round((centroid[d] / cNorm) * 100000) / 100000;
   }
+  return { centroid, exemplars };
+}
+
+/**
+ * `embedding17` (passwords only) keeps a parallel template in the 17-channel encoder space, so a
+ * password attempt can be scored by both encoders (dualPasswordScore).
+ */
+export function mergeTemplateSample(existing, { embedding, embedding17, cpm, holdMs, rolloverPct, behavior, inputMode }) {
+  const { centroid, exemplars } = appendExemplar(existing, embedding);
+  const enc17 = embedding17 ? appendExemplar(existing?.enc17, embedding17) : existing?.enc17 || null;
 
   const prevCount = existing?.count || 0;
   const nextCount = prevCount + 1;
@@ -55,6 +68,8 @@ export function mergeTemplateSample(existing, { embedding, cpm, holdMs, rollover
 
   const mergedBehavior = mergeBehavior(existing?.behavior || null, behavior || null);
   return {
+    ...(existing?.target ? { target: existing.target } : {}),
+    ...(enc17 ? { enc17 } : {}),
     centroid,
     exemplars,
     count: nextCount,
@@ -157,6 +172,31 @@ export class KeyPrintEngine {
     return base;
   }
 
+  /** Typing practice: the winner must also lead the runner-up by this margin (README §5.6). */
+  arenaMargin(inputMode = 'keyboard') {
+    const base = this.config?.arena_margin ?? 0;
+    if (inputMode === 'touch') return this.config?.arena_margin_touch ?? base;
+    return base;
+  }
+
+  /** Sentences per profile / per identification (deployed protocol from the pipeline). */
+  arenaProtocol() {
+    return {
+      enroll: this.config?.arena_enroll_sentences ?? 3,
+      query: this.config?.arena_query_sentences ?? 1,
+    };
+  }
+
+  /** True when the dual-encoder password score is available for this template. */
+  usesDualPassword(template) {
+    return Boolean(this.config?.password_dual && template?.enc17);
+  }
+
+  /** Mobile (touch) password verdicts are shown as reference only (README §5.6). */
+  passwordTouchReferenceOnly() {
+    return Boolean(this.config?.password_dual?.touch_reference_only);
+  }
+
   behaviorWeight(domain, inputMode = 'keyboard') {
     const beta = this.config?.behavior_profile?.beta;
     if (typeof beta === 'number') return beta;
@@ -165,7 +205,34 @@ export class KeyPrintEngine {
     return inputMode === 'touch' ? beta.sentence_touch ?? 0 : beta.sentence_keyboard ?? 0;
   }
 
-  scoreTemplate(embedding, template, { domain = 'password', threshold = null, behavior = null, inputMode = 'keyboard' } = {}) {
+  scoreTemplate(
+    embedding,
+    template,
+    { domain = 'password', threshold = null, thresholdOffset = 0, behavior = null, inputMode = 'keyboard', embedding17 = null } = {}
+  ) {
+    const dual = this.config?.password_dual;
+    if (domain === 'password' && dual && embedding17 && template?.enc17) {
+      // User-chosen passwords: both encoders, impostor-standardised on many real-typist strings
+      const prm = inputMode === 'touch' ? dual.touch : dual.keyboard;
+      const r = dualPasswordScore(embedding, embedding17, template, template.enc17, prm, dual.slope ?? 1.0);
+      const thr = threshold ?? 0.5 + thresholdOffset;
+      return {
+        method: 'dual',
+        similarity: r.similarity,
+        embeddingSimilarity: r.similarity,
+        behaviorLlr: 0,
+        behaviorWeight: 0,
+        behaviorParts: {},
+        centroidSim: r.centroidSim,
+        exemplarSim: null,
+        z: r.z,
+        accepted: r.similarity >= thr,
+        threshold: thr,
+        // template adaptation only on a confident accept (guards against an impostor drifting in)
+        adapt: r.similarity >= thr && r.z >= prm.tau + (dual.adapt_margin ?? 1.0),
+      };
+    }
+
     const cSim = dot(embedding, template.centroid);
     let maxExSim = cSim;
     if (Array.isArray(template.exemplars) && template.exemplars.length > 0) {
@@ -220,8 +287,11 @@ export class KeyPrintEngine {
       similarity = fuseScore(similarity, res.total, beta);
     }
 
-    const thr = threshold ?? (domain === 'password' ? this.passwordThreshold(inputMode) : this.arenaThreshold(inputMode));
+    const thr =
+      threshold ?? (domain === 'password' ? this.passwordThreshold(inputMode) : this.arenaThreshold(inputMode)) + thresholdOffset;
     return {
+      method: 'as_norm',
+      adapt: false,
       similarity,
       embeddingSimilarity,
       behaviorLlr: behaviorLlrTotal,
@@ -234,11 +304,16 @@ export class KeyPrintEngine {
     };
   }
 
-  identifyTypist(embedding, candidates, { openSetThreshold = null, behavior = null, inputMode = 'keyboard', domain = 'sentence' } = {}) {
+  identifyTypist(
+    embedding,
+    candidates,
+    { openSetThreshold = null, margin = null, behavior = null, inputMode = 'keyboard', domain = 'sentence' } = {}
+  ) {
     if (!Array.isArray(candidates) || candidates.length === 0) return null;
     if (openSetThreshold === null) {
       openSetThreshold = domain === 'sentence' ? this.arenaThreshold(inputMode) : this.passwordThreshold(inputMode);
     }
+    if (margin === null) margin = domain === 'sentence' ? this.arenaMargin(inputMode) : 0;
 
     const scored = candidates.map((cand) => {
       const res = this.scoreTemplate(embedding, cand.template, {
@@ -273,12 +348,20 @@ export class KeyPrintEngine {
     });
 
     const winner = scored[0];
-    const identified = winner.similarity >= openSetThreshold;
+    const identified = openSetAccept(
+      scored.map((it) => it.similarity),
+      openSetThreshold,
+      margin
+    );
+    const lead = scored.length > 1 ? winner.similarity - scored[1].similarity : Infinity;
 
     return {
       identified,
       winner,
       openSetThreshold,
+      margin,
+      lead,
+      rejectedByMargin: !identified && winner.similarity >= openSetThreshold,
       rankings: scored,
     };
   }

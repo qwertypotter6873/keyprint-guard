@@ -504,3 +504,83 @@ def eval_password_transfer(
         res["words"] = words
         out["repeated_words_unseen"] = res
     return out
+
+
+# ---------------------------------------------------------------------------------------
+# Typing practice open set at the deployed protocol: K enrolment sentences, Q query sentences
+# (embeddings of the Q sentences averaged, behaviour pooled), threshold + top1-top2 margin rule
+# ---------------------------------------------------------------------------------------
+def open_set_matrix(bank, emb_key: str, cohort: np.ndarray, behavior_model: Optional[BehaviorModel], beta: float,
+                    k_enroll: int, n_query: int, top_m: int = 16) -> Dict:
+    """Gallery-independent score matrix: every query (n_query consecutive captures of one session that
+    are not enrolment captures) x every person's K-capture template."""
+    people = [p for p in sorted(bank) if len(bank[p][1]) >= k_enroll + n_query and len(bank[p][2]) >= n_query]
+    tmpls = []
+    for p in people:
+        enr = bank[p][1][:k_enroll]
+        beh = None
+        for c in enr:
+            beh = merge(beh, c["behavior"])
+        tmpls.append(make_template(np.stack([c[emb_key] for c in enr]).astype(np.float64), beh))
+    q_person, q_session, rows = [], [], []
+    for pi, p in enumerate(people):
+        for s in (1, 2):
+            caps = bank[p][s][k_enroll:] if s == 1 else bank[p][s]
+            for i in range(0, len(caps) - n_query + 1, n_query):
+                grp = caps[i : i + n_query]
+                e = np.sum([c[emb_key] for c in grp], axis=0)
+                beh = None
+                for c in grp:
+                    beh = merge(beh, c["behavior"])
+                rows.append((e / (np.linalg.norm(e) + 1e-8), beh))
+                q_person.append(pi)
+                q_session.append(s)
+    S = np.zeros((len(rows), len(people)))
+    for j, t in enumerate(tmpls):
+        Q = np.stack([r[0] for r in rows]).astype(np.float64)
+        c_sim = Q @ t["centroid"]
+        raw = 0.65 * c_sim + 0.35 * np.max(Q @ t["exemplars"].T, axis=1)
+        k = min(top_m, len(cohort))
+        u = np.sort(cohort @ t["centroid"])[-k:]
+        q = np.sort(Q @ cohort.T, axis=1)[:, -k:]
+        z = (raw - 0.5 * (u.mean() + q.mean(1))) / (0.5 * (u.std() + 0.05 + q.std(1) + 0.05))
+        s = 1.0 / (1.0 + np.exp(-0.85 * (z - 0.15)))
+        if behavior_model is not None and beta > 0:
+            s = np.array([fuse(float(si), behavior_model.llr(r[1], t["behavior"])[0], beta) for si, r in zip(s, rows)])
+        S[:, j] = s
+    return {"S": S, "person": np.array(q_person), "session": np.array(q_session), "people": people}
+
+
+def open_set_eval(mat: Dict, gallery: int, threshold: float, margin: float, n_draw: int = 300, seed: int = 11) -> Dict[str, float]:
+    """Random galleries of `gallery` registered people; everyone else is an unregistered typist."""
+    S, P = mat["S"], mat["person"]
+    n = len(mat["people"])
+    rng = np.random.default_rng(seed)
+    tp = mis = fa = n_reg = n_out = 0
+    for _ in range(n_draw):
+        reg = rng.choice(n, size=min(gallery, n - 1), replace=False)
+        sub = S[:, reg]
+        order = np.argsort(-sub, axis=1)
+        s1 = sub[np.arange(len(sub)), order[:, 0]]
+        s2 = sub[np.arange(len(sub)), order[:, 1]] if sub.shape[1] > 1 else np.full(len(sub), -np.inf)
+        acc = (s1 >= threshold) & (s1 - s2 >= margin)
+        is_reg = np.isin(P, reg)
+        correct = reg[order[:, 0]] == P
+        tp += int(np.sum(acc & is_reg & correct)); mis += int(np.sum(acc & is_reg & ~correct)); n_reg += int(is_reg.sum())
+        fa += int(np.sum(acc & ~is_reg)); n_out += int((~is_reg).sum())
+    return {"correct_accept": round(tp / max(n_reg, 1), 4), "misidentified": round(mis / max(n_reg, 1), 4),
+            "outsider_accepted": round(fa / max(n_out, 1), 4)}
+
+
+def tune_open_set_rule(mat: Dict, gallery: int, target_correct_accept: float,
+                       margins: Sequence[float] = (0.0, 0.03, 0.05, 0.08, 0.12)) -> Dict[str, float]:
+    """Lowest outsider acceptance on Validation while keeping correct-accept >= target."""
+    best = None
+    for t in np.linspace(0.40, 0.98, 59):
+        for mg in margins:
+            r = open_set_eval(mat, gallery, float(t), mg, n_draw=80)
+            if r["correct_accept"] >= target_correct_accept and (best is None or r["outsider_accepted"] < best[0]):
+                best = (r["outsider_accepted"], float(round(t, 4)), mg)
+    if best is None:
+        return {"threshold": 0.5, "margin": 0.0}
+    return {"threshold": best[1], "margin": best[2]}

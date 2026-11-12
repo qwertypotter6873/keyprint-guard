@@ -6,19 +6,20 @@
  * Every non-localhost request is aborted and every WebSocket (MQTT room sync) is mocked
  * without a server, so no profile ever leaves the machine. Uses generic typist names only.
  *
- * Desktop (physical keyboard events):  enroll 2 typists x 3 sentences (with typos + Backspace),
- *   blind 1:N identification, password enroll x4, genuine accept / impostor reject, samples.
+ * Desktop (physical keyboard events):  enroll 2 typists x 5 sentences (with typos + Backspace),
+ *   blind 1:N identification from 2 sentences, password enroll x4 (both encoders), genuine accept with
+ *   template adaptation / impostor reject without adaptation, samples.
  * Mobile emulation (soft keyboard: keydown key='Unidentified' code='', text via `input` events,
  *   Korean IME composition states): the path that used to fail with
- *   "추출된 연속 리듬 구간이 부족합니다" must now enroll 3 sentences, identify, enroll a password
- *   and accept the genuine thumb typist.
+ *   "추출된 연속 리듬 구간이 부족합니다" must now enroll 5 sentences, identify, enroll a password
+ *   and accept the genuine thumb typist; the password verdict is labelled "모바일 참고용".
  *
  * Impostor checks with a leaked password are split in two:
  *   - functional (must pass): a desktop impostor whose tempo AND rhythm shape differ.
  *   - known limitation (reported, not fatal): other people who differ only in rhythm shape — two thumb
  *     typists on a phone and one same-tempo keyboard typist. On a user-chosen password the deployed
  *     score (AS-Norm against the CMU-password cohort) is inflated, so these can be accepted. Real-data
- *     numbers: README section 5.5 / PR #1. They print "⚠" and are counted separately.
+ *     numbers: README section 5.6 / PR #1. They print "⚠" and are counted separately.
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -255,7 +256,8 @@ const api = (page, fn, arg) => page.evaluate(fn, arg);
 async function enrollArena(page, name, lang, planFor) {
   await page.fill('#arena-name-input', name);
   const feedbacks = [];
-  for (let s = 0; s < 3; s++) {
+  const n = await api(page, () => window.__keyprintTestApi.engine.arenaProtocol().enroll);
+  for (let s = 0; s < n; s++) {
     const sentence = await api(page, () => window.__keyprintTestApi.state.arenaEnrollSentence);
     await runPlan(page, '#arena-enroll-input', planFor(sentence, s));
     await page.waitForTimeout(250);
@@ -270,20 +272,41 @@ async function enrollArena(page, name, lang, planFor) {
     },
     { name, lang },
   );
-  return { feedbacks, profile };
+  return { feedbacks, profile, expected: n };
 }
 
 async function blindIdentify(page, planFor) {
   await page.click('#arena-sub-blind');
-  const sentence = await api(page, () => window.__keyprintTestApi.state.arenaBlindSentence);
-  await runPlan(page, '#arena-blind-input', planFor(sentence));
+  await page.evaluate(() => { document.getElementById('arena-result-card').hidden = true; });
+  const n = await api(page, () => window.__keyprintTestApi.engine.arenaProtocol().query);
+  const interim = [];
+  for (let i = 0; i < n; i++) {
+    const sentence = await api(page, () => window.__keyprintTestApi.state.arenaBlindSentence);
+    await runPlan(page, '#arena-blind-input', planFor(sentence));
+    await page.waitForTimeout(200);
+    if (i < n - 1) {
+      interim.push({
+        feedback: (await page.textContent('#arena-blind-feedback'))?.trim(),
+        cardHidden: await page.evaluate(() => document.getElementById('arena-result-card').hidden),
+      });
+    }
+  }
   await page.waitForSelector('#arena-result-card:not([hidden])', { timeout: 5000 });
   await page.waitForTimeout(150);
   return {
     title: (await page.textContent('#arena-result-title'))?.trim(),
     meta: (await page.textContent('#arena-result-meta'))?.trim(),
     feedback: (await page.textContent('#arena-blind-feedback'))?.trim(),
+    interim,
+    sentences: n,
   };
+}
+
+async function pwTemplate(page, name) {
+  return api(page, (name) => {
+    const p = window.__keyprintTestApi.state.profiles.find((x) => x.name === name)?.password;
+    return p ? { count: p.count, ex9: p.exemplars?.length, ex17: p.enc17?.exemplars?.length, mode: p.inputMode } : null;
+  }, name);
 }
 
 async function enrollPassword(page, name, pw, planFor) {
@@ -301,6 +324,7 @@ async function enrollPassword(page, name, pw, planFor) {
 }
 
 async function verifyPassword(page, pw, plan) {
+  await page.evaluate(() => { document.getElementById('guard-result-card').hidden = true; });
   await runPlan(page, '#guard-verify-input', plan);
   await page.waitForSelector('#guard-result-card:not([hidden])', { timeout: 5000 });
   await page.waitForTimeout(150);
@@ -309,6 +333,8 @@ async function verifyPassword(page, pw, plan) {
     title: (await page.textContent('#guard-result-title'))?.trim(),
     score: (await page.textContent('#guard-result-score'))?.trim(),
     meta: (await page.textContent('#guard-result-meta'))?.trim(),
+    kicker: (await page.textContent('#guard-result-kicker'))?.trim(),
+    reference: await page.evaluate(() => document.getElementById('guard-result-card').dataset.reference === 'true'),
   };
 }
 
@@ -336,20 +362,27 @@ async function run() {
 
       await page.click('#lang-en-btn');
       const a = await enrollArena(page, 'Typist A', 'en', (s) => keyboardPlan(s, FAST, { typo: true }));
-      expect(a.profile && a.profile.count === 3 && a.profile.inputMode === 'keyboard' && a.profile.hasBehavior, `Typist A enrolled: ${JSON.stringify(a.profile)}`);
+      expect(a.expected === 5 && a.profile && a.profile.count === 5 && a.profile.inputMode === 'keyboard' && a.profile.hasBehavior, `Typist A enrolled (${a.expected} sentences): ${JSON.stringify(a.profile)}`);
       const b = await enrollArena(page, 'Typist B', 'en', (s, i) => keyboardPlan(s, SLOW, { typo: i === 0 }));
-      expect(b.profile && b.profile.count === 3, `Typist B enrolled: ${JSON.stringify(b.profile)}`);
+      expect(b.profile && b.profile.count === 5, `Typist B enrolled: ${JSON.stringify(b.profile)}`);
 
       const id = await blindIdentify(page, (s) => keyboardPlan(s, FAST, { typo: true }));
-      expect(id.title?.includes('Typist A'), `blind 1:N (keyboard) → "${id.title}" | ${id.meta}`);
+      expect(id.sentences === 2 && id.interim[0]?.cardHidden && /1\/2/.test(id.interim[0]?.feedback || ''), `identification waits for the 2nd sentence: "${id.interim[0]?.feedback}"`);
+      expect(id.title?.includes('Typist A'), `blind 1:N (keyboard, 2 sentences) → "${id.title}" | ${id.meta}`);
       if (SHOT_DIR) await page.screenshot({ path: path.join(SHOT_DIR, 'smoke_desktop_identify.png') });
 
       const pwFb = await enrollPassword(page, 'Typist A', 'gachon2026', (pw, r) => keyboardPlan(pw, FAST, { typo: r === 1 }));
       expect(!pwFb.some((f) => /부족|불일치|일치하지/.test(f || '')), `password enroll x4 (keyboard): ${pwFb.at(-1) || 'ok'}`);
+      const t0 = await pwTemplate(page, 'Typist A');
+      expect(t0 && t0.ex9 === 4 && t0.ex17 === 4, `password template holds both encoders: ${JSON.stringify(t0)}`);
       const genuine = await verifyPassword(page, 'gachon2026', keyboardPlan('gachon2026', FAST));
-      expect(genuine.pass, `genuine password login → ${genuine.title} ${genuine.score} | ${genuine.meta}`);
+      expect(genuine.pass && !genuine.reference, `genuine password login → ${genuine.title} ${genuine.score} | ${genuine.meta}`);
+      const t1 = await pwTemplate(page, 'Typist A');
+      expect(t1.count === t0.count + 1 && /등록 리듬 갱신/.test(genuine.meta), `confident genuine login adapts the template: ${t0.count} -> ${t1.count}`);
       const impostor = await verifyPassword(page, 'gachon2026', keyboardPlan('gachon2026', SLOW));
       expect(!impostor.pass, `impostor with leaked password → ${impostor.title} ${impostor.score}`);
+      const t2 = await pwTemplate(page, 'Typist A');
+      expect(t2.count === t1.count, `rejected attempt does not touch the template (count ${t2.count})`);
       const kbShape = await verifyPassword(page, 'gachon2026', keyboardPlan('gachon2026', FAST_OTHER_SHAPE));
       expectKnownLimitation(!kbShape.pass, `keyboard impostor (same tempo, other rhythm) rejected → ${kbShape.title} ${kbShape.score}`);
 
@@ -402,7 +435,7 @@ async function run() {
       const { page, errors } = await openApp(ctx, appUrl);
       const m = await enrollArena(page, '모바일 사용자', 'ko', (s, i) => touchPlan(s, THUMB, { typo: i === 1 }));
       expect(!m.feedbacks.some((f) => (f || '').includes('연속 리듬 구간이 부족')), `no INSUFFICIENT_CLEAN_KEYS: ${JSON.stringify(m.feedbacks)}`);
-      expect(m.profile && m.profile.count === 3 && m.profile.inputMode === 'touch', `Korean touch profile enrolled: ${JSON.stringify(m.profile)}`);
+      expect(m.profile && m.profile.count === 5 && m.profile.inputMode === 'touch', `Korean touch profile enrolled: ${JSON.stringify(m.profile)}`);
       const mid = await blindIdentify(page, (s) => touchPlan(s, THUMB));
       expect(Boolean(mid.title) && !/부족/.test(mid.feedback || ''), `blind 1:N (touch) → "${mid.title}" | ${mid.meta}`);
       if (SHOT_DIR) await page.screenshot({ path: path.join(SHOT_DIR, 'smoke_mobile_identify.png') });
@@ -411,6 +444,7 @@ async function run() {
       expect(!pwFb.some((f) => /부족|불일치|일치하지/.test(f || '')), `password enroll x4 (touch): ${pwFb.at(-1) || 'ok'}`);
       const mv = await verifyPassword(page, 'gachon2026', touchPlan('gachon2026', THUMB));
       expect(mv.pass, `genuine touch password login → ${mv.title} ${mv.score} | ${mv.meta}`);
+      expect(mv.reference && /모바일 참고용/.test(mv.kicker || ''), `touch password verdict labelled reference-only: "${mv.kicker}"`);
       const mi1 = await verifyPassword(page, 'gachon2026', touchPlan('gachon2026', THUMB_SLOW));
       expectKnownLimitation(!mi1.pass, `touch impostor (other rhythm, slower) rejected → ${mi1.title} ${mi1.score}`);
       const mi2 = await verifyPassword(page, 'gachon2026', touchPlan('gachon2026', THUMB_SAME_TEMPO));
@@ -437,7 +471,7 @@ async function run() {
   if (known.length) {
     console.log(
       `known-limitation impostor checks: ${known.length - knownFailed.length}/${known.length} rejected` +
-        (knownFailed.length ? ` — ${knownFailed.length} accepted (see README section 5.5)` : ''),
+        (knownFailed.length ? ` — ${knownFailed.length} accepted (see README section 5.6)` : ''),
     );
   }
   if (failed.length) process.exit(1);

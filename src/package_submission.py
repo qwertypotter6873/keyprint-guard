@@ -70,6 +70,7 @@ def build_zip() -> None:
         *sorted((root / "models" / "legacy").glob("*")),  # 9ch password encoder (.pt + .onnx)
         root / "models" / "evaluation_report.json",
         root / "models" / "password_calibration.json",
+        root / "models" / "typing_style_analysis.json",
         *sorted((root / "assets" / "figures").glob("*.png")),
         *sorted((root / "assets" / "screenshots").glob("*.png")),
         root / "web" / "package.json",

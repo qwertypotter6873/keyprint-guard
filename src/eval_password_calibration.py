@@ -13,10 +13,13 @@ the deployed 9-channel password encoder, on keyboard and simulated touch (holds 
                      `because`): content never trained as a password; genuine attempts split
                      into the enrollment day and the following day
 
-Two decision rules:
-  * deployed  — AS-Norm score >= the deployed threshold (web/public/models/model_config.json)
-  * raw       — template cosine similarity (no cohort) >= a threshold tuned on CMU val
-                (max macro-F1, the pipeline's rule). Nothing else is used for tuning.
+Decision rules compared:
+  * as_norm   — previous rule: AS-Norm (9ch) >= calibrated_threshold(_touch) from CMU validation
+  * raw       — 9ch template similarity (no cohort) >= a threshold tuned on CMU val (max macro-F1)
+  * dual      — deployed rule: 9ch + 17ch template similarities standardised and summed, >= tau
+                (password_dual in model_config.json, calibrated by the pipeline on many strings
+                typed by Validation people; see src/password_synth.py). No template adaptation here;
+                its effect is in evaluation_report.json -> feature_upgrade.password_adaptation.
 
 Prints a table and writes models/password_calibration.json.
 
@@ -62,7 +65,7 @@ TOP_M = 12
 MODES = ("kb", "touch")
 
 
-def build_scenarios(root: Path, device) -> tuple[dict, dict]:
+def build_scenarios(root: Path, device, which: str = "9") -> tuple[dict, dict]:
     """Trial groups (enroll embeddings, genuine embeddings, impostor embeddings) per scenario."""
     with tempfile.TemporaryDirectory() as tmp:  # keep data/processed untouched
         splits, meta = prepare_full_pipeline(root / "data" / "raw" / "DSL-StrongPasswordData.csv", Path(tmp), seed=SEED)
@@ -72,8 +75,10 @@ def build_scenarios(root: Path, device) -> tuple[dict, dict]:
     bounds = {k: tuple(v) for k, v in meta["outlier_bounds"].items()}
     touch_hold = float(meta["touch_hold_impute_sec"])
 
-    model = KeyPrintNet(in_channels=L9, hidden_channels=80, embed_dim=64, dropout=0.18)
-    model.load_state_dict(torch.load(root / "models" / "legacy" / "keyprint_net_9ch.pt", map_location="cpu", weights_only=True))
+    IN = L9 if which == "9" else 17
+    model = KeyPrintNet(in_channels=IN, hidden_channels=80, embed_dim=64, dropout=0.18)
+    weights = root / "models" / "legacy" / "keyprint_net_9ch.pt" if which == "9" else root / "models" / "keyprint_net.pt"
+    model.load_state_dict(torch.load(weights, map_location="cpu", weights_only=True))
     model.to(device).eval()
 
     def seqs(h, d, kb, touch):
@@ -90,9 +95,9 @@ def build_scenarios(root: Path, device) -> tuple[dict, dict]:
 
     tr_h, tr_d = cmu_hd(splits["train"])
     cohorts = {
-        "kb": compute_cohort_centroids(encode_sequences(model, splits["train"].seq_scaled[:, :L9], device), splits["train"].subject_ids),
+        "kb": compute_cohort_centroids(encode_sequences(model, splits["train"].seq_scaled[:, :IN], device), splits["train"].subject_ids),
         "touch": compute_cohort_centroids(
-            encode_sequences(model, seqs(tr_h, tr_d, splits["train"].key_block, True)[:, :L9], device), splits["train"].subject_ids
+            encode_sequences(model, seqs(tr_h, tr_d, splits["train"].key_block, True)[:, :IN], device), splits["train"].subject_ids
         ),
     }
     scen: dict = {}
@@ -104,11 +109,11 @@ def build_scenarios(root: Path, device) -> tuple[dict, dict]:
         bh, bd = flat_to_hdu(trials["bot_flat"])
         for mode in MODES:
             if mode == "kb":
-                emb = encode_sequences(model, splits[part].seq_scaled[:, :L9], device)
-                bemb = encode_sequences(model, trials["bot_seq"][:, :L9], device)
+                emb = encode_sequences(model, splits[part].seq_scaled[:, :IN], device)
+                bemb = encode_sequences(model, trials["bot_seq"][:, :IN], device)
             else:
-                emb = encode_sequences(model, seqs(h, d, splits[part].key_block, True)[:, :L9], device)
-                bemb = encode_sequences(model, seqs(bh.astype(np.float32), bd.astype(np.float32), splits[part].key_block, True)[:, :L9], device)
+                emb = encode_sequences(model, seqs(h, d, splits[part].key_block, True)[:, :IN], device)
+                bemb = encode_sequences(model, seqs(bh.astype(np.float32), bd.astype(np.float32), splits[part].key_block, True)[:, :IN], device)
             scen[f"cmu_{part}_{mode}"] = [
                 (emb[g["enroll_idx"][:4]], emb[g["gen_idx"]], np.concatenate([emb[g["imp_idx"]], bemb[g["bot_idx"]]]))
                 for g in trials["groups"]
@@ -133,7 +138,7 @@ def build_scenarios(root: Path, device) -> tuple[dict, dict]:
                     imp.extend(rng.choice(cand, size=min(10, len(cand)), replace=False).tolist())
             imp_pick[p] = imp
         for mode in MODES:
-            emb = encode_variable(model, list(seqs(h, d, KEYRECS_FIXED_KEY_BLOCK, mode == "touch")), device, L9)
+            emb = encode_variable(model, list(seqs(h, d, KEYRECS_FIXED_KEY_BLOCK, mode == "touch")), device, IN)
             groups = []
             for p in np.unique(P):
                 own = np.where(P == p)[0]
@@ -180,7 +185,7 @@ def build_scenarios(root: Path, device) -> tuple[dict, dict]:
                         dc = np.clip(dd, *bounds["DD"]).astype(np.float32)[None]
                         tensors.append(seqs(hh, dc, kbm[None], mode == "touch")[0])
                         index[(p, s, k)] = len(tensors) - 1
-            emb = encode_variable(model, tensors, device, L9)
+            emb = encode_variable(model, tensors, device, IN)
             for p in enrolled:
                 s1 = [index[(p, 1, k)] for k in range(len(per[p][1]))]
                 s2 = [index[(p, 2, k)] for k in range(len(per[p][2]))]
@@ -235,23 +240,34 @@ def main() -> None:
     device = torch.device("cpu")
     cfg = json.loads((root / "web" / "public" / "models" / "model_config.json").read_text(encoding="utf-8"))
     deployed = {"kb": float(cfg["calibrated_threshold"]), "touch": float(cfg["calibrated_threshold_touch"])}
+    dual = cfg["password_dual"]
+    dual_prm = {"kb": dual["keyboard"], "touch": dual["touch"]}
 
-    scen, info = build_scenarios(root, device)
-    scored = {k: score(v, info["cohorts"]["touch" if k.endswith("touch") else "kb"]) for k, v in scen.items()}
+    scen9, info = build_scenarios(root, device, "9")
+    scen17, _ = build_scenarios(root, device, "17")
+    scored = {}
+    for k in scen9:
+        mode = "touch" if k.endswith("touch") else "kb"
+        y, a, r = score(scen9[k], info["cohorts"][mode])
+        _, _, r17 = score(scen17[k], info["cohorts"][mode])  # cohort unused for raw17
+        p = dual_prm[mode]
+        scored[k] = (y, a, r, (r - p["mu9"]) / p["sd9"] + (r17 - p["mu17"]) / p["sd17"])
     raw_thr = {m: f1_threshold(scored[f"cmu_val_{m}"][0], scored[f"cmu_val_{m}"][2]) for m in MODES}
 
     out = {
-        "deployed_threshold": deployed,
+        "as_norm_threshold": deployed,
         "raw_threshold_cmu_val": {m: round(v, 4) for m, v in raw_thr.items()},
+        "dual": dual_prm,
         "words": info["words"],
         "scenarios": {},
     }
-    print(f"deployed AS-Norm thresholds {deployed} | raw thresholds tuned on CMU val {out['raw_threshold_cmu_val']}")
-    print(f"{'scenario':24s} {'gen/imp':>10s} {'AUC':>6s} {'EER':>6s} {'EER thr':>8s} | {'deployed FAR / FRR':>18s} | {'raw FAR / FRR':>15s}")
-    for k, (y, a, r) in scored.items():
+    print(f"AS-Norm thresholds {deployed} | raw thresholds (CMU val) {out['raw_threshold_cmu_val']} | dual tau "
+          f"{ {m: p['tau'] for m, p in dual_prm.items()} }")
+    print(f"{'scenario':24s} {'gen/imp':>10s} | {'AS-Norm AUC  FAR / FRR':>24s} | {'raw FAR / FRR':>15s} | {'dual AUC  FAR / FRR':>21s}")
+    for k, (y, a, r, z) in scored.items():
         m = "touch" if k.endswith("touch") else "kb"
         eer, eer_thr = eer_point(y, a)
-        dep, raw = rates(y, a, deployed[m]), rates(y, r, raw_thr[m])
+        dep, raw, du = rates(y, a, deployed[m]), rates(y, r, raw_thr[m]), rates(y, z, dual_prm[m]["tau"])
         out["scenarios"][k] = {
             "num_genuine": int((y == 1).sum()),
             "num_impostor": int((y == 0).sum()),
@@ -259,12 +275,14 @@ def main() -> None:
             "as_norm_eer": eer,
             "as_norm_eer_threshold": eer_thr,
             "raw_auc": round(float(roc_auc_score(y, r)), 4),
-            "deployed": dep,
+            "dual_auc": round(float(roc_auc_score(y, z)), 4),
+            "as_norm": dep,
             "raw_cmu_val_threshold": raw,
+            "dual": du,
         }
         print(
-            f"{k:24s} {int((y == 1).sum()):4d}/{int((y == 0).sum()):<5d} {out['scenarios'][k]['as_norm_auc']:6.3f} {eer * 100:5.1f}% {eer_thr:8.3f} | "
-            f"{dep['far'] * 100:7.1f} / {dep['frr'] * 100:5.1f}% | {raw['far'] * 100:5.1f} / {raw['frr'] * 100:5.1f}%"
+            f"{k:24s} {int((y == 1).sum()):4d}/{int((y == 0).sum()):<5d} | {out['scenarios'][k]['as_norm_auc']:.3f} {dep['far'] * 100:6.1f} / {dep['frr'] * 100:5.1f}% | "
+            f"{raw['far'] * 100:5.1f} / {raw['frr'] * 100:5.1f}% | {out['scenarios'][k]['dual_auc']:.3f} {du['far'] * 100:5.1f} / {du['frr'] * 100:5.1f}%"
         )
     path = root / "models" / "password_calibration.json"
     path.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")

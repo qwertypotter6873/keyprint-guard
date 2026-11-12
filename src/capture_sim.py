@@ -315,6 +315,8 @@ def export_parity_fixture(
     std: np.ndarray,
     behavior_model: BehaviorModel,
     beta: float,
+    dual_params: Optional[Dict[str, Dict[str, float]]] = None,
+    display_slope: float = 1.0,
 ) -> None:
     cases = []
     for seg_idx, raw in enumerate(raw_segments):
@@ -348,9 +350,42 @@ def export_parity_fixture(
         a, b = cases[i]["expected"]["behavior"], cases[i + 2]["expected"]["behavior"]
         total, parts = behavior_model.llr(a, b)
         llr_cases.append({"query": i, "enroll": i + 2, "llr": total, "parts": parts, "fused_at_0_6": fuse(0.6, total, beta)})
+    # Score-rule expectations (dual password score, multi-sentence query, open-set margin)
+    rng = np.random.default_rng(0)
+    unit = lambda n: (lambda v: v / np.linalg.norm(v, axis=-1, keepdims=True))(rng.standard_normal((n, 64)))  # noqa: E731
+    score_cases = []
+    for mode, prm in (dual_params or {}).items():
+        for _ in range(3):
+            e9, e17 = unit(4), unit(4)
+            base9, base17 = unit(1)[0], unit(1)[0]
+            e9 = (e9 + 1.5 * base9) / np.linalg.norm(e9 + 1.5 * base9, axis=1, keepdims=True)
+            e17 = (e17 + 1.5 * base17) / np.linalg.norm(e17 + 1.5 * base17, axis=1, keepdims=True)
+            q9 = (unit(1)[0] + 1.2 * base9); q9 /= np.linalg.norm(q9)
+            q17 = (unit(1)[0] + 1.2 * base17); q17 /= np.linalg.norm(q17)
+            t9, t17 = make_template(e9), make_template(e17)
+            r9 = 0.65 * float(q9 @ t9["centroid"]) + 0.35 * float(np.max(t9["exemplars"] @ q9))
+            r17 = 0.65 * float(q17 @ t17["centroid"]) + 0.35 * float(np.max(t17["exemplars"] @ q17))
+            z = (r9 - prm["mu9"]) / prm["sd9"] + (r17 - prm["mu17"]) / prm["sd17"]
+            score_cases.append({
+                "mode": mode, "prm": prm, "slope": display_slope,
+                "q9": q9.tolist(), "q17": q17.tolist(),
+                "t9": {"centroid": t9["centroid"].tolist(), "exemplars": t9["exemplars"].tolist()},
+                "t17": {"centroid": t17["centroid"].tolist(), "exemplars": t17["exemplars"].tolist()},
+                "z": z, "similarity": 1.0 / (1.0 + math.exp(-display_slope * (z - prm["tau"]))),
+            })
+    pair = unit(2)
+    combined = pair.sum(0) / np.linalg.norm(pair.sum(0))
+    open_set_cases = [
+        {"scores": [0.91, 0.80, 0.4], "threshold": 0.85, "margin": 0.05, "accept": True},
+        {"scores": [0.91, 0.88, 0.4], "threshold": 0.85, "margin": 0.05, "accept": False},
+        {"scores": [0.84, 0.30], "threshold": 0.85, "margin": 0.0, "accept": False},
+        {"scores": [0.86], "threshold": 0.85, "margin": 0.08, "accept": True},
+    ]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump({"beta": beta, "cases": cases, "llr_cases": llr_cases}, f, ensure_ascii=False)
+        json.dump({"beta": beta, "cases": cases, "llr_cases": llr_cases, "score_cases": score_cases,
+                   "combine_case": {"inputs": pair.tolist(), "expected": combined.tolist()},
+                   "open_set_cases": open_set_cases}, f, ensure_ascii=False)
 
 
 def ms_rounded(raw: Sequence[Tuple[str, float, float]]) -> List[Tuple[str, float, float]]:

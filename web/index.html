@@ -85,9 +85,11 @@
             </label>
 
             <div class="progress-group" aria-live="polite">
-              <span id="arena-step-text" class="step-label">문장 1 / 3</span>
+              <span id="arena-step-text" class="step-label">문장 1 / 5</span>
               <div id="arena-step-dots" class="step-dots" aria-hidden="true">
                 <span class="dot is-current"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
                 <span class="dot"></span>
                 <span class="dot"></span>
               </div>
@@ -128,9 +130,18 @@
 
         <!-- Subview A2: Blind Identification ("Who Is Typing?") -->
         <div id="arena-blind-panel" class="panel-body" hidden>
-          <p class="section-caption">
-            매번 <strong>새로운 문장</strong>이 출제됩니다. 등록된 참가자 중 아무나 한 문장을 타이핑해 보세요.
-          </p>
+          <div class="enroll-meta-row">
+            <p class="section-caption">
+              매번 <strong>새로운 문장</strong>이 출제됩니다. 등록된 참가자 중 아무나 <strong id="arena-blind-need">문장 2개</strong>를 이어서 타이핑하면 판별합니다.
+            </p>
+            <div class="progress-group" aria-live="polite">
+              <span id="arena-blind-step-text" class="step-label">문장 1 / 2</span>
+              <div id="arena-blind-step-dots" class="step-dots" aria-hidden="true">
+                <span class="dot is-current"></span>
+                <span class="dot"></span>
+              </div>
+            </div>
+          </div>
 
           <div class="typing-box">
             <div class="telemetry-row">

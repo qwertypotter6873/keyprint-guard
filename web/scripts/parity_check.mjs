@@ -7,7 +7,8 @@
  *    src/visualize_and_run.py from real KeyRecs typo-laden segments, keyboard + touch) through
  *    the browser SmartKeystrokeRecorder and checks that the clean stroke, the 17-channel model
  *    tensor, the behaviour statistics and the behaviour LLR / fused score match the Python
- *    reference implementation (src/capture_sim.py, src/behavior_profile.py).
+ *    reference implementation (src/capture_sim.py, src/behavior_profile.py), and that the score rules
+ *    (dual-encoder password score, multi-sentence query, open-set margin) match Python.
  * 2) Unit-tests the mobile input paths that used to fail ("추출된 연속 리듬 구간이 부족합니다"):
  *    soft-keyboard events without key codes, Korean IME composition, autocorrect replacement,
  *    OS auto-repeat and Ctrl+Backspace.
@@ -17,7 +18,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SmartKeystrokeRecorder } from '../src/recorder.js';
-import { behaviorLlr, buildInputTensor, fuseScore, textToKeystrokes } from '../src/features.js';
+import {
+  behaviorLlr,
+  buildInputTensor,
+  combineEmbeddings,
+  dualPasswordScore,
+  fuseScore,
+  openSetAccept,
+  textToKeystrokes,
+} from '../src/features.js';
 import { validateSentenceCapture } from '../src/validation.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -143,6 +152,24 @@ for (const lc of fixture.llr_cases) {
   check(close(fused, lc.fused_at_0_6, 1e-6), `fused score JS=${fused} PY=${lc.fused_at_0_6}`);
   console.log(`  ✓ LLR ${lc.query}->${lc.enroll}: ${total.toFixed(4)} (fused@0.6 = ${fused.toFixed(4)})`);
 }
+
+for (const sc of fixture.score_cases || []) {
+  const r = dualPasswordScore(sc.q9, sc.q17, sc.t9, sc.t17, sc.prm, sc.slope);
+  check(close(r.z, sc.z, 1e-6), `dual password z (${sc.mode}): JS=${r.z} PY=${sc.z}`);
+  check(close(r.similarity, sc.similarity, 1e-7), `dual password similarity (${sc.mode}): JS=${r.similarity} PY=${sc.similarity}`);
+}
+if (fixture.score_cases?.length) console.log(`  ✓ dual password score: ${fixture.score_cases.length} cases (keyboard + touch parameters)`);
+if (fixture.combine_case) {
+  const got = combineEmbeddings(fixture.combine_case.inputs);
+  check(got.every((v, i) => close(v, fixture.combine_case.expected[i], 1e-9)), 'two-sentence query embedding (mean, re-normalised)');
+  console.log('  ✓ two-sentence query embedding');
+}
+for (const oc of fixture.open_set_cases || []) {
+  check(openSetAccept(oc.scores, oc.threshold, oc.margin) === oc.accept, `open-set rule ${JSON.stringify(oc)}`);
+}
+if (fixture.open_set_cases?.length) console.log(`  ✓ open-set threshold + margin rule: ${fixture.open_set_cases.length} cases`);
+check(Boolean(config.password_dual?.keyboard && config.password_dual?.touch), 'model_config.json has dual password parameters');
+check(config.arena_enroll_sentences === 5 && config.arena_query_sentences === 2, 'typing practice protocol: 5 enrolment / 2 query sentences');
 
 // ---------------------------------------------------------------------------------------
 // 2) Unit tests
