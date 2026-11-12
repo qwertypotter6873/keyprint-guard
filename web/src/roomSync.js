@@ -5,7 +5,9 @@ const BROKERS = [
   'wss://broker.hivemq.com:8884/mqtt',
 ];
 
-const TOPIC_NS = 'keyprint-agy-mvp-v2';
+// v3: 17-channel encoder — embeddings from the 9-channel model are incompatible, so profiles
+// live in a fresh namespace instead of silently mixing with old ones.
+const TOPIC_NS = 'keyprint-agy-mvp-v3';
 
 export function sanitizeRoomCode(raw) {
   const cleaned = String(raw || '')
@@ -110,7 +112,7 @@ export class RoomProfileSync {
   }
 
   _storageKey() {
-    return `keyprint_mvp_room_${this.roomCode}`;
+    return `keyprint_mvp_v3_room_${this.roomCode}`;
   }
 
   _profileTopic(id = '+') {

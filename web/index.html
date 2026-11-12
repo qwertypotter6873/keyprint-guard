@@ -113,6 +113,7 @@
             <input
               type="text"
               id="arena-enroll-input"
+              enterkeyhint="done"
               class="typing-input"
               placeholder="위 문장을 자연스럽게 따라 치고 Enter를 누르세요"
               autocomplete="off"
@@ -150,6 +151,7 @@
             <input
               type="text"
               id="arena-blind-input"
+              enterkeyhint="done"
               class="typing-input"
               placeholder="아무나 이 문장을 치고 Enter를 누르면 누군지 판별합니다"
               autocomplete="off"
@@ -202,9 +204,9 @@
           </div>
 
           <div id="guard-threshold-group" class="lang-switch" role="group" aria-label="보안 민감도">
-            <button type="button" data-tau="0.41" class="lang-btn tau-btn">여유</button>
-            <button type="button" data-tau="0.49" class="lang-btn tau-btn is-active">표준</button>
-            <button type="button" data-tau="0.58" class="lang-btn tau-btn">엄격</button>
+            <button type="button" data-tau-offset="-0.08" class="lang-btn tau-btn">여유</button>
+            <button type="button" data-tau-offset="0" class="lang-btn tau-btn is-active">표준</button>
+            <button type="button" data-tau-offset="0.09" class="lang-btn tau-btn">엄격</button>
           </div>
         </div>
 
@@ -248,6 +250,7 @@
               <input
                 type="text"
                 id="guard-verify-input"
+              enterkeyhint="done"
                 class="typing-input pw-typing-input"
                 placeholder="비밀번호를 타이핑하고 Enter를 누르세요"
                 autocomplete="off"
@@ -325,6 +328,7 @@
             <input
               type="text"
               id="guard-enroll-input"
+              enterkeyhint="done"
               class="typing-input pw-typing-input"
               placeholder="위 비밀번호를 평소 리듬대로 타이핑 후 Enter (4회)"
               autocomplete="off"
@@ -346,7 +350,7 @@
           <div class="viz-flow-pills" aria-hidden="true">
             <span class="flow-pill">01 물리 타건 &amp; 오타 봉합</span>
             <span class="flow-arrow">→</span>
-            <span class="flow-pill">02 속도 불변 9채널 · KeyPrintNet</span>
+            <span class="flow-pill">02 속도 불변 17채널 · KeyPrintNet</span>
             <span class="flow-arrow">→</span>
             <span class="flow-pill">03 다중 문장 프로필 수렴 &amp; 분리</span>
           </div>
@@ -417,7 +421,7 @@
           </div>
 
           <details class="viz-details">
-            <summary>추출되는 9채널 생체역학 특징 텐서 [1, 9, L] 및 KeyPrintNet 구조 보기</summary>
+            <summary>추출되는 17채널 특징 텐서 [1, 17, L]·행동 프로필 및 KeyPrintNet 구조 보기</summary>
             <div class="details-grid">
               <div class="detail-col">
                 <strong>① 물리 타이밍 (Ch 0~3)</strong>
@@ -428,8 +432,16 @@
                 <p>문장 평균 대비 상대 비율(<code>Rel_H</code>, <code>Rel_DD</code>), 듀티비, 롤오버 크기와 함께 백스페이스 봉합점의 가속도(<code>Local_Accel</code>)를 <code>0</code>으로 리셋해 인위적 튀는 값을 차단합니다.</p>
               </div>
               <div class="detail-col">
-                <strong>③ KeyPrintNet (592KB ONNX)</strong>
-                <p>상대 위치 고조파 + 다중 스케일 잔차 SE-Conv1D + 6모드 DCT 스펙트럼 풀링으로 문장 길이에 무관하게 <code>64-D</code> 단위 초구면 벡터로 압축합니다.</p>
+                <strong>③ 키 위치·손가락 (Ch 9~15) + 누름 시간 유효 플래그 (Ch 16)</strong>
+                <p>어떤 키에서 어떤 키로 이동했는지(행·열 좌표, 이동 거리, 같은 손·같은 손가락 여부)를 넣어 키별 누름 습관과 접근 속도를 학습합니다. 누름 시간을 알 수 없는 터치 키보드는 <code>Hold_Valid = 0</code>으로 표시해 같은 모델이 모바일 입력도 처리합니다.</p>
+              </div>
+              <div class="detail-col">
+                <strong>④ 행동 프로필 (모델 밖 통계)</strong>
+                <p>백스페이스 비율·한 번에 지우는 길이·오타 인지/재개 지연, Shift·CapsLock 사용 방식, 멈춤 리듬을 누적합니다. 관찰 횟수가 적은 특징은 자동으로 영향이 0에 가까워지고, 융합 가중치는 검증 데이터로 정합니다.</p>
+              </div>
+              <div class="detail-col">
+                <strong>⑤ KeyPrintNet 인코더 2개 (각 600KB ONNX)</strong>
+                <p>상대 위치 고조파 + 다중 스케일 잔차 SE-Conv1D + 6모드 DCT 스펙트럼 풀링으로 길이에 무관하게 <code>64-D</code> 단위 초구면 벡터로 압축합니다. 타자연습 문장은 17채널 인코더를, 비밀번호는 사람마다 내용이 달라 학습에 없던 문자열이므로 키 정보를 보지 않는 9채널(Ch 0~8) 인코더를 씁니다.</p>
               </div>
             </div>
           </details>

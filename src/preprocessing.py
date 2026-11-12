@@ -18,6 +18,15 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from keyboard_layout import (
+    CMU_PASSWORD_CODES,
+    KEY_CHANNEL_NAMES,
+    KEYRECS_FIXED_CODES,
+    code_for_label,
+    key_channel_matrix,
+    pairs_from_codes,
+)
+
 SEED = 42
 
 # 11 keys typed for ".tie5Roanl" + Return -> 10 consecutive digraph transitions
@@ -48,7 +57,7 @@ DIGRAPH_LABELS: List[str] = [
     "l→Enter",
 ]
 
-CHANNEL_NAMES: List[str] = [
+TIMING_CHANNEL_NAMES: List[str] = [
     "H_curr",        # 0: Hold duration of key t (s)
     "H_next",        # 1: Hold duration of key t+1 (s)
     "DD",            # 2: Press-to-Press latency keydown[t+1] - keydown[t] (s)
@@ -59,6 +68,20 @@ CHANNEL_NAMES: List[str] = [
     "Rollover_Mag",  # 7: Simultaneous key overlap max(0, -UD_t) (s)
     "Local_Accel",   # 8: Local rhythm acceleration DD_t - DD_{t-1} (s)
 ]
+
+# 9 timing channels + 7 physical key-identity channels + 1 hold-validity flag = 17 channels.
+# The first 9 channels are bit-identical to the legacy 9-channel model input.
+CHANNEL_NAMES: List[str] = TIMING_CHANNEL_NAMES + KEY_CHANNEL_NAMES + [
+    "Hold_Valid",    # 16: 1 = real keydown/keyup hold measured, 0 = hold unknown (touch keyboard)
+]
+N_TIMING_CHANNELS = len(TIMING_CHANNEL_NAMES)
+N_CHANNELS = len(CHANNEL_NAMES)
+HOLD_VALID_IDX = N_CHANNELS - 1
+UNSCALED_CHANNELS = (HOLD_VALID_IDX,)  # binary flag fed to the network as-is
+TOUCH_PROB = 0.18  # fraction of training samples converted to touch-keyboard (hold-less) inputs
+
+CMU_KEY_BLOCK = key_channel_matrix(pairs_from_codes(CMU_PASSWORD_CODES))          # (7, 10)
+KEYRECS_FIXED_KEY_BLOCK = key_channel_matrix(pairs_from_codes(KEYRECS_FIXED_CODES))  # (7, 9)
 
 KEYRECS_HOLD_COLS: List[str] = [
     "DU.v.v", "DU.p.p", "DU.w.w", "DU.j.j", "DU.k.k",
@@ -74,12 +97,13 @@ KEYRECS_DD_COLS: List[str] = [
 class SplitData:
     df: pd.DataFrame
     raw_flat: np.ndarray        # (N, F) clipped flat timing vector (for statistical baseline)
-    seq_unscaled: np.ndarray    # (N, 9, M) unscaled 9-channel sequence
-    seq_scaled: np.ndarray      # (N, 9, M) Z-score standardized 9-channel sequence
+    seq_unscaled: np.ndarray    # (N, 17, M) unscaled 17-channel sequence
+    seq_scaled: np.ndarray      # (N, 17, M) Z-score standardized 17-channel sequence
     subject_ids: np.ndarray     # (N,) integer label within split
     subjects: List[str]         # Unique subject codes in this split
     sessions: np.ndarray        # (N,) session index
     reps: np.ndarray            # (N,) repetition / chunk index
+    key_block: np.ndarray = None  # (7, M) key-identity channels (identical for every sample)
 
 
 @dataclass
@@ -88,13 +112,15 @@ class SentenceSplitData:
     dds: np.ndarray             # (N, M) clipped press-to-press latencies in seconds
     uds: np.ndarray             # (N, M) clipped flight latencies in seconds
     raw_flat: np.ndarray        # (N, 3*M+1) flat vector for statistical baseline
-    seq_unscaled: np.ndarray    # (N, 9, M)
-    seq_scaled: np.ndarray      # (N, 9, M)
+    seq_unscaled: np.ndarray    # (N, 17, M)
+    seq_scaled: np.ndarray      # (N, 17, M)
     subject_ids: np.ndarray     # (N,) local subject index 0..len(subjects)-1
     subjects: List[str]         # Unique participant IDs
     sessions: np.ndarray        # (N,) session 1 or 2
     chunk_ids: np.ndarray       # (N,) sequential chunk index within session
     texts: List[str]            # (N,) actual typed English substring
+    key_blocks: np.ndarray = None  # (N, 7, M) key-identity channels per chunk
+    codes: List[List[str]] = None  # (N, M+1) physical key codes per chunk
 
 
 def get_feature_columns() -> Tuple[List[str], List[str], List[str], List[str]]:
@@ -218,25 +244,63 @@ def extract_9channel_sequences(
     return seq
 
 
+def extract_sequences(
+    holds: np.ndarray,
+    dds: np.ndarray,
+    uds: np.ndarray,
+    key_block: np.ndarray,
+    hold_valid: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Full 17-channel input: 9 timing channels + 7 key-identity channels + Hold_Valid flag.
+    `key_block` is (7, M) shared by all rows or (N, 7, M) per row; `hold_valid` is None (all
+    measured), a per-row (N,) vector, or a per-transition (N, M) array.
+    """
+    timing = extract_9channel_sequences(holds, dds, uds)
+    n, _, m = timing.shape
+    kb = key_block if key_block.ndim == 3 else np.broadcast_to(key_block[None], (n,) + key_block.shape)
+    if hold_valid is None:
+        hv = np.ones((n, 1, m), dtype=np.float32)
+    else:
+        hv = np.asarray(hold_valid, dtype=np.float32)
+        hv = np.broadcast_to(hv[:, None, None], (n, 1, m)) if hv.ndim == 1 else hv[:, None, :]
+    return np.concatenate([timing, kb.astype(np.float32), hv.astype(np.float32)], axis=1).astype(np.float32)
+
+
+def touchify_timings(
+    holds: np.ndarray, dds: np.ndarray, touch_hold: float, bounds: Dict[str, Tuple[float, float]]
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Simulate a touch keyboard: hold durations are unknown, so every hold is replaced with
+    the population median (exactly what the browser does) and UD is re-derived from it."""
+    h = np.full_like(holds, np.clip(touch_hold, *bounds["H"]), dtype=np.float32)
+    u = np.clip(dds - h[:, :-1], *bounds["UD"]).astype(np.float32)
+    return h, u
+
+
 def dataframe_to_sequences(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    """Extract both (N, 31) flat vectors and (N, 9, 10) biomechanical sequences."""
+    """Extract both (N, 31) flat vectors and (N, 17, 10) sequences for the CMU password."""
     all_cols, hold_cols, dd_cols, ud_cols = get_feature_columns()
     holds = df[hold_cols].values.astype(np.float32)
     dds = df[dd_cols].values.astype(np.float32)
     uds = df[ud_cols].values.astype(np.float32)
     flat = df[all_cols].values.astype(np.float32)
-    seq = extract_9channel_sequences(holds, dds, uds)
+    seq = extract_sequences(holds, dds, uds, CMU_KEY_BLOCK)
     return flat, seq
 
 
 def fit_channel_scaler(train_seq_list: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
     """
     Preprocessing Step 3b: Fit leakage-free channel-wise Z-score standardization
-    across variable-length Train split sequences [(N_i, C=9, M_i), ...] -> mean (9,), std (9,).
+    across variable-length Train split sequences [(N_i, C, M_i), ...] -> mean (C,), std (C,).
+    Binary flag channels in UNSCALED_CHANNELS pass through unchanged (mean 0, std 1).
     """
-    flattened = np.concatenate([s.transpose(1, 0, 2).reshape(9, -1) for s in train_seq_list], axis=1)
+    c = train_seq_list[0].shape[1]
+    flattened = np.concatenate([s.transpose(1, 0, 2).reshape(c, -1) for s in train_seq_list], axis=1)
     mean = flattened.mean(axis=1).astype(np.float32)
     std = (flattened.std(axis=1) + 1e-6).astype(np.float32)
+    for idx in UNSCALED_CHANNELS:
+        if idx < c:
+            mean[idx], std[idx] = 0.0, 1.0
     return mean, std
 
 
@@ -255,13 +319,31 @@ def augment_keystroke_batch(
     mean: np.ndarray,
     std: np.ndarray,
     rng: np.random.RandomState,
+    key_block: Optional[np.ndarray] = None,
+    warp: bool = True,
+    touch_prob: float = 0.0,
+    touch_hold: float = 0.1,
 ) -> np.ndarray:
     """
     Preprocessing Step 4: Smooth Biomechanical Tempo-Warping & Micro-Jitter Augmentation.
     Models natural session-to-session WPM speed drift (0.80x ~ 1.25x) plus smooth
     intra-word acceleration curves without destroying positional digraph alignment.
+    `touch_prob` additionally converts a random subset of rows into touch-keyboard inputs
+    (unknown holds -> imputed median, Hold_Valid = 0) so one encoder serves phones too.
     """
     n, m = dds.shape
+    if key_block is None:
+        key_block = np.zeros((len(KEY_CHANNEL_NAMES), m), dtype=np.float32)
+    if not warp:
+        aug_holds, aug_dds, aug_uds = holds.astype(np.float32), dds.astype(np.float32), uds.astype(np.float32)
+        touch = rng.rand(n) < touch_prob
+        hv = (~touch).astype(np.float32)
+        if touch.any():
+            th, tu = touchify_timings(aug_holds[touch], aug_dds[touch], touch_hold, bounds)
+            aug_holds, aug_uds = aug_holds.copy(), aug_uds.copy()
+            aug_holds[touch], aug_uds[touch] = th, tu
+        seq = extract_sequences(aug_holds, aug_dds, aug_uds, key_block, hv)
+        return apply_channel_scaler(seq, mean, std)
     tempo = rng.uniform(0.80, 1.25, size=(n, 1)).astype(np.float32)
     phase = rng.uniform(0, 2 * np.pi, size=(n, 1)).astype(np.float32)
     t_grid = np.linspace(0.0, np.pi, m, dtype=np.float32)[None, :]
@@ -277,7 +359,13 @@ def augment_keystroke_batch(
     aug_dds = np.clip(dds * tempo * smooth_wave * local_d + jitter_dd, *bounds["DD"])
     aug_uds = np.clip(aug_dds - aug_holds[:, :-1], *bounds["UD"])
 
-    seq = extract_9channel_sequences(aug_holds, aug_dds, aug_uds)
+    touch = rng.rand(n) < touch_prob
+    hv = (~touch).astype(np.float32)
+    if touch.any():
+        th, tu = touchify_timings(aug_holds[touch], aug_dds[touch], touch_hold, bounds)
+        aug_holds[touch], aug_uds[touch] = th, tu
+
+    seq = extract_sequences(aug_holds, aug_dds, aug_uds, key_block, hv)
     return apply_channel_scaler(seq, mean, std)
 
 
@@ -360,6 +448,7 @@ def parse_keyrecs_sentence_corpus(
                             "session": s,
                             "chunk_id": chunk_idx,
                             "text": txt,
+                            "codes": [code_for_label(ch) for ch in txt],
                             "holds": holds,
                             "dds": dds,
                             "uds": uds,
@@ -423,7 +512,9 @@ def build_sentence_split(
     dds = np.stack(sub["dds"].values, axis=0).astype(np.float32)
     uds = np.stack(sub["uds"].values, axis=0).astype(np.float32)
     flat = build_flat_timings(holds, dds, uds)
-    seq_unscaled = extract_9channel_sequences(holds, dds, uds)
+    codes = sub["codes"].tolist()
+    key_blocks = np.stack([key_channel_matrix(pairs_from_codes(c)) for c in codes], axis=0)
+    seq_unscaled = extract_sequences(holds, dds, uds, key_blocks)
     seq_scaled = apply_channel_scaler(seq_unscaled, chan_mean, chan_std)
     return SentenceSplitData(
         holds=holds,
@@ -437,6 +528,8 @@ def build_sentence_split(
         sessions=sub["session"].values.astype(np.int64),
         chunk_ids=sub["chunk_id"].values.astype(np.int64),
         texts=sub["text"].tolist(),
+        key_blocks=key_blocks,
+        codes=codes,
     )
 
 
@@ -462,7 +555,7 @@ def load_keyrecs_fixed_split(
     holds = np.clip(df[KEYRECS_HOLD_COLS].values.astype(np.float32), *bounds["H"])
     dds = np.clip(df[KEYRECS_DD_COLS].values.astype(np.float32), *bounds["DD"])
     uds = np.clip(dds - holds[:, :-1], *bounds["UD"])
-    seq_unscaled = extract_9channel_sequences(holds, dds, uds)
+    seq_unscaled = extract_sequences(holds, dds, uds, KEYRECS_FIXED_KEY_BLOCK)
     seq_scaled = apply_channel_scaler(seq_unscaled, chan_mean, chan_std)
     sids = df["participant"].map(subj_map).values.astype(np.int64)
     return holds, dds, uds, seq_scaled, sids
@@ -507,6 +600,7 @@ def prepare_full_pipeline(
     kr_runs = None
     kr_splits_subjs = None
     scaler_inputs = [cmu_train_seq_unscaled]
+    train_hold_pool = [train_clipped[hold_cols].values.astype(np.float32).ravel()]
 
     if free_csv_path.exists():
         kr_records_df, kr_runs = parse_keyrecs_sentence_corpus(
@@ -521,9 +615,15 @@ def prepare_full_pipeline(
         kr_h = np.stack(kr_train_df["holds"].values, axis=0).astype(np.float32)
         kr_d = np.stack(kr_train_df["dds"].values, axis=0).astype(np.float32)
         kr_u = np.stack(kr_train_df["uds"].values, axis=0).astype(np.float32)
-        scaler_inputs.append(extract_9channel_sequences(kr_h, kr_d, kr_u))
+        kr_kb = np.stack(
+            [key_channel_matrix(pairs_from_codes(c)) for c in kr_train_df["codes"].tolist()], axis=0
+        )
+        scaler_inputs.append(extract_sequences(kr_h, kr_d, kr_u, kr_kb))
+        train_hold_pool.append(kr_h.ravel())
 
     chan_mean, chan_std = fit_channel_scaler(scaler_inputs)
+    # Median hold of Train keystrokes: imputed for touch keyboards that expose no keyup timing
+    touch_hold = float(np.median(np.concatenate(train_hold_pool)))
 
     splits: Dict[str, SplitData] = {}
     for split_name, split_subjs in [
@@ -544,6 +644,7 @@ def prepare_full_pipeline(
             subjects=split_subjs,
             sessions=sub_df["sessionIndex"].values.astype(np.int64),
             reps=sub_df["rep"].values.astype(np.int64),
+            key_block=CMU_KEY_BLOCK,
         )
 
     sentence_splits: Dict[str, SentenceSplitData] = {}
@@ -604,6 +705,7 @@ def prepare_full_pipeline(
         "digraph_labels": DIGRAPH_LABELS,
         "channel_mean": [round(float(x), 6) for x in chan_mean],
         "channel_std": [round(float(x), 6) for x in chan_std],
+        "touch_hold_impute_sec": round(touch_hold, 6),
     }
 
     # Attach auxiliary runtime bundles in memory via metadata["_runtime"] (not written to JSON)
