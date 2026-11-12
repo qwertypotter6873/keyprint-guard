@@ -252,11 +252,16 @@
 
 - 17채널이 확실히 나은 곳은 **학습에 쓴 문자열**뿐이었고, 학습에 없던 문자열(같은 사람이 자유 타이핑에서 여러 번 친 `things`·`people`·`because`)에서는 AUC가 동률이면서 **점수 분포가 위로 쏠려 같은 임계값에서 침입자 통과율이 `35.6% → 55.9%`로 늘었습니다.** 터치 비밀번호와 숙련도 드리프트([§5.4](#54-실제-오류-사례error-analysis-및-세션-속도-드리프트-극복-검증))에서도 9채널이 같거나 나았기 때문에, **비밀번호는 키 내용을 보지 않는 9채널 인코더**, 문장은 17채널 인코더 + 행동 프로필로 나눴습니다. 녹화기·전처리·점수 계산 코드는 두 모드가 공유합니다.
 - 반복 단어 시험은 단어 3개(5∼7자), 본인 시도 대부분이 같은 세션이라는 한계가 있습니다. 실제 사용자 비밀번호로 수집한 데이터로 다시 확인할 필요가 있습니다.
+- **알려진 한계: 사용자가 정한 비밀번호에서는 배포 임계값이 느슨합니다** ([`src/eval_password_calibration.py`](src/eval_password_calibration.py) → `models/password_calibration.json`). AS-Norm 코호트는 CMU 비밀번호 한 개를 친 사람들로만 만들어져 있어서, 다른 문자열에서는 본인 점수와 침입자 점수가 함께 올라갑니다. 반복 단어에서 순위 성능은 유지되지만(키보드 AUC `0.92∼0.93`), EER 지점의 점수가 `0.69∼0.75`로 배포 임계값 `0.4923`보다 높습니다. 그 결과 배포 임계값에서 침입자 통과율이 키보드 `31.9%`(같은 날) / `37.9%`(다음 날)입니다. **터치는 `40.6%` / `79.5%`** 로 더 높습니다(누름 시간을 지운 시뮬레이션). 스모크 테스트에서도 속도는 같고 박자 모양만 다른 가상의 사칭 입력(키보드 1건, 터치 2건)이 통과해서, 이 항목들은 "알려진 한계(⚠)"로 따로 집계합니다.
+- 코호트 없이 원래 유사도에 CMU 검증셋 임계값을 쓰면 결과가 갈립니다.
+  - **좋아지는 점:** 반복 단어 침입자 통과율이 키보드 `18.4%` / `20.4%`, 터치 `15.3%` / `43.9%`로 줄고, CMU 키보드 성능은 비슷합니다(FAR `16.9%` / FRR `11.9%`).
+  - **나빠지는 점:** 처음 보는 무작위 문자열(KeyRecs 고정문)을 다음 날 입력하면 본인 거부율이 키보드 `27.5% → 53.2%`, 터치 `29.6% → 84.6%`로 크게 늘어납니다.
+  - 이 득실 때문에 배포 방식은 아직 바꾸지 않았습니다.
 
 **모바일 등록 실패("추출된 연속 리듬 구간이 부족합니다") 원인과 해결**:
 - **원인**: 기존 녹화기는 `e.code`가 물리 키 정규식(`KeyA`, `Digit1` …)에 맞는 `keydown`만 기록했습니다. Android Gboard·iOS 소프트 키보드는 `code = ''`, `key = 'Unidentified'`(또는 `Process`, keyCode `229`)를 보내고 `keyup`을 `keydown`과 거의 동시에 보내며, 누름 시간 `5ms` 미만은 버려졌기 때문에 **유효 전이가 0개**가 되어 최소 기준(`8개`)을 넘지 못했습니다.
 - **해결** ([`web/src/recorder.js`](web/src/recorder.js)): ① 키 이벤트와 별도로 `input` 이벤트에서 입력값을 **키 입력 단위로 비교**(한글 음절은 두벌식 자모 키로 분해: `안녕 → ㅇㅏㄴㄴㅕㅇ`)해 키 이벤트가 만들지 않은 글자를 "소프트 타건"으로 추가하고, ② 누름 시간을 모르는 타건은 `Hold_Valid = 0`과 Train 중앙값(`88ms`)으로 채우며, ③ Backspace 키 이벤트 없이 글자가 지워지면 소프트 백스페이스로 기록하고, ④ 자동완성 치환·붙여넣기·OS 자동 반복은 합성 타건으로 표시해 리듬 전이에서 제외하고, ⑤ 시간은 `event.timeStamp`를 씁니다. 터치 전용 AS-Norm 코호트와 임계값(비밀번호 `0.3267`, 판별 외부인 기각 `0.6236`)도 검증셋에서 따로 정했습니다.
-- **검증**: [`web/scripts/parity_check.mjs`](web/scripts/parity_check.mjs)가 Python 복제본과 JS 녹화기를 실제 오타가 섞인 KeyRecs 구간(키보드·터치 각 3개)으로 대조합니다(클린 스트로크·17채널 텐서·행동 통계·LLR, **4,267개 항목 일치**). 한글 조합, 자동완성, 자동 반복, Ctrl+Backspace 단위 테스트도 포함합니다. [`web/scripts/offline_smoke.mjs`](web/scripts/offline_smoke.mjs)는 외부 통신을 모두 막은 헤드리스 Chrome에서 **iPhone 화면·터치 에뮬레이션 + 한글 IME 조합 입력으로 3문장 등록 → 판별 → 비밀번호 등록·인증**까지 오류 없이 동작함을 확인합니다.
+- **검증**: [`web/scripts/parity_check.mjs`](web/scripts/parity_check.mjs)가 Python 복제본과 JS 녹화기를 실제 오타가 섞인 KeyRecs 구간(키보드·터치 각 3개)으로 대조합니다(클린 스트로크·17채널 텐서·행동 통계·LLR, **4,267개 항목 일치**). 한글 조합, 자동완성, 자동 반복, Ctrl+Backspace 단위 테스트도 포함합니다. [`web/scripts/offline_smoke.mjs`](web/scripts/offline_smoke.mjs)는 외부 통신을 모두 막은 헤드리스 Chrome에서 **iPhone 화면·터치 에뮬레이션 + 한글 IME 조합 입력으로 3문장 등록 → 판별 → 비밀번호 등록·인증**까지 오류 없이 동작함을 확인합니다. 속도와 박자 모양이 모두 다른 사칭은 차단합니다. 박자 모양만 다른 사칭은 위 한계 때문에 통과할 수 있어 따로 집계합니다.
 
 ![v2 확장 기능 전후 비교](assets/figures/fig8_feature_upgrade.png)
 
@@ -342,6 +347,7 @@ keyprint-guard/
 │   ├── behavior_profile.py                    # 행동 프로필 17개 특성 추출 + two-covariance LLR 적합
 │   ├── capture_sim.py                         # 브라우저 녹화기의 Python 복제본 (웹과 동일한 캡처·텐서·점수 재현)
 │   ├── feature_eval.py                        # 웹 캡처 재현 평가, 영역별 융합 가중치 β 결정, 비밀번호 인코더 비교
+│   ├── eval_password_calibration.py           # 사용자가 정한 비밀번호에서 배포 임계값이 유지되는지 점검 (키보드·터치)
 │   ├── models.py                              # ScaledManhattan, Vanilla1DCNN, KeyPrintNet, CosFace/SupCon
 │   ├── train_and_evaluate.py                  # 직접 학습 루프, 1:1 검증 및 1:N 인물 분류 평가기
 │   ├── visualize_and_run.py                   # 전체 파이프라인 실행, 8종 분석 그래프 및 ONNX 2종 내보내기
@@ -353,7 +359,8 @@ keyprint-guard/
 │   ├── keyprint_net.onnx / .pt                # 타자연습 문장용 17채널 KeyPrintNet (ONNX 599 KB)
 │   ├── legacy/keyprint_net_9ch.onnx / .pt     # 비밀번호용 9채널 KeyPrintNet (타이밍 전용, 내용 무관)
 │   ├── vanilla_1dcnn.pt                       # 딥러닝 베이스라인 가중치
-│   └── evaluation_report.json                 # 전체 정량 평가 결과 및 학습 로그 리포트
+│   ├── evaluation_report.json                 # 전체 정량 평가 결과 및 학습 로그 리포트
+│   └── password_calibration.json              # 비밀번호 임계값 전이 점검 결과 (eval_password_calibration.py)
 ├── assets/
 │   ├── figures/fig1..fig8_*.png               # 8종 데이터·학습·평가·오류 분석·기능 확장 그래프
 │   └── screenshots/01..06_*.png               # 6종 실제 웹 프로토타입 구동 스크린샷
@@ -386,6 +393,9 @@ python src/visualize_and_run.py
 
 # 3. Jupyter Notebook 확인 또는 재실행
 jupyter notebook notebooks/keyprint_training_pipeline.ipynb
+
+# 4. (선택) 사용자가 정한 비밀번호에서 배포 임계값이 유지되는지 점검 → models/password_calibration.json
+python src/eval_password_calibration.py
 ```
 
 ### 8.3 웹 프로토타입 로컬 실행 및 자동 E2E 검증
@@ -395,6 +405,9 @@ npm install
 
 # 개발 서버 실행 (predev 훅이 ONNX WASM 런타임을 public/ort/에 자동 복사합니다)
 npm run dev
+
+# 스마트폰 실기기 테스트: 같은 Wi-Fi에서 터미널에 표시되는 Network 주소(http://<PC IP>:5173)를 폰 브라우저로 엽니다
+npm run dev -- --host
 
 # Python↔JS 수치 일치 + 모바일 입력 단위 테스트 (브라우저·네트워크 불필요)
 node scripts/parity_check.mjs
@@ -461,5 +474,5 @@ node scripts/e2e_verify_and_capture.mjs
 
 ### 9.3 향후 개선 계획 (데이터 · 모델 · 서비스 3차원 로드맵)
 1. **[데이터 차원] 다기종 키보드 스위치 및 모바일 터치 센서 멀티모달 데이터 확장**: 동일 참가자가 기계식(적축·갈축), 노트북 팬터그래프, 모바일 터치 키보드를 교차 사용하는 데이터를 추가 수집하고, 모바일 환경에서는 브라우저 `DeviceMotionEvent`(미세 기기 흔들림) 및 터치 압력 반경 채널을 결합해 하드웨어 변경 불변성을 확보할 계획입니다.
-2. **[모델 차원] 비밀번호용 내용 정합 정규화**: v2에서 키 좌표·손가락 채널을 문장 인코더에 넣어 교차 문장 식별을 크게 올렸습니다. 같은 정보를 비밀번호에도 쓰려면, 사용자가 정한 문자열에 맞춘 코호트(같은 문자열을 친 다른 사람들)로 점수를 정규화해야 합니다. 실제 비밀번호 반복 입력 데이터를 모아 이 방식을 검증할 계획입니다.
+2. **[모델 차원] 비밀번호용 내용 정합 정규화**: v2에서 키 좌표·손가락 채널을 문장 인코더에 넣어 교차 문장 식별을 크게 올렸습니다. 같은 정보를 비밀번호에도 쓰려면, 사용자가 정한 문자열에 맞춘 코호트(같은 문자열을 친 다른 사람들)로 점수를 정규화해야 합니다. 실제 비밀번호 반복 입력 데이터를 모아 이 방식을 검증할 계획입니다. v2 평가에서 이 문제가 실제로 확인됐습니다([§5.5](#55-v2-확장-키-위치-채널--행동-프로필--모바일터치-입력) 알려진 한계).
 3. **[서비스 차원] 점진적 템플릿 적응(`Sliding Centroid Adaptation`) 및 사내 SSO/LMS 플러그인화**: 정당 사용자의 로그인이 높은 신뢰도로 승인될 때마다 등록 센트로이드를 지수이동평균(`c_u ← 0.95·c_u + 0.05·z`)으로 미세 갱신하여 수개월간의 타자 숙련도 변화를 자동 추적하고, 온라인 코딩 테스트·LMS 대리 시험 부정행위 실시간 탐지 위젯으로 확장할 수 있습니다.

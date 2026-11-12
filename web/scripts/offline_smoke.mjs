@@ -10,7 +10,15 @@
  *   blind 1:N identification, password enroll x4, genuine accept / impostor reject, samples.
  * Mobile emulation (soft keyboard: keydown key='Unidentified' code='', text via `input` events,
  *   Korean IME composition states): the path that used to fail with
- *   "추출된 연속 리듬 구간이 부족합니다" must now enroll 3 sentences, identify and enroll a password.
+ *   "추출된 연속 리듬 구간이 부족합니다" must now enroll 3 sentences, identify, enroll a password
+ *   and accept the genuine thumb typist.
+ *
+ * Impostor checks with a leaked password are split in two:
+ *   - functional (must pass): a desktop impostor whose tempo AND rhythm shape differ.
+ *   - known limitation (reported, not fatal): other people who differ only in rhythm shape — two thumb
+ *     typists on a phone and one same-tempo keyboard typist. On a user-chosen password the deployed
+ *     score (AS-Norm against the CMU-password cohort) is inflated, so these can be accepted. Real-data
+ *     numbers: README section 5.5 / PR #1. They print "⚠" and are counted separately.
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -189,12 +197,23 @@ async function runPlan(page, selector, plan) {
 const FAST = { seed: 'typist-a', holdMs: 112, ddMs: 86, jitter: 0.2, spaceExtraMs: 25, detectMs: 260, resumeMs: 210, bsHoldMs: 70 };
 const SLOW = { seed: 'typist-b', holdMs: 64, ddMs: 175, jitter: 0.2, spaceExtraMs: 140, detectMs: 520, resumeMs: 480, bsHoldMs: 110 };
 const THUMB = { seed: 'thumb', ddMs: 175, jitter: 0.3, spaceExtraMs: 90, detectMs: 380, resumeMs: 300 };
+// Other people on a phone who know the leaked password: one slower with a different rhythm shape,
+// one at the SAME tempo as THUMB with only the per-key shape different (the harder case).
+const THUMB_SLOW = { seed: 'thumb-other-1', ddMs: 255, jitter: 0.3, spaceExtraMs: 90, detectMs: 380, resumeMs: 300 };
+const THUMB_SAME_TEMPO = { seed: 'thumb-other-2', ddMs: 175, jitter: 0.3, spaceExtraMs: 90, detectMs: 380, resumeMs: 300 };
+// Keyboard typist with Typist A's tempo and hold length but a different per-key rhythm shape
+const FAST_OTHER_SHAPE = { ...FAST, seed: 'typist-c' };
 
 // ---------------------------------------------------------------------------------------
 const results = [];
 function expect(cond, msg) {
   results.push({ ok: Boolean(cond), msg });
   console.log(`${cond ? '  ✓' : '  ✗'} ${msg}`);
+}
+const known = [];
+function expectKnownLimitation(cond, msg) {
+  known.push({ ok: Boolean(cond), msg });
+  console.log(`${cond ? '  ✓' : '  ⚠'} ${msg}${cond ? '' : '  [known limitation, not fatal]'}`);
 }
 
 async function newOfflineContext(browser, options) {
@@ -331,6 +350,8 @@ async function run() {
       expect(genuine.pass, `genuine password login → ${genuine.title} ${genuine.score} | ${genuine.meta}`);
       const impostor = await verifyPassword(page, 'gachon2026', keyboardPlan('gachon2026', SLOW));
       expect(!impostor.pass, `impostor with leaked password → ${impostor.title} ${impostor.score}`);
+      const kbShape = await verifyPassword(page, 'gachon2026', keyboardPlan('gachon2026', FAST_OTHER_SHAPE));
+      expectKnownLimitation(!kbShape.pass, `keyboard impostor (same tempo, other rhythm) rejected → ${kbShape.title} ${kbShape.score}`);
 
       // Samples load + identify with the rebuilt sample gallery present
       await page.click('#open-room-btn');
@@ -389,7 +410,11 @@ async function run() {
       const pwFb = await enrollPassword(page, '모바일 사용자', 'gachon2026', (pw) => touchPlan(pw, THUMB));
       expect(!pwFb.some((f) => /부족|불일치|일치하지/.test(f || '')), `password enroll x4 (touch): ${pwFb.at(-1) || 'ok'}`);
       const mv = await verifyPassword(page, 'gachon2026', touchPlan('gachon2026', THUMB));
-      expect(Boolean(mv.title), `touch password verify → ${mv.title} ${mv.score} | ${mv.meta}`);
+      expect(mv.pass, `genuine touch password login → ${mv.title} ${mv.score} | ${mv.meta}`);
+      const mi1 = await verifyPassword(page, 'gachon2026', touchPlan('gachon2026', THUMB_SLOW));
+      expectKnownLimitation(!mi1.pass, `touch impostor (other rhythm, slower) rejected → ${mi1.title} ${mi1.score}`);
+      const mi2 = await verifyPassword(page, 'gachon2026', touchPlan('gachon2026', THUMB_SAME_TEMPO));
+      expectKnownLimitation(!mi2.pass, `touch impostor (same tempo, other rhythm) rejected → ${mi2.title} ${mi2.score}`);
 
       blocked.http.forEach((h) => allBlocked.http.add(h));
       blocked.ws.forEach((h) => allBlocked.ws.add(h));
@@ -408,6 +433,13 @@ async function run() {
   expect(real.length === 0, `console/page errors: ${real.length ? real.join(' | ') : 'none'}`);
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} smoke checks passed`);
+  const knownFailed = known.filter((r) => !r.ok);
+  if (known.length) {
+    console.log(
+      `known-limitation impostor checks: ${known.length - knownFailed.length}/${known.length} rejected` +
+        (knownFailed.length ? ` — ${knownFailed.length} accepted (see README section 5.5)` : ''),
+    );
+  }
   if (failed.length) process.exit(1);
 }
 
