@@ -978,7 +978,7 @@ let vizEmbedTimer = null;
 const vizSandboxRecorder = new SmartKeystrokeRecorder($('viz-sandbox-input'), {
   onLiveUpdate: () => {
     if (vizSandboxRecorder.stack.length < 2) return;
-    const cap = vizSandboxRecorder.extractCleanStroke();
+    const cap = vizSandboxRecorder.extractCleanStroke({ resolvePending: false });
     state.viz.capture = {
       ...cap,
       isPreset: false,

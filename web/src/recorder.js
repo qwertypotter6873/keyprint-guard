@@ -79,7 +79,7 @@ export class SmartKeystrokeRecorder {
     this.poppedStrokes = [];
     this.rawEvents = []; // Behaviour log: { kind, side, t, up, rep }
     this.activeDown = new Map(); // code -> FIFO of { stroke?, raw } awaiting keyup
-    this.pendingKeyStrokes = []; // keydown timestamps awaiting their input event
+    this.pendingKeyStrokes = []; // { t, stroke } keydown strokes awaiting their input event
     this.pendingKeyDeletes = [];
     this.pendingRepeats = [];
     if (this.imeChain?.timer) clearTimeout(this.imeChain.timer);
@@ -216,7 +216,7 @@ export class SmartKeystrokeRecorder {
       const raw = { kind: code === 'Space' ? 'space' : 'char', side: null, t: now, up: null, rep: false };
       this.rawEvents.push(raw);
       this._markDown(code, { stroke, raw });
-      this.pendingKeyStrokes.push(now);
+      this.pendingKeyStrokes.push({ t: now, stroke });
     });
 
     this.inputEl.addEventListener('keyup', (e) => {
@@ -323,7 +323,7 @@ export class SmartKeystrokeRecorder {
     this.prevKeys = nextKeys;
 
     const fresh = (q) => q.filter((t) => now - t <= PENDING_TTL_MS);
-    this.pendingKeyStrokes = fresh(this.pendingKeyStrokes);
+    this.pendingKeyStrokes = this.pendingKeyStrokes.filter((e) => now - e.t <= PENDING_TTL_MS);
     this.pendingKeyDeletes = fresh(this.pendingKeyDeletes);
     this.pendingRepeats = fresh(this.pendingRepeats);
 
@@ -342,12 +342,17 @@ export class SmartKeystrokeRecorder {
     }
 
     // Insertions: first match keydown-created strokes, then auto-repeats, the rest are soft
+    // Pair each added key with the oldest waiting keydown stroke (by identity: a held IME edit can
+    // settle after the next key is already down, so "the last N strokes" would be the wrong ones)
     const matched = Math.min(added.length, this.pendingKeyStrokes.length);
-    this.pendingKeyStrokes.splice(0, matched);
-    for (let i = 0; i < matched; i++) {
-      const s = this.stack[this.stack.length - matched + i];
-      if (s && !s.char) s.char = added[i];
-    }
+    this.pendingKeyStrokes.splice(0, matched).forEach(({ stroke: s }, i) => {
+      // The character the field actually received is authoritative: IME keydowns report
+      // key = 'Process', so the label would otherwise stay the Latin key name (D, K, …)
+      if (s && s.char !== added[i]) {
+        s.char = added[i];
+        s.label = formatKeyLabel(added[i], s.code);
+      }
+    });
     let rest = added.slice(matched);
     let restTimes = (addedTimes || added.map(() => now)).slice(matched);
     const repeats = Math.min(rest.length, this.pendingRepeats.length);
@@ -458,8 +463,13 @@ export class SmartKeystrokeRecorder {
    * Backspace-repaired mistakes or long pauses. Unknown holds stay `null` and are imputed
    * (and flagged) when the model tensor is built.
    */
-  extractCleanStroke() {
-    this._resolveImeChain();
+  /**
+   * `resolvePending: false` peeks without settling an IME edit that is still waiting for its
+   * re-insert (live previews call this on every input event; settling there would turn every
+   * composition step back into a deletion).
+   */
+  extractCleanStroke({ resolvePending = true } = {}) {
+    if (resolvePending) this._resolveImeChain();
     const holds = [];
     const holdValid = [];
     const dds = [];
