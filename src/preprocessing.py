@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from behavior_profile import parse_keyrecs_free_csv
 from keyboard_layout import (
     CMU_PASSWORD_CODES,
     KEY_CHANNEL_NAMES,
@@ -104,6 +105,9 @@ class SplitData:
     sessions: np.ndarray        # (N,) session index
     reps: np.ndarray            # (N,) repetition / chunk index
     key_block: np.ndarray = None  # (7, M) key-identity channels (identical for every sample)
+    raw_holds: np.ndarray = None  # (N, M+1) unclipped raw hold durations in seconds
+    raw_dds: np.ndarray = None    # (N, M) unclipped raw press-to-press latencies in seconds
+    raw_uds: np.ndarray = None    # (N, M) unclipped raw flight latencies in seconds
 
 
 @dataclass
@@ -121,6 +125,11 @@ class SentenceSplitData:
     texts: List[str]            # (N,) actual typed English substring
     key_blocks: np.ndarray = None  # (N, 7, M) key-identity channels per chunk
     codes: List[List[str]] = None  # (N, M+1) physical key codes per chunk
+    raw_holds: np.ndarray = None   # (N, M+1) unclipped raw hold durations in seconds
+    raw_dds: np.ndarray = None     # (N, M) unclipped raw press-to-press latencies in seconds
+    raw_uds: np.ndarray = None     # (N, M) unclipped raw flight latencies in seconds
+    t_ranges: np.ndarray = None    # (N, 2) [t_first_key, t_last_key] within session
+    key_idx_ranges: np.ndarray = None  # (N, 2) [first_row_idx, last_row_idx] within session (strictly disjoint)
 
 
 def get_feature_columns() -> Tuple[List[str], List[str], List[str], List[str]]:
@@ -271,9 +280,12 @@ def touchify_timings(
     holds: np.ndarray, dds: np.ndarray, touch_hold: float, bounds: Dict[str, Tuple[float, float]]
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Simulate a touch keyboard: hold durations are unknown, so every hold is replaced with
-    the population median (exactly what the browser does) and UD is re-derived from it."""
-    h = np.full_like(holds, np.clip(touch_hold, *bounds["H"]), dtype=np.float32)
-    u = np.clip(dds - h[:, :-1], *bounds["UD"]).astype(np.float32)
+    the clipped population median (matching browser buildInputTensor) and UD is derived from
+    clipped DD minus imputed hold."""
+    c_dds = np.clip(dds, *bounds["DD"]).astype(np.float32)
+    h_imp = float(np.clip(touch_hold, *bounds["H"]))
+    h = np.full_like(holds, h_imp, dtype=np.float32)
+    u = np.clip(c_dds - h_imp, *bounds["UD"]).astype(np.float32)
     return h, u
 
 
@@ -314,7 +326,7 @@ def apply_channel_scaler(
 def augment_keystroke_batch(
     holds: np.ndarray,
     dds: np.ndarray,
-    uds: np.ndarray,
+    uds: Optional[np.ndarray],
     bounds: Dict[str, Tuple[float, float]],
     mean: np.ndarray,
     std: np.ndarray,
@@ -326,46 +338,57 @@ def augment_keystroke_batch(
 ) -> np.ndarray:
     """
     Preprocessing Step 4: Smooth Biomechanical Tempo-Warping & Micro-Jitter Augmentation.
-    Models natural session-to-session WPM speed drift (0.80x ~ 1.25x) plus smooth
-    intra-word acceleration curves without destroying positional digraph alignment.
-    `touch_prob` additionally converts a random subset of rows into touch-keyboard inputs
-    (unknown holds -> imputed median, Hold_Valid = 0) so one encoder serves phones too.
+    Operates strictly on UNCLIPPED raw holds/dds first:
+      1) Apply smooth tempo-warping & micro-jitter to raw_holds and raw_dds (identity when warp=False).
+      2) Compute aug_raw_uds = aug_raw_dds - aug_raw_holds[:, :-1] (or passed raw_uds when warp=False).
+      3) Independently clip holds to bounds['H'], dds to bounds['DD'], and uds to bounds['UD'].
+      4) For touch-converted rows, impute h_imp = clip(touch_hold, *bounds['H']) and recompute
+         c_uds = clip(c_dds - h_imp, *bounds['UD']) with Hold_Valid = 0.0.
     """
     n, m = dds.shape
     if key_block is None:
         key_block = np.zeros((len(KEY_CHANNEL_NAMES), m), dtype=np.float32)
-    if not warp:
-        aug_holds, aug_dds, aug_uds = holds.astype(np.float32), dds.astype(np.float32), uds.astype(np.float32)
+
+    raw_h = holds.astype(np.float32)
+    raw_d = dds.astype(np.float32)
+    if warp:
+        tempo = rng.uniform(0.80, 1.25, size=(n, 1)).astype(np.float32)
+        phase = rng.uniform(0, 2 * np.pi, size=(n, 1)).astype(np.float32)
+        t_grid = np.linspace(0.0, np.pi, m, dtype=np.float32)[None, :]
+        smooth_wave = 1.0 + 0.06 * np.sin(t_grid + phase)
+
+        local_h = rng.normal(1.0, 0.035, size=raw_h.shape).astype(np.float32)
+        local_d = rng.normal(1.0, 0.040, size=raw_d.shape).astype(np.float32)
+
+        jitter_h = rng.normal(0.0, 0.0018, size=raw_h.shape).astype(np.float32)
+        jitter_dd = rng.normal(0.0, 0.0020, size=raw_d.shape).astype(np.float32)
+
+        aug_raw_holds = (raw_h * (0.65 + 0.35 * tempo) * local_h + jitter_h).astype(np.float32)
+        aug_raw_dds = (raw_d * tempo * smooth_wave * local_d + jitter_dd).astype(np.float32)
+        aug_raw_uds = (aug_raw_dds - aug_raw_holds[:, :-1]).astype(np.float32)
+    else:
+        aug_raw_holds = raw_h
+        aug_raw_dds = raw_d
+        if uds is not None:
+            aug_raw_uds = uds.astype(np.float32)
+        else:
+            aug_raw_uds = (aug_raw_dds - aug_raw_holds[:, :-1]).astype(np.float32)
+
+    c_holds = np.clip(aug_raw_holds, *bounds["H"]).astype(np.float32)
+    c_dds = np.clip(aug_raw_dds, *bounds["DD"]).astype(np.float32)
+    c_uds = np.clip(aug_raw_uds, *bounds["UD"]).astype(np.float32)
+
+    if touch_prob > 0.0:
         touch = rng.rand(n) < touch_prob
-        hv = (~touch).astype(np.float32)
-        if touch.any():
-            th, tu = touchify_timings(aug_holds[touch], aug_dds[touch], touch_hold, bounds)
-            aug_holds, aug_uds = aug_holds.copy(), aug_uds.copy()
-            aug_holds[touch], aug_uds[touch] = th, tu
-        seq = extract_sequences(aug_holds, aug_dds, aug_uds, key_block, hv)
-        return apply_channel_scaler(seq, mean, std)
-    tempo = rng.uniform(0.80, 1.25, size=(n, 1)).astype(np.float32)
-    phase = rng.uniform(0, 2 * np.pi, size=(n, 1)).astype(np.float32)
-    t_grid = np.linspace(0.0, np.pi, m, dtype=np.float32)[None, :]
-    smooth_wave = 1.0 + 0.06 * np.sin(t_grid + phase)
-
-    local_h = rng.normal(1.0, 0.035, size=holds.shape).astype(np.float32)
-    local_d = rng.normal(1.0, 0.040, size=dds.shape).astype(np.float32)
-
-    jitter_h = rng.normal(0.0, 0.0018, size=holds.shape).astype(np.float32)
-    jitter_dd = rng.normal(0.0, 0.0020, size=dds.shape).astype(np.float32)
-
-    aug_holds = np.clip(holds * (0.65 + 0.35 * tempo) * local_h + jitter_h, *bounds["H"])
-    aug_dds = np.clip(dds * tempo * smooth_wave * local_d + jitter_dd, *bounds["DD"])
-    aug_uds = np.clip(aug_dds - aug_holds[:, :-1], *bounds["UD"])
-
-    touch = rng.rand(n) < touch_prob
+    else:
+        touch = np.zeros(n, dtype=bool)
     hv = (~touch).astype(np.float32)
     if touch.any():
-        th, tu = touchify_timings(aug_holds[touch], aug_dds[touch], touch_hold, bounds)
-        aug_holds[touch], aug_uds[touch] = th, tu
+        h_imp = float(np.clip(touch_hold, *bounds["H"]))
+        c_holds[touch] = h_imp
+        c_uds[touch] = np.clip(c_dds[touch] - h_imp, *bounds["UD"]).astype(np.float32)
 
-    seq = extract_sequences(aug_holds, aug_dds, aug_uds, key_block, hv)
+    seq = extract_sequences(c_holds, c_dds, c_uds, key_block, hv)
     return apply_channel_scaler(seq, mean, std)
 
 
@@ -373,50 +396,67 @@ def parse_keyrecs_sentence_corpus(
     free_csv_path: Path,
     bounds: Dict[str, Tuple[float, float]],
     window_keys: int = 25,
-    stride_keys: int = 20,
-) -> Tuple[pd.DataFrame, Dict[Tuple[str, int], List[Tuple[str, float, float]]]]:
+    stride_keys: int = 25,
+) -> Tuple[pd.DataFrame, Dict[Tuple[str, int], List[List[Tuple[str, float, float]]]]]:
     """
     Reconstruct exact physical keydown/keyup timestamps from KeyRecs free-text transcription
-    sessions (Proust & Murakami passages), strip modifier keys identically to browser
-    LiveKeystrokeRecorder, split on Backspace/edits into 100% typo-free contiguous spans,
-    and slice sentence windows of `window_keys` keys (`L = window_keys - 1` digraphs).
+    sessions (Proust & Murakami passages) via lossless line-by-line parsing (recovering all 26
+    unescaped '\"' rows and 198 session-end strokes), break runs on any corrupt-line discontinuity
+    or Backspace/edit, and slice non-overlapping sentence windows (`stride_keys = window_keys = 25`).
     """
-    df = pd.read_csv(free_csv_path, low_memory=False)
-    df.columns = [c.strip() for c in df.columns]
-    for col in ["DU.key1.key1", "DD.key1.key2"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["DU.key1.key1", "DD.key1.key2"])
-
+    rows_by_ps, parser_stats = parse_keyrecs_free_csv(free_csv_path)
     modifiers = {"Shift", "CapsLock", "Control", "Alt", "Meta"}
     clean_runs_by_ps: Dict[Tuple[str, int], List[List[Tuple[str, float, float]]]] = {}
+    run_rows_by_ps: Dict[Tuple[str, int], List[List[int]]] = {}
 
-    for (participant, session), grp in df.groupby(["participant", "session"]):
-        keys = grp["key1"].astype(str).tolist()
-        h_arr = grp["DU.key1.key1"].to_numpy(dtype=np.float64)
-        dd_arr = grp["DD.key1.key2"].to_numpy(dtype=np.float64)
-        t_down = np.concatenate([[0.0], np.cumsum(dd_arr[:-1])])
-
+    for ps, items in rows_by_ps.items():
         runs: List[List[Tuple[str, float, float]]] = []
+        r_rows: List[List[int]] = []
         curr: List[Tuple[str, float, float]] = []
-        for k, td, hv in zip(keys, t_down, h_arr):
-            if k in modifiers:
-                continue
-            ch = " " if k == "Space" else (k.lower() if len(k) == 1 else "")
-            if not ch or hv < 0.008 or hv > 0.80:
+        curr_rows: List[int] = []
+        t_cur = 0.0
+        for row_idx, (kind, k, hv, dd) in enumerate(items):
+            if kind == "break":
                 if len(curr) >= window_keys:
                     runs.append(curr)
+                    r_rows.append(curr_rows)
                 curr = []
+                curr_rows = []
+                t_cur += 100.0
                 continue
-            if curr and (td - curr[-1][1] < 0.008 or td - curr[-1][1] > 1.80):
+            if k not in modifiers:
+                ch = " " if k == "Space" else (k.lower() if len(k) == 1 else "")
+                if not ch or hv < 0.008 or hv > 0.80:
+                    if len(curr) >= window_keys:
+                        runs.append(curr)
+                        r_rows.append(curr_rows)
+                    curr = []
+                    curr_rows = []
+                else:
+                    if curr and (t_cur - curr[-1][1] < 0.008 or t_cur - curr[-1][1] > 1.80):
+                        if len(curr) >= window_keys:
+                            runs.append(curr)
+                            r_rows.append(curr_rows)
+                        curr = []
+                        curr_rows = []
+                    curr.append((ch, float(t_cur), float(hv)))
+                    curr_rows.append(int(row_idx))
+            if kind == "end":
                 if len(curr) >= window_keys:
                     runs.append(curr)
+                    r_rows.append(curr_rows)
                 curr = []
-            curr.append((ch, float(td), float(hv)))
+                curr_rows = []
+                t_cur += 100.0
+            else:
+                t_cur += dd
         if len(curr) >= window_keys:
             runs.append(curr)
+            r_rows.append(curr_rows)
 
         if runs:
-            clean_runs_by_ps[(str(participant), int(session))] = runs
+            clean_runs_by_ps[ps] = runs
+            run_rows_by_ps[ps] = r_rows
 
     # Keep only participants present in BOTH Session 1 and Session 2 with >= 8 chunks each
     valid_participants = sorted(
@@ -434,14 +474,18 @@ def parse_keyrecs_sentence_corpus(
         per_s_chunks = {1: [], 2: []}
         for s in (1, 2):
             chunk_idx = 0
-            for run in clean_runs_by_ps[(p, s)]:
+            for run, run_ridx in zip(clean_runs_by_ps[(p, s)], run_rows_by_ps[(p, s)]):
                 for start in range(0, len(run) - window_keys + 1, stride_keys):
                     seg = run[start : start + window_keys]
+                    seg_rows = run_ridx[start : start + window_keys]
                     txt = "".join(x[0] for x in seg)
-                    t_d = np.array([x[1] for x in seg], dtype=np.float32)
-                    holds = np.clip(np.array([x[2] for x in seg], dtype=np.float32), *bounds["H"])
-                    dds = np.clip(np.diff(t_d), *bounds["DD"])
-                    uds = np.clip(dds - holds[:-1], *bounds["UD"])
+                    t_d = np.array([x[1] for x in seg], dtype=np.float64)
+                    raw_holds = np.array([x[2] for x in seg], dtype=np.float32)
+                    raw_dds = np.diff(t_d).astype(np.float32)
+                    raw_uds = (raw_dds - raw_holds[:-1]).astype(np.float32)
+                    holds = np.clip(raw_holds, *bounds["H"]).astype(np.float32)
+                    dds = np.clip(raw_dds, *bounds["DD"]).astype(np.float32)
+                    uds = np.clip(raw_uds, *bounds["UD"]).astype(np.float32)
                     per_s_chunks[s].append(
                         {
                             "participant": p,
@@ -449,9 +493,14 @@ def parse_keyrecs_sentence_corpus(
                             "chunk_id": chunk_idx,
                             "text": txt,
                             "codes": [code_for_label(ch) for ch in txt],
+                            "raw_holds": raw_holds,
+                            "raw_dds": raw_dds,
+                            "raw_uds": raw_uds,
                             "holds": holds,
                             "dds": dds,
                             "uds": uds,
+                            "t_range": (float(t_d[0]), float(t_d[-1])),
+                            "key_idx_range": (int(seg_rows[0]), int(seg_rows[-1])),
                         }
                     )
                     chunk_idx += 1
@@ -463,7 +512,9 @@ def parse_keyrecs_sentence_corpus(
             filtered_runs[(p, 1)] = clean_runs_by_ps[(p, 1)]
             filtered_runs[(p, 2)] = clean_runs_by_ps[(p, 2)]
 
-    return pd.DataFrame(records), filtered_runs
+    out_df = pd.DataFrame(records)
+    out_df.attrs["parser_stats"] = parser_stats
+    return out_df, filtered_runs
 
 
 def extract_shared_phrase_samples(
@@ -482,15 +533,21 @@ def extract_shared_phrase_samples(
                 pos = txt.find(phrase)
                 if pos != -1:
                     seg = run[pos : pos + k_len]
-                    t_d = np.array([x[1] for x in seg], dtype=np.float32)
-                    holds = np.clip(np.array([x[2] for x in seg], dtype=np.float32), *bounds["H"])
-                    dds = np.clip(np.diff(t_d), *bounds["DD"])
-                    uds = np.clip(dds - holds[:-1], *bounds["UD"])
+                    t_d = np.array([x[1] for x in seg], dtype=np.float64)
+                    raw_holds = np.array([x[2] for x in seg], dtype=np.float32)
+                    raw_dds = np.diff(t_d).astype(np.float32)
+                    raw_uds = (raw_dds - raw_holds[:-1]).astype(np.float32)
+                    holds = np.clip(raw_holds, *bounds["H"]).astype(np.float32)
+                    dds = np.clip(raw_dds, *bounds["DD"]).astype(np.float32)
+                    uds = np.clip(raw_uds, *bounds["UD"]).astype(np.float32)
                     matched.append(
                         {
                             "participant": p,
                             "session": s,
                             "phrase": phrase,
+                            "raw_holds": raw_holds,
+                            "raw_dds": raw_dds,
+                            "raw_uds": raw_uds,
                             "holds": holds,
                             "dds": dds,
                             "uds": uds,
@@ -511,6 +568,11 @@ def build_sentence_split(
     holds = np.stack(sub["holds"].values, axis=0).astype(np.float32)
     dds = np.stack(sub["dds"].values, axis=0).astype(np.float32)
     uds = np.stack(sub["uds"].values, axis=0).astype(np.float32)
+    raw_holds = np.stack(sub["raw_holds"].values, axis=0).astype(np.float32)
+    raw_dds = np.stack(sub["raw_dds"].values, axis=0).astype(np.float32)
+    raw_uds = np.stack(sub["raw_uds"].values, axis=0).astype(np.float32)
+    t_ranges = np.asarray(sub["t_range"].tolist(), dtype=np.float64)
+    key_idx_ranges = np.asarray(sub["key_idx_range"].tolist(), dtype=np.int64)
     flat = build_flat_timings(holds, dds, uds)
     codes = sub["codes"].tolist()
     key_blocks = np.stack([key_channel_matrix(pairs_from_codes(c)) for c in codes], axis=0)
@@ -530,6 +592,11 @@ def build_sentence_split(
         texts=sub["text"].tolist(),
         key_blocks=key_blocks,
         codes=codes,
+        raw_holds=raw_holds,
+        raw_dds=raw_dds,
+        raw_uds=raw_uds,
+        t_ranges=t_ranges,
+        key_idx_ranges=key_idx_ranges,
     )
 
 
@@ -542,7 +609,8 @@ def load_keyrecs_fixed_split(
 ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """
     Load KeyRecs fixed-text typing sequences (10 keys -> L=9 digraphs) for the given subjects.
-    Returns (holds, dds, uds, seq_scaled, local_subject_ids).
+    Returns (raw_holds, raw_dds, raw_uds, seq_scaled, local_subject_ids) so callers augmenting
+    training batches receive unclipped raw timings while seq_scaled uses independently clipped timings.
     """
     if not fixed_csv_path.exists():
         return None
@@ -552,13 +620,16 @@ def load_keyrecs_fixed_split(
     if df.empty:
         return None
     subj_map = {s: idx for idx, s in enumerate(split_subjs)}
-    holds = np.clip(df[KEYRECS_HOLD_COLS].values.astype(np.float32), *bounds["H"])
-    dds = np.clip(df[KEYRECS_DD_COLS].values.astype(np.float32), *bounds["DD"])
-    uds = np.clip(dds - holds[:, :-1], *bounds["UD"])
+    raw_holds = df[KEYRECS_HOLD_COLS].values.astype(np.float32)
+    raw_dds = df[KEYRECS_DD_COLS].values.astype(np.float32)
+    raw_uds = (raw_dds - raw_holds[:, :-1]).astype(np.float32)
+    holds = np.clip(raw_holds, *bounds["H"]).astype(np.float32)
+    dds = np.clip(raw_dds, *bounds["DD"]).astype(np.float32)
+    uds = np.clip(raw_uds, *bounds["UD"]).astype(np.float32)
     seq_unscaled = extract_sequences(holds, dds, uds, KEYRECS_FIXED_KEY_BLOCK)
     seq_scaled = apply_channel_scaler(seq_unscaled, chan_mean, chan_std)
     sids = df["participant"].map(subj_map).values.astype(np.int64)
-    return holds, dds, uds, seq_scaled, sids
+    return raw_holds, raw_dds, raw_uds, seq_scaled, sids
 
 
 def prepare_full_pipeline(
@@ -579,17 +650,17 @@ def prepare_full_pipeline(
     raw_train_df = raw_df[raw_df["subject"].isin(train_subjs)].reset_index(drop=True)
     bounds = fit_outlier_bounds(raw_train_df)
 
-    # Compute Before vs After skewness / kurtosis metrics for reporting
-    before_skew = float(raw_df[all_cols].skew().mean())
-    before_max_skew = float(raw_df[all_cols].skew().max())
-    before_kurt = float(raw_df[all_cols].kurt().mean())
-
     clipped_df = apply_outlier_clipping(raw_df, bounds)
-    after_skew = float(clipped_df[all_cols].skew().mean())
-    after_max_skew = float(clipped_df[all_cols].skew().max())
-    after_kurt = float(clipped_df[all_cols].kurt().mean())
-
     train_clipped = clipped_df[clipped_df["subject"].isin(train_subjs)].reset_index(drop=True)
+
+    # Compute Before vs After skewness / kurtosis strictly on the exact same Train population (n=14,000)
+    before_skew = float(raw_train_df[all_cols].skew().mean())
+    before_max_skew = float(raw_train_df[all_cols].skew().max())
+    before_kurt = float(raw_train_df[all_cols].kurt().mean())
+    after_skew = float(train_clipped[all_cols].skew().mean())
+    after_max_skew = float(train_clipped[all_cols].skew().max())
+    after_kurt = float(train_clipped[all_cols].kurt().mean())
+
     _, cmu_train_seq_unscaled = dataframe_to_sequences(train_clipped)
 
     # Check if KeyRecs sentence corpus is available alongside CMU
@@ -599,13 +670,15 @@ def prepare_full_pipeline(
     kr_records_df = None
     kr_runs = None
     kr_splits_subjs = None
+    kr_parser_stats = None
     scaler_inputs = [cmu_train_seq_unscaled]
-    train_hold_pool = [train_clipped[hold_cols].values.astype(np.float32).ravel()]
+    train_hold_pool = [raw_train_df[hold_cols].values.astype(np.float32).ravel()]
 
     if free_csv_path.exists():
         kr_records_df, kr_runs = parse_keyrecs_sentence_corpus(
-            free_csv_path, bounds, window_keys=25, stride_keys=20
+            free_csv_path, bounds, window_keys=25, stride_keys=25
         )
+        kr_parser_stats = dict(kr_records_df.attrs.get("parser_stats", {}))
         kr_all_subjs = sorted(kr_records_df["participant"].unique().tolist())
         kr_train_s, kr_val_s, kr_test_s = split_subjects_disjoint(
             kr_all_subjs, n_train=68, n_val=10, seed=seed
@@ -615,11 +688,12 @@ def prepare_full_pipeline(
         kr_h = np.stack(kr_train_df["holds"].values, axis=0).astype(np.float32)
         kr_d = np.stack(kr_train_df["dds"].values, axis=0).astype(np.float32)
         kr_u = np.stack(kr_train_df["uds"].values, axis=0).astype(np.float32)
+        kr_raw_h = np.stack(kr_train_df["raw_holds"].values, axis=0).astype(np.float32)
         kr_kb = np.stack(
             [key_channel_matrix(pairs_from_codes(c)) for c in kr_train_df["codes"].tolist()], axis=0
         )
         scaler_inputs.append(extract_sequences(kr_h, kr_d, kr_u, kr_kb))
-        train_hold_pool.append(kr_h.ravel())
+        train_hold_pool.append(kr_raw_h.ravel())
 
     chan_mean, chan_std = fit_channel_scaler(scaler_inputs)
     # Median hold of Train keystrokes: imputed for touch keyboards that expose no keyup timing
@@ -631,6 +705,7 @@ def prepare_full_pipeline(
         ("val", val_subjs),
         ("test", test_subjs),
     ]:
+        raw_sub_df = raw_df[raw_df["subject"].isin(split_subjs)].reset_index(drop=True)
         sub_df = clipped_df[clipped_df["subject"].isin(split_subjs)].reset_index(drop=True)
         subj_to_idx = {s: idx for idx, s in enumerate(split_subjs)}
         flat, seq_unscaled = dataframe_to_sequences(sub_df)
@@ -645,6 +720,9 @@ def prepare_full_pipeline(
             sessions=sub_df["sessionIndex"].values.astype(np.int64),
             reps=sub_df["rep"].values.astype(np.int64),
             key_block=CMU_KEY_BLOCK,
+            raw_holds=raw_sub_df[hold_cols].values.astype(np.float32),
+            raw_dds=raw_sub_df[dd_cols].values.astype(np.float32),
+            raw_uds=raw_sub_df[ud_cols].values.astype(np.float32),
         )
 
     sentence_splits: Dict[str, SentenceSplitData] = {}
@@ -658,31 +736,48 @@ def prepare_full_pipeline(
         keyrecs_fixed_train = load_keyrecs_fixed_split(
             fixed_csv_path, kr_splits_subjs["train"], bounds, chan_mean, chan_std
         )
+        n_kr_tot = sum(len(v) for v in kr_splits_subjs.values())
+        n_chunks_tot = sum(int(len(sentence_splits[sn].subject_ids)) for sn in ("train", "val", "test"))
         keyrecs_meta = {
-            "total_valid_subjects": sum(len(v) for v in kr_splits_subjs.values()),
+            **(kr_parser_stats or {}),
+            "total_valid_subjects": n_kr_tot,
             "train_subjects": len(kr_splits_subjs["train"]),
+            "train_participants": len(kr_splits_subjs["train"]),
+            "train_subjects_pct": round(len(kr_splits_subjs["train"]) / max(1, n_kr_tot) * 100.0, 2),
             "train_sentence_chunks": int(len(sentence_splits["train"].subject_ids)),
+            "train_chunks_pct": round(len(sentence_splits["train"].subject_ids) / max(1, n_chunks_tot) * 100.0, 2),
             "train_fixed_strokes": int(len(keyrecs_fixed_train[4])) if keyrecs_fixed_train is not None else 0,
             "val_subjects": len(kr_splits_subjs["val"]),
+            "val_participants": len(kr_splits_subjs["val"]),
+            "val_subjects_pct": round(len(kr_splits_subjs["val"]) / max(1, n_kr_tot) * 100.0, 2),
             "val_sentence_chunks": int(len(sentence_splits["val"].subject_ids)),
+            "val_chunks_pct": round(len(sentence_splits["val"].subject_ids) / max(1, n_chunks_tot) * 100.0, 2),
             "test_subjects": len(kr_splits_subjs["test"]),
+            "test_participants": len(kr_splits_subjs["test"]),
+            "test_subjects_pct": round(len(kr_splits_subjs["test"]) / max(1, n_kr_tot) * 100.0, 2),
             "test_sentence_chunks": int(len(sentence_splits["test"].subject_ids)),
+            "test_chunks_pct": round(len(sentence_splits["test"].subject_ids) / max(1, n_chunks_tot) * 100.0, 2),
             "sentence_window_keys": 25,
+            "sentence_stride_keys": 25,
             "sentence_digraphs": 24,
         }
 
+    n_cmu_tot = len(subjects)
     processed_dir.mkdir(parents=True, exist_ok=True)
     metadata = {
         "seed": seed,
         "dataset_rows": int(len(raw_df)),
         "dataset_cols": int(raw_df.shape[1]),
-        "num_subjects_total": len(subjects),
+        "num_subjects_total": n_cmu_tot,
         "split_counts": {
             "train_subjects": len(train_subjs),
+            "train_subjects_pct": round(len(train_subjs) / max(1, n_cmu_tot) * 100.0, 2),
             "train_samples": int(len(splits["train"].df)),
             "val_subjects": len(val_subjs),
+            "val_subjects_pct": round(len(val_subjs) / max(1, n_cmu_tot) * 100.0, 2),
             "val_samples": int(len(splits["val"].df)),
             "test_subjects": len(test_subjs),
+            "test_subjects_pct": round(len(test_subjs) / max(1, n_cmu_tot) * 100.0, 2),
             "test_samples": int(len(splits["test"].df)),
         },
         "keyrecs_sentence_corpus": keyrecs_meta,
@@ -693,13 +788,15 @@ def prepare_full_pipeline(
         },
         "outlier_bounds": bounds,
         "preprocessing_before_after": {
+            "population": "CMU Train split (35 subjects, n=14,000)",
+            "population_n": int(len(raw_train_df)),
             "before_mean_skewness": round(before_skew, 4),
             "after_mean_skewness": round(after_skew, 4),
             "before_max_skewness": round(before_max_skew, 4),
             "after_max_skewness": round(after_max_skew, 4),
             "before_mean_kurtosis": round(before_kurt, 4),
             "after_mean_kurtosis": round(after_kurt, 4),
-            "rollover_ratio_pct": round(float((raw_df[ud_cols] < 0).values.mean() * 100), 2),
+            "rollover_ratio_pct": round(float((raw_train_df[ud_cols] < 0).values.mean() * 100), 2),
         },
         "channel_names": CHANNEL_NAMES,
         "digraph_labels": DIGRAPH_LABELS,

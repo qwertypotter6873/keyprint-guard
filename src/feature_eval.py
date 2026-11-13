@@ -288,9 +288,19 @@ def capture_stats(cap: Dict) -> Dict[str, int]:
 
 def stroke_payload(cap: Dict) -> Dict:
     r5 = lambda v: None if v is None else round(float(v), 5)  # noqa: E731
+    u_holds = cap["holds"]
+    u_hv = cap["hold_valid"]
+    h_curr = cap.get("h_curr", u_holds[:-1])
+    h_next = cap.get("h_next", u_holds[1:])
+    hv_curr = cap.get("hv_curr", u_hv[:-1])
+    hv_next = cap.get("hv_next", u_hv[1:])
     return {
-        "holds": [r5(h) for h in cap["holds"]],
-        "holdValid": [bool(v) for v in cap["hold_valid"]],
+        "holds": [r5(h) for h in u_holds],
+        "holdValid": [bool(v) for v in u_hv],
+        "hCurr": [r5(h) for h in h_curr],
+        "hNext": [r5(h) for h in h_next],
+        "hvCurr": [bool(v) for v in hv_curr],
+        "hvNext": [bool(v) for v in hv_next],
         "dds": [r5(d) for d in cap["dds"]],
         "uds": [r5(u) for u in cap["uds"]],
         "stitchFlags": [bool(v) for v in cap.get("stitch_flags", [False] * len(cap["dds"]))],
@@ -299,9 +309,15 @@ def stroke_payload(cap: Dict) -> Dict:
 
 
 def fixed_stroke_capture(holds: Sequence[float], dds: Sequence[float], uds: Sequence[float], codes: Sequence[str]) -> Dict:
+    h_list = [float(h) for h in holds]
+    hv_list = [True] * len(h_list)
     return {
-        "holds": [float(h) for h in holds],
-        "hold_valid": [True] * len(holds),
+        "holds": h_list,
+        "hold_valid": hv_list,
+        "h_curr": h_list[:-1],
+        "h_next": h_list[1:],
+        "hv_curr": hv_list[:-1],
+        "hv_next": hv_list[1:],
         "dds": [float(d) for d in dds],
         "uds": [float(u) for u in uds],
         "stitch_flags": [False] * len(dds),
@@ -320,7 +336,7 @@ def template_payload(embs: np.ndarray, caps: Sequence[Dict], behavior: Dict, inp
         "cpm": avg("cpm"),
         "holdMs": avg("holdMs"),
         "rolloverPct": avg("rolloverPct"),
-        "behavior": {k: [round(v[0], 6), v[1]] for k, v in behavior.items()},
+        "behavior": {k: [round(float(v[0]), 6), int(round(v[1]))] for k, v in behavior.items()},
         "inputMode": input_mode,
     }
 
@@ -426,9 +442,12 @@ def eval_password_transfer(
     df = pd.read_csv(fixed_csv)
     df.columns = [c.strip() for c in df.columns]
     df = df[df["participant"].isin(participants)].dropna(subset=KEYRECS_HOLD_COLS + KEYRECS_DD_COLS).reset_index(drop=True)
-    h = np.clip(df[KEYRECS_HOLD_COLS].values.astype(np.float32), *bounds["H"])
-    d = np.clip(df[KEYRECS_DD_COLS].values.astype(np.float32), *bounds["DD"])
-    u = np.clip(d - h[:, :-1], *bounds["UD"])
+    raw_h = df[KEYRECS_HOLD_COLS].values.astype(np.float32)
+    raw_d = df[KEYRECS_DD_COLS].values.astype(np.float32)
+    raw_u = (raw_d - raw_h[:, :-1]).astype(np.float32)
+    h = np.clip(raw_h, *bounds["H"]).astype(np.float32)
+    d = np.clip(raw_d, *bounds["DD"]).astype(np.float32)
+    u = np.clip(raw_u, *bounds["UD"]).astype(np.float32)
     seq = apply_channel_scaler(extract_sequences(h, d, u, KEYRECS_FIXED_KEY_BLOCK), mean, std)
     P, S = df["participant"].values, df["session"].values
     groups = []
@@ -480,9 +499,10 @@ def eval_password_transfer(
         for p, dd_ in per.items():
             for s in (1, 2):
                 for k, (hs, dd) in enumerate(dd_[s]):
+                    raw_u = (dd - hs[:-1]).astype(np.float32)
                     hh = np.clip(hs, *bounds["H"]).astype(np.float32)
                     dc = np.clip(dd, *bounds["DD"]).astype(np.float32)
-                    uu = np.clip(dc - hh[:-1], *bounds["UD"]).astype(np.float32)
+                    uu = np.clip(raw_u, *bounds["UD"]).astype(np.float32)
                     seqs.append(apply_channel_scaler(extract_sequences(hh[None], dc[None], uu[None], kb[None]), mean, std)[0])
                     index[(p, s, k)] = len(seqs) - 1
         used = 0

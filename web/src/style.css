@@ -137,6 +137,76 @@ body {
   background: var(--emerald);
 }
 
+.engine-pill.is-error .status-dot {
+  background: var(--rose);
+}
+
+.compat-notice {
+  margin-bottom: 14px;
+  padding: 9px 14px;
+  border-radius: var(--radius-md);
+  background: var(--amber-bg);
+  border: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 0.79rem;
+  font-weight: 600;
+}
+
+.public-room-notice {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--amber-bg);
+  border: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 0.81rem;
+  line-height: 1.5;
+  font-weight: 550;
+}
+
+.public-room-notice.is-compact {
+  padding: 8px 12px;
+  font-size: 0.77rem;
+}
+
+.viz-verdict-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 13px;
+  border-radius: 11px;
+  font-size: 0.8rem;
+  font-weight: 650;
+  border: 1px solid var(--border-hairline);
+  background: #f8fafc;
+  color: var(--ink-secondary);
+}
+
+.viz-verdict-banner.is-pass {
+  background: var(--emerald-bg);
+  border-color: var(--emerald-border);
+  color: #065f46;
+}
+
+.viz-verdict-banner.is-block {
+  background: var(--rose-bg);
+  border-color: var(--rose-border);
+  color: #9f1239;
+}
+
+.viz-adapt-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
 /* Mode Segmented Control */
 .mode-nav {
   display: inline-flex;

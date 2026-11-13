@@ -94,12 +94,18 @@ def _valid_hold(h: Optional[float], keep_long: bool = False) -> Optional[float]:
 
 
 def extract_clean_stroke(stack: Sequence[Stroke], events: Sequence[Event], backspace_count: int = 0) -> Dict:
-    holds: List[Optional[float]] = []
-    hold_valid: List[bool] = []
+    unique_holds: List[Optional[float]] = []
+    unique_hold_valid: List[bool] = []
+    h_curr: List[Optional[float]] = []
+    h_next: List[Optional[float]] = []
+    hv_curr: List[bool] = []
+    hv_next: List[bool] = []
     dds: List[float] = []
     uds: List[Optional[float]] = []
-    stitch: List[bool] = []
+    stitch_flags: List[bool] = []
     pair_keys: List[List[str]] = []
+    prev_next_idx: Optional[int] = None
+
     for i in range(len(stack) - 1):
         c0, c1 = stack[i], stack[i + 1]
         if not c1.clean_from_prev or c0.synthetic or c1.synthetic:
@@ -110,27 +116,43 @@ def extract_clean_stroke(stack: Sequence[Stroke], events: Sequence[Event], backs
         dd = c1.down - c0.down
         if dd < MIN_DD or dd > MAX_DD:
             continue
+
+        is_new_segment = (len(dds) == 0) or (prev_next_idx != i)
+        is_stitched = (len(dds) > 0) and (prev_next_idx != i or not c0.clean_from_prev)
+
+        h_curr.append(h0)
+        h_next.append(h1)
+        hv_curr.append(h0 is not None)
+        hv_next.append(h1 is not None)
+
+        if is_new_segment:
+            unique_holds.append(h0)
+            unique_hold_valid.append(h0 is not None)
+        unique_holds.append(h1)
+        unique_hold_valid.append(h1 is not None)
+
         ud = (c1.down - (c0.down + h0)) if h0 is not None else None
-        if not holds:
-            holds.append(h0)
-            hold_valid.append(h0 is not None)
-        holds.append(h1)
-        hold_valid.append(h1 is not None)
         dds.append(dd)
         uds.append(ud)
-        stitch.append(i > 0 and not c0.clean_from_prev)
+        stitch_flags.append(is_stitched)
         pair_keys.append([c0.key, c1.key])
+        prev_next_idx = i + 1
+
     return {
-        "holds": holds,
-        "hold_valid": hold_valid,
+        "holds": unique_holds,
+        "hold_valid": unique_hold_valid,
+        "h_curr": h_curr,
+        "h_next": h_next,
+        "hv_curr": hv_curr,
+        "hv_next": hv_next,
         "dds": dds,
         "uds": uds,
-        "stitch_flags": stitch,
+        "stitch_flags": stitch_flags,
         "pair_keys": pair_keys,
         "clean_digraphs": len(dds),
         "backspace_count": backspace_count,
         "behavior": summarize(events),
-        "input_mode": input_mode_of(hold_valid),
+        "input_mode": input_mode_of(unique_hold_valid),
     }
 
 
@@ -161,32 +183,88 @@ def build_input_tensor(
     std: np.ndarray,
 ) -> np.ndarray:
     """Exact Python counterpart of features.js::buildInputTensor -> (17, M) scaled tensor."""
+    m = len(stroke["dds"])
+    if m == 0:
+        return np.zeros((len(mean), 0), dtype=np.float32)
+
     eps = 1e-4
     clip = lambda v, b: min(b[1], max(b[0], v))  # noqa: E731
     h_imp = clip(impute_hold, bounds["H"])
-    holds = [clip(h if h is not None else h_imp, bounds["H"]) for h in stroke["holds"]]
-    dds = [clip(d, bounds["DD"]) for d in stroke["dds"]]
-    uds = [clip(u if u is not None else dds[t] - h_imp, bounds["UD"]) for t, u in enumerate(stroke["uds"])]
-    hv = stroke["hold_valid"]
-    stitch = stroke.get("stitch_flags") or [False] * len(dds)
-    m = len(dds)
-    mean_h = max(eps, sum(holds) / len(holds))
-    mean_dd = max(eps, sum(dds) / len(dds))
+
+    u_holds = stroke["holds"]
+    u_hv = stroke["hold_valid"] if "hold_valid" in stroke else stroke["holdValid"]
+    h_curr_raw = stroke["h_curr"] if "h_curr" in stroke else (stroke["hCurr"] if "hCurr" in stroke else u_holds[:-1])
+    h_next_raw = stroke["h_next"] if "h_next" in stroke else (stroke["hNext"] if "hNext" in stroke else u_holds[1:])
+    hv_curr = stroke["hv_curr"] if "hv_curr" in stroke else (stroke["hvCurr"] if "hvCurr" in stroke else u_hv[:-1])
+    hv_next = stroke["hv_next"] if "hv_next" in stroke else (stroke["hvNext"] if "hvNext" in stroke else u_hv[1:])
+
+    c_unique_holds = [clip(h if h is not None else h_imp, bounds["H"]) for h in u_holds]
+    c_h_curr = [clip(h if (hv_curr[t] and h is not None) else h_imp, bounds["H"]) for t, h in enumerate(h_curr_raw)]
+    c_h_next = [clip(h if (hv_next[t] and h is not None) else h_imp, bounds["H"]) for t, h in enumerate(h_next_raw)]
+    c_dds = [clip(d, bounds["DD"]) for d in stroke["dds"]]
+    c_uds = [
+        clip(u, bounds["UD"]) if (hv_curr[t] and u is not None) else clip(c_dds[t] - h_imp, bounds["UD"])
+        for t, u in enumerate(stroke["uds"])
+    ]
+    stitch = stroke.get("stitch_flags") or stroke.get("stitchFlags") or [False] * m
+    pair_keys = stroke["pair_keys"] if "pair_keys" in stroke else stroke["pairKeys"]
+
+    mean_h = max(eps, sum(c_unique_holds) / len(c_unique_holds))
+    mean_dd = max(eps, sum(c_dds) / len(c_dds))
     out = np.zeros((len(mean), m), dtype=np.float64)
     for t in range(m):
-        h_curr, h_next, dd, ud = holds[t], holds[t + 1], dds[t], uds[t]
-        local_accel = 0.0 if (t == 0 or stitch[t]) else dd - dds[t - 1]
-        a, b = stroke["pair_keys"][t]
+        h_curr, h_next, dd, ud = c_h_curr[t], c_h_next[t], c_dds[t], c_uds[t]
+        local_accel = 0.0 if (t == 0 or stitch[t]) else dd - c_dds[t - 1]
+        a, b = pair_keys[t]
+        valid = 1.0 if (hv_curr[t] and hv_next[t]) else 0.0
         raw = [
             h_curr, h_next, dd, ud,
             h_curr / mean_h, dd / mean_dd,
             min(5.0, max(0.0, h_curr / max(dd, 0.02))),
             max(0.0, -ud), local_accel,
             *key_pair_features(resolve_key(a), resolve_key(b)),
-            1.0 if (hv[t] and hv[t + 1]) else 0.0,
+            valid,
         ]
         out[:, t] = raw
     return ((out - mean[:, None]) / std[:, None]).astype(np.float32)
+
+
+def extract_naive_unrepaired_stroke(
+    seg_raw: Sequence[Tuple[str, float, float]],
+    touch: bool = False,
+) -> Dict:
+    """Replay a raw segment WITHOUT Backspace stack-pop or stitch acceleration reset."""
+    naive_stack: List[Stroke] = []
+    events: List[Event] = []
+    bs_count = 0
+    for label, t, h in seg_raw:
+        kind, side = kind_of(label)
+        if kind == "other":
+            continue
+        if kind in ("shift", "caps"):
+            if not touch:
+                events.append(Event(kind=kind, t=t, hold=_valid_hold(h), side=side))
+            continue
+        events.append(Event(kind=kind, t=t, hold=None if touch else _valid_hold(h, keep_long=True)))
+        if kind == "bs":
+            bs_count += 1
+        code = "Backspace" if kind == "bs" else ("Space" if kind == "space" else code_for_label(label))
+        char = " " if kind == "space" else (label if kind == "char" else "")
+        paused = bool(naive_stack) and (t - naive_stack[-1].down) > LONG_PAUSE_SEC
+        soft = touch or not code
+        key = f"char:{char}" if soft else code
+        naive_stack.append(
+            Stroke(
+                key=key,
+                down=t,
+                hold=None if soft else _valid_hold(h, keep_long=True),
+                clean_from_prev=(not naive_stack) or (not paused),
+            )
+        )
+    cap = extract_clean_stroke(naive_stack, events, bs_count)
+    # Naive stream also lacks stitch-flag protection on local_accel
+    cap["stitch_flags"] = [False] * len(cap["dds"])
+    return cap
 
 
 def simulate_captures(
@@ -198,18 +276,24 @@ def simulate_captures(
     """Replay a KeyRecs session as consecutive web captures of `target_chars` surviving chars."""
     rec = RecorderSim(touch=touch)
     caps = []
+    seg_raw: List[Tuple[str, float, float]] = []
     for label, t, h in raw:
         kind, _ = kind_of(label)
         if kind == "other":
             continue
+        seg_raw.append((label, t, h))
         code = "Backspace" if kind == "bs" else ("ShiftLeft" if kind == "shift" else ("CapsLock" if kind == "caps" else code_for_label(label)))
         char = " " if kind == "space" else (label if kind == "char" else "")
         rec.feed(code, char, t, h)
+        if not rec.stack and rec.backspace_count == 0 and kind == "bs":
+            seg_raw = []
         if len(rec.stack) >= target_chars:
             cap = rec.extract()
             if cap["clean_digraphs"] >= min_digraphs:
+                cap["_raw_segment"] = list(seg_raw)
                 caps.append(cap)
             rec.reset()
+            seg_raw = []
     return caps
 
 
@@ -303,7 +387,23 @@ def js_event_script(raw: Sequence[Tuple[str, float, float]], touch: bool) -> Lis
 
 
 def _jsonable_stroke(cap: Dict) -> Dict:
-    return {k: cap[k] for k in ("holds", "hold_valid", "dds", "uds", "stitch_flags", "pair_keys", "clean_digraphs", "input_mode")}
+    return {
+        k: cap[k]
+        for k in (
+            "holds",
+            "hold_valid",
+            "h_curr",
+            "h_next",
+            "hv_curr",
+            "hv_next",
+            "dds",
+            "uds",
+            "stitch_flags",
+            "pair_keys",
+            "clean_digraphs",
+            "input_mode",
+        )
+    }
 
 
 def export_parity_fixture(

@@ -8,11 +8,11 @@
   "training": "scratch (deep_metric_learning)",
   "models": [
     "ScaledManhattanDetector (Baseline 1 - Statistical Anomaly & Distance Classifier)",
-    "Vanilla1DCNN (Baseline 2 - Scratch Softmax Cross-Entropy)",
-    "KeyPrintNet (Proposed - Positional MultiScale ResSE-1DCNN + ASP/1D-DCT + Domain-Split SubCenter-CosFace + AS-Norm)"
+    "Vanilla1DCNN (Baseline 2 - Scratch Softmax Cross-Entropy, Unaugmented & Controlled Aug/AS-Norm)",
+    "KeyPrintNet (Proposed - Positional MultiScale ResSE-1DCNN + ASP/1D-DCT + SubCenter-CosFace + SupCon + AS-Norm)"
   ],
   "primary_metric": {
     "name": "Macro F1-Score",
-    "value": 0.861
+    "value": 0.8491
   }
 }

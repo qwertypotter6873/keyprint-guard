@@ -81,52 +81,119 @@ export function keyPairFeatures(codeA, codeB, layout) {
  * Unknown holds (touch keyboards) are imputed with the Train median and flagged.
  */
 export function buildInputTensor(stroke, config) {
-  const { holds, dds, uds, stitchFlags = [], pairKeys = [], holdValid = [] } = stroke;
+  const {
+    holds = [],
+    holdValid = [],
+    hCurr,
+    hNext,
+    hvCurr,
+    hvNext,
+    dds = [],
+    uds = [],
+    stitchFlags = [],
+    pairKeys = [],
+  } = stroke || {};
   const m = dds.length;
+  const nCh = config.in_channels;
+  if (m === 0) {
+    return {
+      tensorData: new Float32Array(0),
+      dims: [1, nCh, 0],
+      cleanStroke: { holds: [], hCurr: [], hNext: [], dds: [], uds: [] },
+    };
+  }
+
+  const rawHCurr = Array.isArray(hCurr) ? hCurr : holds.slice(0, m);
+  const rawHNext = Array.isArray(hNext) ? hNext : holds.slice(1, m + 1);
+  const maskCurr = Array.isArray(hvCurr)
+    ? hvCurr.map(Boolean)
+    : holdValid.length
+      ? holdValid.slice(0, m).map(Boolean)
+      : rawHCurr.map((v) => v !== null && v !== undefined);
+  const maskNext = Array.isArray(hvNext)
+    ? hvNext.map(Boolean)
+    : holdValid.length
+      ? holdValid.slice(1, m + 1).map(Boolean)
+      : rawHNext.map((v) => v !== null && v !== undefined);
+
+  let rawUniqueHolds = holds;
+  let uniqueMask = holdValid;
+  if (!Array.isArray(rawUniqueHolds) || rawUniqueHolds.length === 0) {
+    rawUniqueHolds = [rawHCurr[0]];
+    uniqueMask = [maskCurr[0]];
+    for (let t = 0; t < m; t++) {
+      if (t > 0 && stitchFlags[t]) {
+        rawUniqueHolds.push(rawHCurr[t]);
+        uniqueMask.push(maskCurr[t]);
+      }
+      rawUniqueHolds.push(rawHNext[t]);
+      uniqueMask.push(maskNext[t]);
+    }
+  }
+
   const bounds = config.outlier_bounds;
   const layout = config.keyboard_layout;
   const eps = 1e-4;
   const clip = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
   const hImp = clip(config.touch_hold_impute_sec ?? 0.09, bounds.H);
 
-  const cHolds = holds.map((v) => clip(v === null || v === undefined ? hImp : v, bounds.H));
+  const cUniqueHolds = rawUniqueHolds.map((v, idx) => {
+    const isValid = uniqueMask.length === rawUniqueHolds.length ? Boolean(uniqueMask[idx]) : true;
+    return clip(!isValid || v === null || v === undefined ? hImp : v, bounds.H);
+  });
+  const cHCurr = rawHCurr.map((v, t) =>
+    clip(!maskCurr[t] || v === null || v === undefined ? hImp : v, bounds.H)
+  );
+  const cHNext = rawHNext.map((v, t) =>
+    clip(!maskNext[t] || v === null || v === undefined ? hImp : v, bounds.H)
+  );
   const cDds = dds.map((v) => clip(v, bounds.DD));
-  const cUds = uds.map((v, t) => clip(v === null || v === undefined ? cDds[t] - hImp : v, bounds.UD));
+  const cUds = uds.map((v, t) =>
+    maskCurr[t] && v !== null && v !== undefined
+      ? clip(v, bounds.UD)
+      : clip(cDds[t] - hImp, bounds.UD)
+  );
 
-  const meanH = Math.max(eps, cHolds.reduce((a, b) => a + b, 0) / cHolds.length);
-  const meanDD = Math.max(eps, cDds.reduce((a, b) => a + b, 0) / cDds.length);
+  const meanH = Math.max(
+    eps,
+    cUniqueHolds.reduce((a, b) => a + b, 0) / Math.max(1, cUniqueHolds.length)
+  );
+  const meanDD = Math.max(eps, cDds.reduce((a, b) => a + b, 0) / Math.max(1, cDds.length));
 
-  const nCh = config.in_channels;
   const data = new Float32Array(nCh * m);
   const chMean = config.channel_mean;
   const chStd = config.channel_std;
 
   for (let t = 0; t < m; t++) {
-    const hCurr = cHolds[t];
-    const hNext = cHolds[t + 1];
+    const hc = cHCurr[t];
+    const hn = cHNext[t];
     const dd = cDds[t];
     const ud = cUds[t];
     const localAccel = t === 0 || stitchFlags[t] ? 0.0 : dd - cDds[t - 1];
     const [ka, kb] = pairKeys[t] || [null, null];
-    const valid = holdValid.length ? holdValid[t] && holdValid[t + 1] : true;
+    const valid = maskCurr[t] && maskNext[t] ? 1.0 : 0.0;
     const raw = [
-      hCurr,
-      hNext,
+      hc,
+      hn,
       dd,
       ud,
-      hCurr / meanH,
+      hc / meanH,
       dd / meanDD,
-      Math.min(5.0, Math.max(0.0, hCurr / Math.max(dd, 0.02))),
+      Math.min(5.0, Math.max(0.0, hc / Math.max(dd, 0.02))),
       Math.max(0.0, -ud),
       localAccel,
       ...keyPairFeatures(resolveKey(ka, layout), resolveKey(kb, layout), layout),
-      valid ? 1.0 : 0.0,
+      valid,
     ];
     for (let c = 0; c < nCh; c++) {
       data[c * m + t] = (raw[c] - chMean[c]) / chStd[c];
     }
   }
-  return { tensorData: data, dims: [1, nCh, m], cleanStroke: { holds: cHolds, dds: cDds, uds: cUds } };
+  return {
+    tensorData: data,
+    dims: [1, nCh, m],
+    cleanStroke: { holds: cUniqueHolds, hCurr: cHCurr, hNext: cHNext, dds: cDds, uds: cUds },
+  };
 }
 
 // ---------------------------------------------------------------------------------------

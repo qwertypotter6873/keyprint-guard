@@ -292,25 +292,202 @@ def fit_behavior_model(
 
 
 # ---------------------------------------------------------------------------------------
-# KeyRecs raw-stream loading (press-ordered events with hold durations)
+# KeyRecs raw-stream loading (lossless line-by-line parser + press-ordered events)
 # ---------------------------------------------------------------------------------------
-def load_keyrecs_sessions(free_csv_path) -> Dict[Tuple[str, int], List[Tuple[str, float, float]]]:
-    """Return {(participant, session): [(key_label, t_down, hold), ...]} sorted by keydown."""
-    import pandas as pd
+SESSION_BREAK_GAP_SEC = 100.0
 
-    df = pd.read_csv(free_csv_path, low_memory=False)
-    df.columns = [c.strip() for c in df.columns]
-    for col in ["DU.key1.key1", "DD.key1.key2"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["DU.key1.key1", "DD.key1.key2"])
-    out = {}
-    for (participant, session), grp in df.groupby(["participant", "session"]):
-        keys = grp["key1"].astype(str).tolist()
-        holds = grp["DU.key1.key1"].to_numpy(dtype=np.float64)
-        dds = grp["DD.key1.key2"].to_numpy(dtype=np.float64)
-        t = np.concatenate([[0.0], np.cumsum(dds[:-1])])
-        order = np.argsort(t, kind="stable")
-        out[(str(participant), int(session))] = [(keys[i], float(t[i]), float(holds[i])) for i in order]
+
+def parse_keyrecs_free_csv(
+    free_csv_path,
+) -> Tuple[Dict[Tuple[str, int], List[Tuple[str, str, float, float]]], Dict[str, int]]:
+    """
+    Lossless line-by-line parser for KeyRecs-free-text.csv.
+    - Protects quoted comma tokens (\",\") while preserving unescaped literal '\"' keystrokes (26 rows).
+    - Recovers all 562,398 transition rows AND all 198 session-end trailing strokes (k2 == \"\" and dd == \"\").
+    - Emits an explicit (\"break\", \"\", 0.0, 0.0) discontinuity marker whenever any corrupt/unparseable
+      row occurs mid-session so adjacent valid rows are never bridged across a dropped row.
+    """
+    from collections import defaultdict
+
+    rows_by_ps: Dict[Tuple[str, int], List[Tuple[str, str, float, float]]] = defaultdict(list)
+    active_ps: Optional[Tuple[str, int]] = None
+    prev_k2_by_ps: Dict[Tuple[str, int], Optional[str]] = {}
+    stats = {
+        "total_lines": 0,
+        "valid_transitions": 0,
+        "session_end_strokes": 0,
+        "recovered_quote_rows": 0,
+        "corrupt_rows": 0,
+    }
+
+    with open(free_csv_path, "r", encoding="utf-8") as f:
+        f.readline()  # skip header
+        for raw_line in f:
+            line = raw_line.rstrip("\r\n")
+            if not line:
+                continue
+            stats["total_lines"] += 1
+
+            head_parts = line.split(",", 2)
+            if len(head_parts) < 3:
+                stats["corrupt_rows"] += 1
+                if active_ps is not None:
+                    rows_by_ps[active_ps].append(("break", "", 0.0, 0.0))
+                    prev_k2_by_ps[active_ps] = None
+                continue
+
+            p_raw, s_raw, rem = head_parts
+            p_clean = p_raw.strip()
+            try:
+                sess_int = int(s_raw.strip())
+                if not p_clean:
+                    raise ValueError("empty participant")
+                ps = (p_clean, sess_int)
+                active_ps = ps
+            except ValueError:
+                stats["corrupt_rows"] += 1
+                if active_ps is not None:
+                    rows_by_ps[active_ps].append(("break", "", 0.0, 0.0))
+                    prev_k2_by_ps[active_ps] = None
+                continue
+
+            # Strip optional trailing empty 10th column if present
+            if rem.endswith(","):
+                cand = rem[:-1]
+                if cand.count(",") >= 6:
+                    rem = cand
+
+            tail_parts = rem.rsplit(",", 5)
+            if len(tail_parts) != 6:
+                stats["corrupt_rows"] += 1
+                rows_by_ps[ps].append(("break", "", 0.0, 0.0))
+                prev_k2_by_ps[ps] = None
+                continue
+
+            keys_part, du1_raw, dd_raw, _du12_raw, _ud_raw, _uu_raw = tail_parts
+            if keys_part == '","","':
+                k1, k2 = ",", ","
+            elif keys_part == '",","':
+                # Unescaped `"` adjacent to quoted `","` produces identical 5-char `",","`;
+                # disambiguate losslessly using the preceding transition's key2 in this session.
+                if prev_k2_by_ps.get(ps) == '"':
+                    k1, k2 = '"', ","
+                else:
+                    k1, k2 = ",", '"'
+            elif keys_part.startswith('",",'):
+                k1, k2 = ",", keys_part[4:]
+            elif keys_part.endswith(',","'):
+                k1, k2 = keys_part[:-4], ","
+            else:
+                kp = keys_part.split(",")
+                if len(kp) != 2:
+                    stats["corrupt_rows"] += 1
+                    rows_by_ps[ps].append(("break", "", 0.0, 0.0))
+                    prev_k2_by_ps[ps] = None
+                    continue
+                k1, k2 = kp
+
+            try:
+                h1 = float(du1_raw)
+                if not (math.isfinite(h1) and h1 >= 0.0) or not k1:
+                    raise ValueError("invalid hold or empty key1")
+            except ValueError:
+                stats["corrupt_rows"] += 1
+                rows_by_ps[ps].append(("break", "", 0.0, 0.0))
+                prev_k2_by_ps[ps] = None
+                continue
+
+            if k2 == "" and dd_raw == "":
+                if not (h1 > 0.0):
+                    stats["corrupt_rows"] += 1
+                    rows_by_ps[ps].append(("break", "", 0.0, 0.0))
+                    prev_k2_by_ps[ps] = None
+                    continue
+                stats["session_end_strokes"] += 1
+                if k1 == '"':
+                    stats["recovered_quote_rows"] += 1
+                rows_by_ps[ps].append(("end", k1, h1, 0.0))
+                prev_k2_by_ps[ps] = None
+            else:
+                if not k2 or dd_raw == "":
+                    stats["corrupt_rows"] += 1
+                    rows_by_ps[ps].append(("break", "", 0.0, 0.0))
+                    prev_k2_by_ps[ps] = None
+                    continue
+                try:
+                    dd = float(dd_raw)
+                    if not math.isfinite(dd):
+                        raise ValueError("non-finite dd")
+                except ValueError:
+                    stats["corrupt_rows"] += 1
+                    rows_by_ps[ps].append(("break", "", 0.0, 0.0))
+                    prev_k2_by_ps[ps] = None
+                    continue
+                stats["valid_transitions"] += 1
+                if k1 == '"' or k2 == '"':
+                    stats["recovered_quote_rows"] += 1
+                rows_by_ps[ps].append(("trans", k1, h1, dd))
+                prev_k2_by_ps[ps] = k2
+
+    stats["raw_participants"] = len({p for p, _ in rows_by_ps})
+    stats["raw_sessions"] = len(rows_by_ps)
+    return dict(rows_by_ps), stats
+
+
+def load_keyrecs_sessions(free_csv_path) -> Dict[Tuple[str, int], List[Tuple[str, float, float]]]:
+    """Return {(participant, session): [(key_label, t_down, hold), ...]} sorted by keydown.
+    Includes session-end trailing strokes at t[N] = sum(dds[:N]) and inserts a >=100s gap across
+    any mid-session corrupt-row discontinuity so RecorderSim never bridges across a dropped row."""
+    rows_by_ps, _ = parse_keyrecs_free_csv(free_csv_path)
+    out: Dict[Tuple[str, int], List[Tuple[str, float, float]]] = {}
+
+    for ps, items in rows_by_ps.items():
+        segments: List[List[Tuple[str, str, float, float]]] = []
+        cur_seg: List[Tuple[str, str, float, float]] = []
+        for item in items:
+            if item[0] == "break":
+                if cur_seg:
+                    segments.append(cur_seg)
+                    cur_seg = []
+                elif segments:
+                    # Keep break awareness if consecutive corrupt rows occur
+                    pass
+                continue
+            cur_seg.append(item)
+            if item[0] == "end":
+                segments.append(cur_seg)
+                cur_seg = []
+        if cur_seg:
+            segments.append(cur_seg)
+
+        reconstructed: List[Tuple[str, float, float]] = []
+        prev_max_t: Optional[float] = None
+        had_leading_break = bool(items and items[0][0] == "break")
+
+        for seg_idx, seg in enumerate(segments):
+            keys: List[str] = []
+            holds: List[float] = []
+            ts: List[float] = []
+            t_acc = 0.0
+            for kind, k1, h1, dd in seg:
+                keys.append(k1)
+                holds.append(h1)
+                ts.append(t_acc)
+                if kind == "trans":
+                    t_acc += dd
+            t_arr = np.asarray(ts, dtype=np.float64)
+            if prev_max_t is not None:
+                offset = prev_max_t + SESSION_BREAK_GAP_SEC - float(np.min(t_arr))
+                t_arr = t_arr + offset
+            elif had_leading_break and seg_idx == 0:
+                t_arr = t_arr + SESSION_BREAK_GAP_SEC
+            order = np.argsort(t_arr, kind="stable")
+            for i in order:
+                reconstructed.append((keys[i], float(t_arr[i]), float(holds[i])))
+            prev_max_t = float(np.max(t_arr))
+
+        if reconstructed:
+            out[ps] = reconstructed
     return out
 
 

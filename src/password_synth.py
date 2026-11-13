@@ -17,7 +17,7 @@ impostor statistics on Validation strings, and tau is the Validation genuine qua
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from sklearn.metrics import roc_auc_score, roc_curve
@@ -32,8 +32,9 @@ DISPLAY_SLOPE = 1.0  # web similarity = sigmoid(slope * (z - tau)); 0.5 is the d
 
 
 def digraph_tables(raw_sessions, people: Sequence[str], max_dd: float = 1.5) -> Dict:
-    """{(person, session): {(a, b): [(t, dd, hold_a, hold_b), ...]}} from clean letter->letter pairs."""
+    """{(person, session): {(a, b): [(t, dd, hold_a, hold_b, occ_id), ...]}} from clean letter->letter pairs."""
     tabs = {}
+    next_occ_id = 0
     for p in people:
         for s in (1, 2):
             ev = raw_sessions.get((p, s))
@@ -45,22 +46,50 @@ def digraph_tables(raw_sessions, people: Sequence[str], max_dd: float = 1.5) -> 
                 kind, _ = kind_of(label)
                 ok = kind == "char" and len(label) == 1 and label.isalpha() and 0.008 < h < 1.2
                 if ok and prev is not None and 0.006 < t - prev[1] < max_dd:
-                    tab[(prev[0], label.lower())].append((prev[1], t - prev[1], prev[2], h))
+                    tab[(prev[0], label.lower())].append((prev[1], t - prev[1], prev[2], h, next_occ_id))
+                    next_occ_id += 1
                 prev = (label.lower(), t, h) if ok else None
             tabs[(p, s)] = dict(tab)
     return tabs
 
 
-def covered(tab: Dict, word: str) -> bool:
-    return all(len(tab.get((a, b), ())) >= 1 for a, b in zip(word, word[1:]))
+def covered(tab: Dict, word: str, min_per_occ: int = 1) -> bool:
+    need = Counter(zip(word, word[1:]))
+    return all(len(tab.get(pr, ())) >= min_per_occ * cnt for pr, cnt in need.items())
 
 
-def synth(tab: Dict, word: str, rng, window: float = 120.0) -> Tuple[np.ndarray, np.ndarray]:
-    """One typing of `word`: holds (n,) and digraph intervals (n-1,) in seconds."""
+def covered_disjoint_s1(tabs: Dict, person: str, word: str) -> bool:
+    """Ensure Session 1 has >= 2x occurrences per digraph (for disjoint enroll vs same-day query pools)
+    and Session 2 has >= 1x occurrence per digraph."""
+    return (
+        (person, 1) in tabs
+        and (person, 2) in tabs
+        and covered(tabs[(person, 1)], word, min_per_occ=2)
+        and covered(tabs[(person, 2)], word, min_per_occ=1)
+    )
+
+
+def partition_tab_disjoint(tab1: Dict, word: str, rng) -> Tuple[Dict, Dict]:
+    """Partition a person's Session-1 digraph instances for `word` into two strictly disjoint occ_id pools."""
+    enr_tab: Dict = {}
+    same_tab: Dict = {}
+    for pr in sorted(set(zip(word, word[1:]))):
+        inst = list(tab1[pr])
+        perm = rng.permutation(len(inst))
+        mid = len(inst) // 2
+        if mid < 1 or len(inst) - mid < 1:
+            raise ValueError(f"Insufficient Session-1 occurrences to partition disjointly for digraph {pr}")
+        enr_tab[pr] = [inst[int(i)] for i in perm[:mid]]
+        same_tab[pr] = [inst[int(i)] for i in perm[mid:]]
+    return enr_tab, same_tab
+
+
+def synthesise(tab: Dict, word: str, rng, window: float = 120.0) -> Tuple[np.ndarray, np.ndarray, List[int]]:
+    """One typing of `word`: unclipped raw holds (n,), unclipped raw dds (n-1,), and source occ_ids (n-1,)."""
     pairs = list(zip(word, word[1:]))
     a0 = pairs[rng.integers(len(pairs))]
     anchor = tab[a0][rng.integers(len(tab[a0]))][0]
-    holds, dds = [], []
+    holds, dds, occ_ids = [], [], []
     for i, pr in enumerate(pairs):
         inst = tab[pr]
         ts = np.array([x[0] for x in inst])
@@ -70,19 +99,38 @@ def synth(tab: Dict, word: str, rng, window: float = 120.0) -> Tuple[np.ndarray,
         x = inst[int(rng.choice(near))]
         dds.append(x[1])
         holds.append(x[2])
+        occ_ids.append(int(x[4]) if len(x) > 4 else -1)
         if i == len(pairs) - 1:
             holds.append(x[3])
-    return np.array(holds, dtype=np.float32), np.array(dds, dtype=np.float32)
+    return np.array(holds, dtype=np.float32), np.array(dds, dtype=np.float32), occ_ids
 
 
-def choose_strings(raw_sessions, tabs, people: Sequence[str], n_words: int, n_random: int, rng, exclude=()) -> Dict[str, List[str]]:
+def synth(tab: Dict, word: str, rng, window: float = 120.0) -> Tuple[np.ndarray, np.ndarray]:
+    """Two-tuple wrapper returning unclipped (holds, dds) in seconds."""
+    holds, dds, _ = synthesise(tab, word, rng, window=window)
+    return holds, dds
+
+
+def choose_strings(
+    raw_sessions,
+    tabs,
+    people: Sequence[str],
+    n_words: int,
+    n_random: int,
+    rng,
+    exclude=(),
+    vocab_people: Optional[Sequence[str]] = None,
+) -> Dict[str, List[str]]:
     """Dictionary words / word fragments (6-10 letters) and random letter strings (8 letters) that at
-    least 70% of `people` can type with real instances of every digraph in both sessions."""
-    def cov_all(w):
-        return sum(all(covered(tabs[(p, s)], w) for s in (1, 2)) for p in people) >= max(6, int(0.7 * len(people)))
+    least 70% of `people` can type with disjoint Session-1 occurrences and Session-2 coverage."""
+    def cov_all(w: str) -> bool:
+        return sum(covered_disjoint_s1(tabs, p, w) for p in people) >= max(6, int(0.7 * len(people)))
 
+    allowed_vocab = set(vocab_people) if vocab_people is not None else None
     vocab = Counter()
-    for (p, s), ev in raw_sessions.items():
+    for (p, _), ev in raw_sessions.items():
+        if allowed_vocab is not None and p not in allowed_vocab:
+            continue
         cur = []
         for label, _, _ in list(ev) + [("Space", 0, 0)]:
             k, _ = kind_of(label)
@@ -100,7 +148,11 @@ def choose_strings(raw_sessions, tabs, people: Sequence[str], n_words: int, n_ra
             words.append(w)
         if len(words) >= n_words:
             break
-    ok_pair = {a + b: sum(covered(tabs[(p, s)], a + b) for p in people for s in (1, 2)) >= 0.8 * 2 * len(people) for a in LETTERS for b in LETTERS}
+    ok_pair = {
+        a + b: sum(covered_disjoint_s1(tabs, p, a + b) for p in people) >= 0.75 * len(people)
+        for a in LETTERS
+        for b in LETTERS
+    }
     strings, tries = [], 0
     while len(strings) < n_random and tries < 100000:
         tries += 1
@@ -115,15 +167,21 @@ def choose_strings(raw_sessions, tabs, people: Sequence[str], n_words: int, n_ra
     return {"word": words, "random": strings}
 
 
-def typing_tensors(word: str, typings: Sequence[Tuple[np.ndarray, np.ndarray]], bounds, mean, std, touch: bool, touch_hold: float) -> np.ndarray:
-    h = np.clip(np.stack([t[0] for t in typings]), *bounds["H"]).astype(np.float32)
-    d = np.clip(np.stack([t[1] for t in typings]), *bounds["DD"]).astype(np.float32)
+def typing_tensors(word: str, typings: Sequence[Tuple], bounds, mean, std, touch: bool, touch_hold: float) -> np.ndarray:
+    """Convert unclipped (raw_holds, raw_dds[, occ_ids]) attempts into scaled 17-channel tensors.
+    Raw UD = raw_DD - raw_H_curr is computed BEFORE clipping H, DD, UD independently."""
+    raw_h = np.stack([t[0] for t in typings]).astype(np.float32)
+    raw_d = np.stack([t[1] for t in typings]).astype(np.float32)
+    c_d = np.clip(raw_d, *bounds["DD"]).astype(np.float32)
     kb = key_channel_matrix(pairs_from_codes([code_for_label(c) for c in word]))
     if touch:
-        h2, u2 = touchify_timings(h, d, touch_hold, bounds)
-        seq = extract_sequences(h2, d, u2, kb, np.zeros(len(d), dtype=np.float32))
+        h2, u2 = touchify_timings(raw_h, raw_d, touch_hold, bounds)
+        seq = extract_sequences(h2, c_d, u2, kb, np.zeros(len(c_d), dtype=np.float32))
     else:
-        seq = extract_sequences(h, d, np.clip(d - h[:, :-1], *bounds["UD"]), kb)
+        raw_u = (raw_d - raw_h[:, :-1]).astype(np.float32)
+        c_h = np.clip(raw_h, *bounds["H"]).astype(np.float32)
+        c_u = np.clip(raw_u, *bounds["UD"]).astype(np.float32)
+        seq = extract_sequences(c_h, c_d, c_u, kb)
     return apply_channel_scaler(seq, mean, std)
 
 
@@ -139,19 +197,44 @@ def as_norm_scores(Q: np.ndarray, tmpl: Dict, cohort: np.ndarray, top_m: int = 1
     return 1.0 / (1.0 + np.exp(-0.85 * (z - 0.15)))
 
 
-def string_trials(raw_sessions, tabs, people, strings: Dict[str, List[str]], embed9, embed17, bounds, mean, std, touch_hold,
-                  cohorts9: Dict[str, np.ndarray], rng, k_enroll: int = 4) -> List[Dict]:
-    """One row per attempt with raw9 / raw17 / deployed AS-Norm scores (keyboard + simulated touch)."""
+def string_trials(
+    raw_sessions,
+    tabs,
+    people,
+    strings: Dict[str, List[str]],
+    embed9,
+    embed17,
+    bounds,
+    mean,
+    std,
+    touch_hold,
+    cohorts9: Dict[str, np.ndarray],
+    rng,
+    k_enroll: int = 4,
+) -> List[Dict]:
+    """One row per attempt with raw9 / raw17 / deployed AS-Norm scores (keyboard + simulated touch),
+    enforcing strictly disjoint Session-1 occ_ids between enroll and same-day genuine queries."""
     rows = []
     for kind, wl in strings.items():
         for w in wl:
-            ppl = [p for p in people if all(covered(tabs[(p, s)], w) for s in (1, 2))]
+            ppl = [p for p in people if covered_disjoint_s1(tabs, p, w)]
+            if len(ppl) < 2:
+                continue
             typ = {}
+            enr_occ_map: Dict[str, List[int]] = {}
             for p in ppl:
-                typ[(p, "enroll")] = [synth(tabs[(p, 1)], w, rng) for _ in range(k_enroll)]
-                typ[(p, "same")] = [synth(tabs[(p, 1)], w, rng) for _ in range(3)]
-                typ[(p, "cross")] = [synth(tabs[(p, 2)], w, rng) for _ in range(3)]
-                typ[(p, "imp")] = [synth(tabs[(p, int(rng.integers(1, 3)))], w, rng) for _ in range(2)]
+                enr_tab, same_tab = partition_tab_disjoint(tabs[(p, 1)], w, rng)
+                typ[(p, "enroll")] = [synthesise(enr_tab, w, rng) for _ in range(k_enroll)]
+                typ[(p, "same")] = [synthesise(same_tab, w, rng) for _ in range(3)]
+                typ[(p, "cross")] = [synthesise(tabs[(p, 2)], w, rng) for _ in range(3)]
+                typ[(p, "imp")] = [synthesise(tabs[(p, int(rng.integers(1, 3)))], w, rng) for _ in range(2)]
+
+                enr_occ_set = {oid for _, _, oids in typ[(p, "enroll")] for oid in oids}
+                same_occ_set = {oid for _, _, oids in typ[(p, "same")] for oid in oids}
+                if not enr_occ_set.isdisjoint(same_occ_set):
+                    raise AssertionError(f"Non-disjoint Session-1 occ_ids detected for {p} on {w}")
+                enr_occ_map[p] = sorted(enr_occ_set)
+
             keys = [(k, i) for k, v in typ.items() for i in range(len(v))]
             idx = defaultdict(list)
             for j, k in enumerate(keys):
@@ -166,9 +249,52 @@ def string_trials(raw_sessions, tabs, people, strings: Dict[str, List[str]], emb
                         r9, r17 = raw_similarity(E9[J], t9), raw_similarity(E17[J], t17)
                         dep = as_norm_scores(E9[J], t9, cohorts9[mode])
                         for j in range(len(J)):
-                            rows.append({"kind": kind, "word": w, "mode": mode, "target": p, "query": q, "tag": tag, "label": lab,
-                                         "raw9": float(r9[j]), "raw17": float(r17[j]), "deployed": float(dep[j])})
+                            q_oids = typ[(q, tag)][j][2]
+                            rows.append(
+                                {
+                                    "kind": kind,
+                                    "word": w,
+                                    "mode": mode,
+                                    "target": p,
+                                    "query": q,
+                                    "tag": tag,
+                                    "label": lab,
+                                    "raw9": float(r9[j]),
+                                    "raw17": float(r17[j]),
+                                    "deployed": float(dep[j]),
+                                    "enroll_occ_ids": enr_occ_map[p],
+                                    "query_occ_ids": list(q_oids),
+                                }
+                            )
     return rows
+
+
+def synthesis_metadata(
+    tabs: Dict,
+    people: Sequence[str],
+    strings: Dict[str, List[str]],
+    rows: Sequence[Dict],
+    k_enroll: int = 4,
+) -> Dict:
+    """Audit metadata for disjoint occ_id password synthesis."""
+    active_people = [p for p in people if (p, 1) in tabs and (p, 2) in tabs]
+    excluded_pairs = 0
+    generated_attempts = 0
+    for wl in strings.values():
+        for w in wl:
+            ppl = [p for p in active_people if covered_disjoint_s1(tabs, p, w)]
+            excluded_pairs += len(active_people) - len(ppl)
+            if len(ppl) >= 2:
+                generated_attempts += len(ppl) * (k_enroll + 3 + 3 + 2)
+    same_rows = [r for r in rows if r.get("tag") == "same" and "enroll_occ_ids" in r and "query_occ_ids" in r]
+    disjoint_ok = all(set(r["enroll_occ_ids"]).isdisjoint(r["query_occ_ids"]) for r in same_rows)
+    return {
+        "disjoint_occ_enforced": bool(disjoint_ok),
+        "same_day_rows_verified": int(len(same_rows)),
+        "excluded_person_string_pairs": int(excluded_pairs),
+        "total_generated_attempts": int(generated_attempts),
+        "generated_attempts": int(generated_attempts),
+    }
 
 
 def calibrate_dual(val_rows: List[Dict], frr_target: float = 0.10) -> Dict[str, Dict[str, float]]:
@@ -180,8 +306,13 @@ def calibrate_dual(val_rows: List[Dict], frr_target: float = 0.10) -> Dict[str, 
         mu9, sd9 = float(r9[y == 0].mean()), float(r9[y == 0].std())
         mu17, sd17 = float(r17[y == 0].mean()), float(r17[y == 0].std())
         z = (r9 - mu9) / sd9 + (r17 - mu17) / sd17
-        out[mode] = {"mu9": round(mu9, 5), "sd9": round(sd9, 5), "mu17": round(mu17, 5), "sd17": round(sd17, 5),
-                     "tau": round(float(np.quantile(z[y == 1], frr_target)), 4)}
+        out[mode] = {
+            "mu9": round(mu9, 5),
+            "sd9": round(sd9, 5),
+            "mu17": round(mu17, 5),
+            "sd17": round(sd17, 5),
+            "tau": round(float(np.quantile(z[y == 1], frr_target)), 4),
+        }
     return out
 
 
@@ -195,7 +326,7 @@ def _eer(y, s) -> float:
     return float((f[i] + 1 - t[i]) / 2)
 
 
-def evaluate_strings(rows: List[Dict], calib: Dict, deployed_thr: Dict[str, float], speed: Dict[str, float]) -> Dict:
+def evaluate_strings(rows: List[Dict], calib: Dict, deployed_thr: Dict[str, float], speed: Dict[str, float], k_enroll: int = 4) -> Dict:
     """Test-people metrics: deployed AS-Norm (deployed threshold) vs dual score (calibrated tau)."""
     out = {}
     for mode in ("kb", "touch"):
@@ -205,17 +336,27 @@ def evaluate_strings(rows: List[Dict], calib: Dict, deployed_thr: Dict[str, floa
         z = dual_z([x["raw9"] for x in r], [x["raw17"] for x in r], calib[mode])
         tags = np.array([x["tag"] for x in r])
         kinds = np.array([x["kind"] for x in r])
-        res = {"num_genuine": int(y.sum()), "num_impostor": int((y == 0).sum()), "num_strings": len({x["word"] for x in r}),
-               "num_people": len({x["target"] for x in r})}
+        pair_sw = {(x["word"], x["target"]) for x in r}
+        gen_attempts = int(len(pair_sw) * (k_enroll + 3 + 3 + 2))
+        res = {
+            "num_genuine": int(y.sum()),
+            "num_impostor": int((y == 0).sum()),
+            "num_strings": len({x["word"] for x in r}),
+            "num_people": len({x["target"] for x in r}),
+            "generated_attempts": gen_attempts,
+        }
         for name, s, thr in (("deployed_as_norm", dep, deployed_thr[mode]), ("dual_raw", z, calib[mode]["tau"])):
             acc = s >= thr
-            d = {"roc_auc": round(float(roc_auc_score(y, s)), 4), "eer": round(_eer(y, s), 4),
-                 "far": round(float(acc[y == 0].mean()), 4), "frr": round(float((~acc[y == 1]).mean()), 4),
-                 "frr_same_day": round(float((~acc[(y == 1) & (tags == "same")]).mean()), 4),
-                 "frr_cross_day": round(float((~acc[(y == 1) & (tags == "cross")]).mean()), 4),
-                 "far_words": round(float(acc[(y == 0) & (kinds == "word")].mean()), 4),
-                 "far_random": round(float(acc[(y == 0) & (kinds == "random")].mean()), 4)}
-            # impostor pass rate by typing-speed difference between impostor and target
+            d = {
+                "roc_auc": round(float(roc_auc_score(y, s)), 4),
+                "eer": round(_eer(y, s), 4),
+                "far": round(float(acc[y == 0].mean()), 4),
+                "frr": round(float((~acc[y == 1]).mean()), 4),
+                "frr_same_day": round(float((~acc[(y == 1) & (tags == "same")]).mean()), 4),
+                "frr_cross_day": round(float((~acc[(y == 1) & (tags == "cross")]).mean()), 4),
+                "far_words": round(float(acc[(y == 0) & (kinds == "word")].mean()), 4),
+                "far_random": round(float(acc[(y == 0) & (kinds == "random")].mean()), 4),
+            }
             dsp = np.array([abs(np.log(speed[x["target"]] / speed[x["query"]])) * 100 for x in r])
             for lo, hi in ((0, 5), (5, 10), (10, 20), (20, 35), (35, 1000)):
                 sel = (y == 0) & (dsp >= lo) & (dsp < hi)
@@ -226,19 +367,46 @@ def evaluate_strings(rows: List[Dict], calib: Dict, deployed_thr: Dict[str, floa
 
 
 def person_speed(tabs, people) -> Dict[str, float]:
-    return {p: float(np.median([x[1] for s in (1, 2) if (p, s) in tabs for v in tabs[(p, s)].values() for x in v]) * 1000) for p in people}
+    return {
+        p: float(np.median([x[1] for s in (1, 2) if (p, s) in tabs for v in tabs[(p, s)].values() for x in v]) * 1000)
+        for p in people
+    }
 
 
-def adaptation_eval(h: np.ndarray, d: np.ndarray, P: np.ndarray, S: np.ndarray, R: np.ndarray, word: str, embed9, embed17,
-                    bounds, mean, std, touch_hold, calib, deployed_thr, cohorts9, margins: Sequence[float], rng, mode: str,
-                    k_enroll: int = 4, keep: int = 12) -> Dict:
+def adaptation_eval(
+    h: np.ndarray,
+    d: np.ndarray,
+    P: np.ndarray,
+    S: np.ndarray,
+    R: np.ndarray,
+    word: str,
+    embed9,
+    embed17,
+    bounds,
+    mean,
+    std,
+    touch_hold,
+    calib,
+    deployed_thr,
+    cohorts9,
+    margins: Sequence[float],
+    rng,
+    mode: str,
+    k_enroll: int = 4,
+    keep: int = 12,
+) -> Dict:
     """Fixed text typed 100x per session (KeyRecs): enrol on the first k attempts, then walk through the
     person's attempts in order; accepted attempts with z >= tau + margin join the template (last `keep`).
-    Returns FRR by repetition bucket and impostor FAR against the final template, per margin."""
+    `h` and `d` should be UNCLIPPED raw holds and DD intervals so raw UD is computed before clipping."""
     T = typing_tensors(word, list(zip(h, d)), bounds, mean, std, mode == "touch", touch_hold)
     E9, E17 = embed9(T).astype(np.float64), embed17(T).astype(np.float64)
     prm = calib[mode]
-    buckets = {"s1_reps_5_14": (1, 4, 14), "s1_reps_51_100": (1, 50, 100), "s2_reps_1_10": (2, 0, 10), "s2_reps_91_100": (2, 90, 100)}
+    buckets = {
+        "s1_reps_5_14": (1, 4, 14),
+        "s1_reps_51_100": (1, 50, 100),
+        "s2_reps_1_10": (2, 0, 10),
+        "s2_reps_91_100": (2, 90, 100),
+    }
     out = {}
     for policy in ["deployed", "dual_no_adapt"] + [f"dual_adapt_margin_{m:g}" for m in margins]:
         frr = {b: [] for b in buckets}
@@ -252,12 +420,13 @@ def adaptation_eval(h: np.ndarray, d: np.ndarray, P: np.ndarray, S: np.ndarray, 
             for i in order[k_enroll:]:
                 t9, t17 = make_template(np.array(ex9[-keep:])), make_template(np.array(ex17[-keep:]))
                 if policy == "deployed":
-                    dec[i] = float(as_norm_scores(E9[i:i + 1], make_template(E9[enr]), cohorts9[mode])[0]) >= deployed_thr[mode]
+                    dec[i] = float(as_norm_scores(E9[i : i + 1], make_template(E9[enr]), cohorts9[mode])[0]) >= deployed_thr[mode]
                     continue
-                z = float(dual_z(raw_similarity(E9[i:i + 1], t9), raw_similarity(E17[i:i + 1], t17), prm)[0])
+                z = float(dual_z(raw_similarity(E9[i : i + 1], t9), raw_similarity(E17[i : i + 1], t17), prm)[0])
                 dec[i] = z >= prm["tau"]
                 if policy.startswith("dual_adapt") and z >= prm["tau"] + float(policy.rsplit("_", 1)[1]):
-                    ex9.append(E9[i]); ex17.append(E17[i])
+                    ex9.append(E9[i])
+                    ex17.append(E17[i])
             for b, (s, lo, hi) in buckets.items():
                 frr[b] += [not dec[i] for i in order if S[i] == s and lo <= R[i] < hi and i in dec]
             others = np.where((P != p) & (S == 2))[0]
@@ -267,22 +436,34 @@ def adaptation_eval(h: np.ndarray, d: np.ndarray, P: np.ndarray, S: np.ndarray, 
             else:
                 t9, t17 = make_template(np.array(ex9[-keep:])), make_template(np.array(ex17[-keep:]))
                 far += list(dual_z(raw_similarity(E9[oi], t9), raw_similarity(E17[oi], t17), prm) >= prm["tau"])
-        out[policy] = {**{f"frr_{b}": round(float(np.mean(v)), 4) for b, v in frr.items()}, "far": round(float(np.mean(far)), 4)}
+        out[policy] = {
+            **{f"frr_{b}": round(float(np.mean(v)), 4) for b, v in frr.items()},
+            "far": round(float(np.mean(far)), 4),
+        }
     return out
 
 
 # ---------------------------------------------------------------------------------------
-# Length-aware calibration: the dual z grows with password length, so a single tau fitted on
-# 6-10 character strings is too lenient for 12+ characters (impostors pass at the same rate while
-# only the owner's rejections fall). tau / mu / sigma are fitted per length and interpolated.
+# Length-aware calibration
 # ---------------------------------------------------------------------------------------
 CALIB_LENGTHS = (8, 10, 12, 14, 16, 20)
 
 
-def strings_of_length(tabs, people: Sequence[str], length: int, n: int, rng, exclude=(), min_share: float = 0.7) -> List[str]:
-    """Random letter strings of an exact length built from digraphs most people typed in both sessions."""
-    pair_ok = {a + b: sum(covered(tabs[(p, s)], a + b) for p in people for s in (1, 2)) >= 0.85 * 2 * len(people)
-               for a in LETTERS for b in LETTERS}
+def strings_of_length(
+    tabs,
+    people: Sequence[str],
+    length: int,
+    n: int,
+    rng,
+    exclude=(),
+    min_share: float = 0.7,
+) -> List[str]:
+    """Random letter strings of an exact length built from digraphs most people typed with disjoint S1 pools."""
+    pair_ok = {
+        a + b: sum(covered_disjoint_s1(tabs, p, a + b) for p in people) >= 0.80 * len(people)
+        for a in LETTERS
+        for b in LETTERS
+    }
     out, tries = [], 0
     while len(out) < n and tries < 200000:
         tries += 1
@@ -294,7 +475,7 @@ def strings_of_length(tabs, people: Sequence[str], length: int, n: int, rng, exc
             w += nxt[rng.integers(len(nxt))]
         if len(w) != length or w in out or w in exclude:
             continue
-        if sum(all(covered(tabs[(p, s)], w) for s in (1, 2)) for p in people) >= max(6, int(min_share * len(people))):
+        if sum(covered_disjoint_s1(tabs, p, w) for p in people) >= max(6, int(min_share * len(people))):
             out.append(w)
     return out
 
@@ -335,7 +516,10 @@ def evaluate_lengths(rows_by_len: Dict[int, List[Dict]], fixed: Dict, table: Lis
             for name, prm in (("fixed_6_10", fixed[mode]), ("length_aware", params_for_length(table, L, mode))):
                 z = dual_z(r9, r17, prm)
                 acc = z >= prm["tau"]
-                res[name] = {"far": round(float(acc[y == 0].mean()), 4), "frr": round(float((~acc[y == 1]).mean()), 4)}
+                res[name] = {
+                    "far": round(float(acc[y == 0].mean()), 4),
+                    "frr": round(float((~acc[y == 1]).mean()), 4),
+                }
             z = dual_z(r9, r17, params_for_length(table, L, mode))
             res["roc_auc"] = round(float(roc_auc_score(y, z)), 4)
             res["eer"] = round(_eer(y, z), 4)
@@ -344,9 +528,7 @@ def evaluate_lengths(rows_by_len: Dict[int, List[Dict]], fixed: Dict, table: Lis
 
 
 # ---------------------------------------------------------------------------------------
-# Capital letters: Shift vs CapsLock habit. In KeyRecs ~31% of capitals are typed with CapsLock and
-# 99% of people keep the same habit across days, while Shift lead/release timing of a single capital
-# is too noisy to help. The habit enters the password score as a predictive log-likelihood ratio.
+# Capital letters: Shift vs CapsLock habit
 # ---------------------------------------------------------------------------------------
 def capital_method_rates(raw_sessions, min_capitals: int = 5) -> Dict[Tuple[str, int], float]:
     """{(person, session): share of capitals typed with CapsLock (vs Shift)}."""
@@ -372,18 +554,46 @@ def capital_llr(q_caps: bool, n_caps: int, n_total: int, caps_share: float, alph
     return float(np.log((r if q_caps else 1 - r) / (caps_share if q_caps else 1 - caps_share)))
 
 
-def capital_trials(tabs, rates, people, length: int, n_words: int, embed9, embed17, bounds, mean, std, touch_hold,
-                   prm: Dict[str, float], rng, k_enroll: int = 4) -> List[Tuple[int, float, bool, int]]:
+def capital_trials(
+    tabs,
+    rates,
+    people,
+    length: int,
+    n_words: int,
+    embed9,
+    embed17,
+    bounds,
+    mean,
+    std,
+    touch_hold,
+    prm: Dict[str, float],
+    rng,
+    k_enroll: int = 4,
+) -> List[Tuple[int, float, bool, int]]:
     """Keyboard passwords of `length` letters whose first letter is a capital; each attempt's method is
-    drawn from that person's own CapsLock rate in that session. Rows: (label, z, query_caps, enrol_caps)."""
+    drawn from that person's own CapsLock rate in that session, with disjoint Session-1 enroll vs query pools.
+    Rows: (label, z, query_caps, enrol_caps)."""
     people = [p for p in people if (p, 1) in tabs and (p, 2) in tabs and (p, 1) in rates and (p, 2) in rates]
     words = strings_of_length(tabs, people, length, n_words, rng)
     rows = []
     for w in words:
-        ppl = [p for p in people if all(covered(tabs[(p, s)], w) for s in (1, 2))]
-        att = lambda p, s: (synth(tabs[(p, s)], w, rng), bool(rng.random() < rates[(p, s)]))  # noqa: E731
-        typ = {p: {"e": [att(p, 1) for _ in range(k_enroll)], "g": [att(p, s) for s in (1, 1, 2, 2)], "i": [att(p, 2) for _ in range(2)]}
-               for p in ppl}
+        ppl = [p for p in people if covered_disjoint_s1(tabs, p, w)]
+        if len(ppl) < 2:
+            continue
+        typ = {}
+        for p in ppl:
+            enr_tab, same_tab = partition_tab_disjoint(tabs[(p, 1)], w, rng)
+            enr_att = [(synthesise(enr_tab, w, rng), bool(rng.random() < rates[(p, 1)])) for _ in range(k_enroll)]
+            gen_s1 = [(synthesise(same_tab, w, rng), bool(rng.random() < rates[(p, 1)])) for _ in range(2)]
+            gen_s2 = [(synthesise(tabs[(p, 2)], w, rng), bool(rng.random() < rates[(p, 2)])) for _ in range(2)]
+            imp_s2 = [(synthesise(tabs[(p, 2)], w, rng), bool(rng.random() < rates[(p, 2)])) for _ in range(2)]
+
+            enr_occ = {oid for (_, _, oids), _ in enr_att for oid in oids}
+            same_occ = {oid for (_, _, oids), _ in gen_s1 for oid in oids}
+            if not enr_occ.isdisjoint(same_occ):
+                raise AssertionError(f"Non-disjoint capital_trials Session-1 occ_ids for {p} on {w}")
+            typ[p] = {"e": enr_att, "g": gen_s1 + gen_s2, "i": imp_s2}
+
         keys = [(p, k, i) for p in ppl for k in ("e", "g", "i") for i in range(len(typ[p][k]))]
         T = typing_tensors(w, [typ[p][k][i][0] for p, k, i in keys], bounds, mean, std, False, touch_hold)
         E9, E17 = embed9(T).astype(np.float64), embed17(T).astype(np.float64)
@@ -402,10 +612,17 @@ def capital_trials(tabs, rates, people, length: int, n_words: int, embed9, embed
     return rows
 
 
-def capital_fusion(val_rows, test_rows, caps_share: float, k_enroll: int = 4, frr_target: float = 0.10,
-                   grid: Sequence[float] = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0)) -> Dict:
-    """Weight w of z + w*LLR chosen on Validation (lowest FAR at the target FRR) and the tau offset that
-    keeps the FRR there; Test FAR/FRR with and without the cue."""
+def capital_fusion(
+    val_rows,
+    test_rows,
+    caps_share: float,
+    base_tau: float,
+    k_enroll: int = 4,
+    frr_target: float = 0.10,
+    grid: Sequence[float] = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0),
+) -> Dict:
+    """Select (weight, tau_offset) strictly on Validation where decision threshold is `base_tau + tau_offset`
+    (matching biometrics.js:261 `prm.tau += cm.tau_offset`), and evaluate Test at exact deployed thresholds."""
     def arr(rows, w):
         y = np.array([r[0] for r in rows])
         s = np.array([r[1] + w * capital_llr(r[2], r[3], k_enroll, caps_share) for r in rows])
@@ -415,15 +632,40 @@ def capital_fusion(val_rows, test_rows, caps_share: float, k_enroll: int = 4, fr
         y, s = arr(rows, w)
         return float(np.mean(s[y == 0] >= thr)), float(np.mean(s[y == 1] < thr))
 
-    thr = {}
+    base_tau_r = round(float(base_tau), 4)
+    offsets: Dict[float, float] = {}
+    thr: Dict[float, float] = {}
+    val_far: Dict[float, float] = {}
+    val_frr: Dict[float, float] = {}
     for w in grid:
-        y, s = arr(val_rows, w)
-        thr[w] = float(np.quantile(s[y == 1], frr_target))
-    best = min(grid, key=lambda w: at(val_rows, w, thr[w])[0])
-    far0, frr0 = at(test_rows, 0.0, thr[0.0])
-    far1, frr1 = at(test_rows, best, thr[best])
-    return {"weight": best, "tau_offset": round(thr[best] - thr[0.0], 4), "caps_share": round(caps_share, 4),
-            "validation_far_by_weight": {str(w): round(at(val_rows, w, thr[w])[0], 4) for w in grid},
-            "test_without": {"far": round(far0, 4), "frr": round(frr0, 4)},
-            "test_with": {"far": round(far1, 4), "frr": round(frr1, 4)},
-            "num_test_genuine": int(sum(r[0] for r in test_rows)), "num_test_impostor": int(sum(1 - r[0] for r in test_rows))}
+        yv, sv = arr(val_rows, w)
+        if w == 0.0:
+            off_w = 0.0
+        else:
+            off_w = round(float(np.quantile(sv[yv == 1], frr_target) - base_tau_r), 4)
+        offsets[w] = off_w
+        thr[w] = round(base_tau_r + off_w, 4)
+        far_w, frr_w = at(val_rows, w, thr[w])
+        val_far[w] = far_w
+        val_frr[w] = frr_w
+
+    best = min(grid, key=lambda w: (val_far[w], w))
+    tau_offset = offsets[best]
+    deployed_thr_no_cap = base_tau_r
+    deployed_thr_with_cap = round(base_tau_r + tau_offset, 4)
+
+    far0, frr0 = at(test_rows, 0.0, deployed_thr_no_cap)
+    far1, frr1 = at(test_rows, best, deployed_thr_with_cap)
+    return {
+        "weight": float(best),
+        "tau_offset": tau_offset,
+        "caps_share": round(float(caps_share), 4),
+        "deployed_threshold_no_capitals": deployed_thr_no_cap,
+        "deployed_threshold_with_capitals": deployed_thr_with_cap,
+        "validation_far_by_weight": {str(w): round(val_far[w], 4) for w in grid},
+        "validation_frr_by_weight": {str(w): round(val_frr[w], 4) for w in grid},
+        "test_without": {"far": round(far0, 4), "frr": round(frr0, 4)},
+        "test_with": {"far": round(far1, 4), "frr": round(frr1, 4)},
+        "num_test_genuine": int(sum(r[0] for r in test_rows)),
+        "num_test_impostor": int(sum(1 - r[0] for r in test_rows)),
+    }

@@ -470,12 +470,17 @@ export class SmartKeystrokeRecorder {
    */
   extractCleanStroke({ resolvePending = true } = {}) {
     if (resolvePending) this._resolveImeChain();
-    const holds = [];
-    const holdValid = [];
+    const uniqueHolds = [];
+    const uniqueHoldValid = [];
+    const hCurr = [];
+    const hNext = [];
+    const hvCurr = [];
+    const hvNext = [];
     const dds = [];
     const uds = [];
     const stitchFlags = [];
     const pairKeys = [];
+    let prevAcceptedNextIdx = null;
 
     for (let i = 0; i < this.stack.length - 1; i++) {
       const c0 = this.stack[i];
@@ -489,19 +494,26 @@ export class SmartKeystrokeRecorder {
       if (dd < 0.006 || dd > 2.2) continue;
       const ud = h0 !== null ? (c1.downTime - c0.upTime) / 1000.0 : null;
 
-      if (holds.length === 0) {
-        holds.push(h0);
-        holdValid.push(h0 !== null);
+      const isNewSegment = dds.length === 0 || prevAcceptedNextIdx !== i;
+      const isStitched = dds.length > 0 && (prevAcceptedNextIdx !== i || !c0.cleanFromPrev);
+      hCurr.push(h0);
+      hNext.push(h1);
+      hvCurr.push(h0 !== null);
+      hvNext.push(h1 !== null);
+      if (isNewSegment) {
+        uniqueHolds.push(h0);
+        uniqueHoldValid.push(h0 !== null);
       }
-      holds.push(h1);
-      holdValid.push(h1 !== null);
+      uniqueHolds.push(h1);
+      uniqueHoldValid.push(h1 !== null);
       dds.push(dd);
       uds.push(ud);
-      stitchFlags.push(i > 0 && !c0.cleanFromPrev);
+      stitchFlags.push(isStitched);
       pairKeys.push([c0.key, c1.key]);
+      prevAcceptedNextIdx = i + 1;
     }
 
-    const knownHolds = holds.filter((h) => h !== null);
+    const knownHolds = uniqueHolds.filter((h) => h !== null);
     const knownUds = uds.filter((u) => u !== null);
     const meanHoldMs = knownHolds.length
       ? Math.round((knownHolds.reduce((a, b) => a + b, 0) / knownHolds.length) * 1000)
@@ -511,7 +523,9 @@ export class SmartKeystrokeRecorder {
     const rolloverPct = knownUds.length
       ? Math.round((knownUds.filter((u) => u < 0).length / knownUds.length) * 100)
       : 0;
-    const validFrac = holdValid.length ? holdValid.filter(Boolean).length / holdValid.length : 1;
+    const validFrac = uniqueHoldValid.length
+      ? uniqueHoldValid.filter(Boolean).length / uniqueHoldValid.length
+      : 1;
     const inputMode = validFrac >= 0.8 ? 'keyboard' : validFrac <= 0.2 ? 'touch' : 'mixed';
 
     return {
@@ -527,8 +541,12 @@ export class SmartKeystrokeRecorder {
       capitalMethods: this.stack.filter((s) => s.capital).map((s) => s.capital),
       timeline: this.buildVisualTimeline(),
       stroke: {
-        holds,
-        holdValid,
+        holds: uniqueHolds,
+        holdValid: uniqueHoldValid,
+        hCurr,
+        hNext,
+        hvCurr,
+        hvNext,
         dds,
         uds,
         stitchFlags,

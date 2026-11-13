@@ -8,12 +8,12 @@ the deployed 9-channel password encoder, on keyboard and simulated touch (holds 
 
   * cmu_*            the CMU password itself (val / test people, cross-session genuine queries)
   * krfixed_*        KeyRecs fixed text `vpwjkeurkb`, enrolled on day 1, verified on day 2
-  * words_same_day_* / words_cross_day_*
+  * words_*_val_* / words_same_day_* / words_cross_day_*
                      words unseen people typed repeatedly in free text (`things`, `people`,
-                     `because`): content never trained as a password; genuine attempts split
-                     into the enrollment day and the following day
+                     `because`): content never trained as a password; evaluated strictly disjointly
+                     on Validation (`kr["val"]`) and Test (`kr["test"]`, never pooling val + test).
 
-Decision rules compared:
+Decision rules compared (all calibrated strictly on Validation):
   * as_norm   — previous rule: AS-Norm (9ch) >= calibrated_threshold(_touch) from CMU validation
   * raw       — 9ch template similarity (no cohort) >= a threshold tuned on CMU val (max macro-F1)
   * dual      — deployed rule: 9ch + 17ch template similarities standardised and summed, >= tau
@@ -29,6 +29,7 @@ Prints a table and writes models/password_calibration.json.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from collections import defaultdict
@@ -54,7 +55,6 @@ from preprocessing import (  # noqa: E402
     SEED,
     apply_channel_scaler,
     extract_sequences,
-    get_feature_columns,
     prepare_full_pipeline,
     touchify_timings,
 )
@@ -65,10 +65,12 @@ TOP_M = 12
 MODES = ("kb", "touch")
 
 
-def build_scenarios(root: Path, device, which: str = "9") -> tuple[dict, dict]:
+def build_scenarios(data_root: Path, out_root: Path, device, which: str = "9") -> tuple[dict, dict]:
     """Trial groups (enroll embeddings, genuine embeddings, impostor embeddings) per scenario."""
     with tempfile.TemporaryDirectory() as tmp:  # keep data/processed untouched
-        splits, meta = prepare_full_pipeline(root / "data" / "raw" / "DSL-StrongPasswordData.csv", Path(tmp), seed=SEED)
+        splits, meta = prepare_full_pipeline(
+            data_root / "data" / "raw" / "DSL-StrongPasswordData.csv", Path(tmp), seed=SEED
+        )
     kr = meta["_keyrecs_splits_subjs"]
     mean = np.array(meta["channel_mean"], dtype=np.float32)
     std = np.array(meta["channel_std"], dtype=np.float32)
@@ -77,27 +79,38 @@ def build_scenarios(root: Path, device, which: str = "9") -> tuple[dict, dict]:
 
     IN = L9 if which == "9" else 17
     model = KeyPrintNet(in_channels=IN, hidden_channels=80, embed_dim=64, dropout=0.18)
-    weights = root / "models" / "legacy" / "keyprint_net_9ch.pt" if which == "9" else root / "models" / "keyprint_net.pt"
+    weights = (
+        out_root / "models" / "legacy" / "keyprint_net_9ch.pt"
+        if which == "9"
+        else out_root / "models" / "keyprint_net.pt"
+    )
     model.load_state_dict(torch.load(weights, map_location="cpu", weights_only=True))
     model.to(device).eval()
 
-    def seqs(h, d, kb, touch):
+    def seqs(raw_h: np.ndarray, raw_d: np.ndarray, kb: np.ndarray, touch: bool, raw_u: np.ndarray | None = None) -> np.ndarray:
+        raw_h = np.asarray(raw_h, dtype=np.float32)
+        raw_d = np.asarray(raw_d, dtype=np.float32)
+        c_d = np.clip(raw_d, *bounds["DD"]).astype(np.float32)
         if touch:
-            h2, u2 = touchify_timings(h, d, touch_hold, bounds)
-            return apply_channel_scaler(extract_sequences(h2, d, u2, kb, np.zeros(len(d), dtype=np.float32)), mean, std)
-        u = np.clip(d - h[:, :-1], *bounds["UD"])
-        return apply_channel_scaler(extract_sequences(h, d, u, kb), mean, std)
+            h2, u2 = touchify_timings(raw_h, raw_d, touch_hold, bounds)
+            return apply_channel_scaler(
+                extract_sequences(h2, c_d, u2, kb, np.zeros(len(c_d), dtype=np.float32)),
+                mean,
+                std,
+            )
+        u_unclipped = (raw_d - raw_h[:, :-1]) if raw_u is None else np.asarray(raw_u, dtype=np.float32)
+        c_h = np.clip(raw_h, *bounds["H"]).astype(np.float32)
+        c_u = np.clip(u_unclipped, *bounds["UD"]).astype(np.float32)
+        return apply_channel_scaler(extract_sequences(c_h, c_d, c_u, kb), mean, std)
 
-    _, hold_cols, dd_cols, _ = get_feature_columns()
-
-    def cmu_hd(split):
-        return split.df[hold_cols].values.astype(np.float32), split.df[dd_cols].values.astype(np.float32)
-
-    tr_h, tr_d = cmu_hd(splits["train"])
+    tr_h, tr_d = splits["train"].raw_holds, splits["train"].raw_dds
     cohorts = {
-        "kb": compute_cohort_centroids(encode_sequences(model, splits["train"].seq_scaled[:, :IN], device), splits["train"].subject_ids),
+        "kb": compute_cohort_centroids(
+            encode_sequences(model, splits["train"].seq_scaled[:, :IN], device), splits["train"].subject_ids
+        ),
         "touch": compute_cohort_centroids(
-            encode_sequences(model, seqs(tr_h, tr_d, splits["train"].key_block, True)[:, :IN], device), splits["train"].subject_ids
+            encode_sequences(model, seqs(tr_h, tr_d, splits["train"].key_block, True)[:, :IN], device),
+            splits["train"].subject_ids,
         ),
     }
     scen: dict = {}
@@ -105,7 +118,7 @@ def build_scenarios(root: Path, device, which: str = "9") -> tuple[dict, dict]:
     # 1) CMU password: the pipeline's trials, first 4 enrollment reps like the web
     for part in ("val", "test"):
         trials = build_verification_trials(splits[part], mean, std, k_shot=5, seed=SEED)
-        h, d = cmu_hd(splits[part])
+        h, d = splits[part].raw_holds, splits[part].raw_dds
         bh, bd = flat_to_hdu(trials["bot_flat"])
         for mode in MODES:
             if mode == "kb":
@@ -113,7 +126,9 @@ def build_scenarios(root: Path, device, which: str = "9") -> tuple[dict, dict]:
                 bemb = encode_sequences(model, trials["bot_seq"][:, :IN], device)
             else:
                 emb = encode_sequences(model, seqs(h, d, splits[part].key_block, True)[:, :IN], device)
-                bemb = encode_sequences(model, seqs(bh.astype(np.float32), bd.astype(np.float32), splits[part].key_block, True)[:, :IN], device)
+                bemb = encode_sequences(
+                    model, seqs(bh.astype(np.float32), bd.astype(np.float32), splits[part].key_block, True)[:, :IN], device
+                )
             scen[f"cmu_{part}_{mode}"] = [
                 (emb[g["enroll_idx"][:4]], emb[g["gen_idx"]], np.concatenate([emb[g["imp_idx"]], bemb[g["bot_idx"]]]))
                 for g in trials["groups"]
@@ -121,13 +136,13 @@ def build_scenarios(root: Path, device, which: str = "9") -> tuple[dict, dict]:
 
     # 2) KeyRecs fixed text: enroll 4 reps on day 1, genuine = day 2, impostors = 10 day-2 reps of each other person
     rng = np.random.default_rng(SEED)
-    df = pd.read_csv(root / "data" / "raw" / "KeyRecs-fixed-text.csv")
+    df = pd.read_csv(data_root / "data" / "raw" / "KeyRecs-fixed-text.csv")
     df.columns = [c.strip() for c in df.columns]
     df = df.dropna(subset=KEYRECS_HOLD_COLS + KEYRECS_DD_COLS).reset_index(drop=True)
     for part in ("val", "test"):
         sub = df[df["participant"].isin(kr[part])].reset_index(drop=True)
-        h = np.clip(sub[KEYRECS_HOLD_COLS].values.astype(np.float32), *bounds["H"])
-        d = np.clip(sub[KEYRECS_DD_COLS].values.astype(np.float32), *bounds["DD"])
+        raw_h = sub[KEYRECS_HOLD_COLS].values.astype(np.float32)
+        raw_d = sub[KEYRECS_DD_COLS].values.astype(np.float32)
         P, S = sub["participant"].values, sub["session"].values
         imp_pick = {}
         for p in np.unique(P):
@@ -138,7 +153,7 @@ def build_scenarios(root: Path, device, which: str = "9") -> tuple[dict, dict]:
                     imp.extend(rng.choice(cand, size=min(10, len(cand)), replace=False).tolist())
             imp_pick[p] = imp
         for mode in MODES:
-            emb = encode_variable(model, list(seqs(h, d, KEYRECS_FIXED_KEY_BLOCK, mode == "touch")), device, IN)
+            emb = encode_variable(model, list(seqs(raw_h, raw_d, KEYRECS_FIXED_KEY_BLOCK, mode == "touch")), device, IN)
             groups = []
             for p in np.unique(P):
                 own = np.where(P == p)[0]
@@ -147,58 +162,71 @@ def build_scenarios(root: Path, device, which: str = "9") -> tuple[dict, dict]:
                     groups.append((emb[enroll], emb[gen], emb[imp_pick[p]]))
             scen[f"krfixed_{part}_{mode}"] = groups
 
-    # 3) Repeated words of unseen people (val + test), same selection as feature_eval.eval_password_transfer
-    raw_sessions = {k: ms_rounded(v) for k, v in load_keyrecs_sessions(root / "data" / "raw" / "KeyRecs-free-text.csv").items()}
-    occ = defaultdict(lambda: defaultdict(lambda: {1: [], 2: []}))
-    for p in kr["val"] + kr["test"]:
-        for s in (1, 2):
-            cur, ok = [], True
-            for label, t, hold in list(raw_sessions.get((p, s), [])) + [("Space", 1e12, 0.1)]:
-                kind, _ = kind_of(label)
-                if kind == "space":
-                    if ok and len(cur) >= 5:
-                        ts = np.array([c[1] for c in cur])
-                        hs = np.array([c[2] for c in cur])
-                        dd = np.diff(ts)
-                        if not ((dd <= 0.006).any() or (dd > 2.2).any() or (hs > 1.2).any() or (hs < 0.008).any()):
-                            occ["".join(c[0] for c in cur)][p][s].append((hs, dd))
-                    cur, ok = [], True
-                elif kind == "char" and len(label) == 1 and label.isalpha():
-                    cur.append((label.lower(), t, hold))
-                elif kind in ("shift", "caps"):
+    # 3) Repeated words of unseen people — strictly separated between kr["val"] and kr["test"] (never pooled!)
+    raw_sessions = {
+        k: ms_rounded(v) for k, v in load_keyrecs_sessions(data_root / "data" / "raw" / "KeyRecs-free-text.csv").items()
+    }
+    words_by_part: dict[str, list[str]] = {"val": [], "test": []}
+    for part in ("val", "test"):
+        occ = defaultdict(lambda: defaultdict(lambda: {1: [], 2: []}))
+        for p in kr[part]:
+            for s in (1, 2):
+                cur, ok = [], True
+                for label, t, hold in list(raw_sessions.get((p, s), [])) + [("Space", 1e12, 0.1)]:
+                    kind, _ = kind_of(label)
+                    if kind == "space":
+                        if ok and len(cur) >= 5:
+                            ts = np.array([c[1] for c in cur])
+                            hs = np.array([c[2] for c in cur])
+                            dd = np.diff(ts)
+                            if not ((dd <= 0.006).any() or (dd > 2.2).any() or (hs > 1.2).any() or (hs < 0.008).any()):
+                                occ["".join(c[0] for c in cur)][p][s].append((hs, dd))
+                        cur, ok = [], True
+                    elif kind == "char" and len(label) == 1 and label.isalpha():
+                        cur.append((label.lower(), t, hold))
+                    elif kind in ("shift", "caps"):
+                        continue
+                    else:
+                        ok = False
+
+        for mode in MODES:
+            same, cross = [], []
+            for w, per in occ.items():
+                enrolled = [p for p, v in per.items() if len(v[1]) >= 3 and len(v[1]) + len(v[2]) >= 4]
+                if len(enrolled) < 3 or len(per) < 4:
                     continue
-                else:
-                    ok = False
-    words = []
-    for mode in MODES:
-        same, cross = [], []
-        for w, per in occ.items():
-            enrolled = [p for p, v in per.items() if len(v[1]) >= 3 and len(v[1]) + len(v[2]) >= 4]
-            if len(enrolled) < 3 or len(per) < 4:
-                continue
-            kbm = key_channel_matrix(pairs_from_codes([code_for_label(c) for c in w]))
-            tensors, index = [], {}
-            for p, v in per.items():
-                for s in (1, 2):
-                    for k, (hs, dd) in enumerate(v[s]):
-                        hh = np.clip(hs, *bounds["H"]).astype(np.float32)[None]
-                        dc = np.clip(dd, *bounds["DD"]).astype(np.float32)[None]
-                        tensors.append(seqs(hh, dc, kbm[None], mode == "touch")[0])
-                        index[(p, s, k)] = len(tensors) - 1
-            emb = encode_variable(model, tensors, device, IN)
-            for p in enrolled:
-                s1 = [index[(p, 1, k)] for k in range(len(per[p][1]))]
-                s2 = [index[(p, 2, k)] for k in range(len(per[p][2]))]
-                imp = [i for (q, _, _), i in index.items() if q != p][:12]
-                if s1[3:]:
-                    same.append((emb[s1[:3]], emb[s1[3:]], emb[imp]))
-                if s2:
-                    cross.append((emb[s1[:3]], emb[s2], emb[imp]))
-            if mode == "kb":
-                words.append(w)
-        scen[f"words_same_day_{mode}"] = same
-        scen[f"words_cross_day_{mode}"] = cross
-    return scen, {"cohorts": cohorts, "words": words}
+                kbm = key_channel_matrix(pairs_from_codes([code_for_label(c) for c in w]))
+                tensors, index = [], {}
+                for p, v in per.items():
+                    for s in (1, 2):
+                        for k, (hs, dd) in enumerate(v[s]):
+                            raw_hh = np.asarray(hs, dtype=np.float32)[None]
+                            raw_dc = np.asarray(dd, dtype=np.float32)[None]
+                            tensors.append(seqs(raw_hh, raw_dc, kbm[None], mode == "touch")[0])
+                            index[(p, s, k)] = len(tensors) - 1
+                emb = encode_variable(model, tensors, device, IN)
+                for p in enrolled:
+                    s1 = [index[(p, 1, k)] for k in range(len(per[p][1]))]
+                    s2 = [index[(p, 2, k)] for k in range(len(per[p][2]))]
+                    imp = [i for (q, _, _), i in index.items() if q != p][:12]
+                    if s1[3:] and imp:
+                        same.append((emb[s1[:3]], emb[s1[3:]], emb[imp]))
+                    if s2 and imp:
+                        cross.append((emb[s1[:3]], emb[s2], emb[imp]))
+                if mode == "kb":
+                    words_by_part[part].append(w)
+            if part == "val":
+                if same:
+                    scen[f"words_same_day_val_{mode}"] = same
+                if cross:
+                    scen[f"words_cross_day_val_{mode}"] = cross
+            else:
+                if same:
+                    scen[f"words_same_day_{mode}"] = same
+                if cross:
+                    scen[f"words_cross_day_{mode}"] = cross
+
+    return scen, {"cohorts": cohorts, "words": words_by_part["test"], "words_val": words_by_part["val"]}
 
 
 def score(groups, cohort):
@@ -236,15 +264,16 @@ def eer_point(y, s):
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parent.parent
+    data_root = Path(__file__).resolve().parent.parent
+    out_root = Path(os.environ["KEYPRINT_OUTPUT_ROOT"]).resolve() if os.environ.get("KEYPRINT_OUTPUT_ROOT") else data_root
     device = torch.device("cpu")
-    cfg = json.loads((root / "web" / "public" / "models" / "model_config.json").read_text(encoding="utf-8"))
+    cfg = json.loads((out_root / "web" / "public" / "models" / "model_config.json").read_text(encoding="utf-8"))
     deployed = {"kb": float(cfg["calibrated_threshold"]), "touch": float(cfg["calibrated_threshold_touch"])}
     dual = cfg["password_dual"]
     dual_prm = {"kb": dual["keyboard"], "touch": dual["touch"]}
 
-    scen9, info = build_scenarios(root, device, "9")
-    scen17, _ = build_scenarios(root, device, "17")
+    scen9, info = build_scenarios(data_root, out_root, device, "9")
+    scen17, _ = build_scenarios(data_root, out_root, device, "17")
     scored = {}
     for k in scen9:
         mode = "touch" if k.endswith("touch") else "kb"
@@ -259,11 +288,21 @@ def main() -> None:
         "raw_threshold_cmu_val": {m: round(v, 4) for m, v in raw_thr.items()},
         "dual": dual_prm,
         "words": info["words"],
+        "words_val": info["words_val"],
+        "split_isolation": {
+            "val_test_pooled": False,
+            "calibration_splits": ["cmu_val", "keyrecs_val"],
+        },
         "scenarios": {},
     }
-    print(f"AS-Norm thresholds {deployed} | raw thresholds (CMU val) {out['raw_threshold_cmu_val']} | dual tau "
-          f"{ {m: p['tau'] for m, p in dual_prm.items()} }")
-    print(f"{'scenario':24s} {'gen/imp':>10s} | {'AS-Norm AUC  FAR / FRR':>24s} | {'raw FAR / FRR':>15s} | {'dual AUC  FAR / FRR':>21s}")
+    print(
+        f"AS-Norm thresholds {deployed} | raw thresholds (CMU val) {out['raw_threshold_cmu_val']} | dual tau "
+        f"{ {m: p['tau'] for m, p in dual_prm.items()} }"
+    )
+    print(
+        f"{'scenario':24s} {'gen/imp':>10s} | {'AS-Norm AUC  FAR / FRR':>24s} | "
+        f"{'raw FAR / FRR':>15s} | {'dual AUC  FAR / FRR':>21s}"
+    )
     for k, (y, a, r, z) in scored.items():
         m = "touch" if k.endswith("touch") else "kb"
         eer, eer_thr = eer_point(y, a)
@@ -281,12 +320,15 @@ def main() -> None:
             "dual": du,
         }
         print(
-            f"{k:24s} {int((y == 1).sum()):4d}/{int((y == 0).sum()):<5d} | {out['scenarios'][k]['as_norm_auc']:.3f} {dep['far'] * 100:6.1f} / {dep['frr'] * 100:5.1f}% | "
-            f"{raw['far'] * 100:5.1f} / {raw['frr'] * 100:5.1f}% | {out['scenarios'][k]['dual_auc']:.3f} {du['far'] * 100:5.1f} / {du['frr'] * 100:5.1f}%"
+            f"{k:24s} {int((y == 1).sum()):4d}/{int((y == 0).sum()):<5d} | "
+            f"{out['scenarios'][k]['as_norm_auc']:.3f} {dep['far'] * 100:6.1f} / {dep['frr'] * 100:5.1f}% | "
+            f"{raw['far'] * 100:5.1f} / {raw['frr'] * 100:5.1f}% | "
+            f"{out['scenarios'][k]['dual_auc']:.3f} {du['far'] * 100:5.1f} / {du['frr'] * 100:5.1f}%"
         )
-    path = root / "models" / "password_calibration.json"
+    path = out_root / "models" / "password_calibration.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"wrote {path.relative_to(root)}")
+    print(f"wrote {path}")
 
 
 if __name__ == "__main__":

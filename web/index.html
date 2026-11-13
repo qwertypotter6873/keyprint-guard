@@ -39,6 +39,9 @@
 
     <main class="stage">
       <h1 class="sr-only">KeyPrint 타이핑 생체 리듬 데모</h1>
+      <div id="compat-isolation-notice" class="compat-notice" role="status" hidden>
+        구버전 또는 다른 모델 가중치로 생성된 호환 불가 프로필·이벤트를 자동 격리했습니다 (v4 임베딩 호환 보호).
+      </div>
 
       <!-- =========================================================
            MODE A: 타자연습 인물 식별 (Diverse Sentences + Backspace OK)
@@ -79,7 +82,7 @@
                 id="arena-name-input"
                 class="clean-input name-input"
                 placeholder="예: 김대현"
-                maxlength="18"
+                maxlength="24"
                 autocomplete="off"
               >
             </label>
@@ -295,6 +298,10 @@
 
         <!-- Subview B2: Enroll New User Password Profile -->
         <div id="guard-enroll-panel" class="panel-body" hidden>
+          <p class="public-room-notice" role="note">
+            안내: 공유 방 코드(예: GACHON) 사용 시 시연용 프로필과 입력한 데모 문자열이 같은 방 참가자에게 실시간 공개 공유됩니다. 실제 사용하는 개인 비밀번호는 절대 입력하지 마세요.
+          </p>
+
           <div class="pw-setup-grid">
             <label class="stack-field">
               <span class="field-label">사용자 이름</span>
@@ -303,20 +310,20 @@
                 id="guard-enroll-name"
                 class="clean-input"
                 placeholder="예: 김대현"
-                maxlength="18"
+                maxlength="24"
                 autocomplete="off"
               >
             </label>
 
             <label class="stack-field">
-              <span class="field-label">사용할 비밀번호 (12자 이상)</span>
+              <span class="field-label">사용할 시연 문자열 / 비밀번호 (12자 이상)</span>
               <input
                 type="text"
                 id="guard-enroll-pw-target"
                 class="clean-input mono-text"
                 value="Gachon2026guard"
                 minlength="12"
-                maxlength="64"
+                maxlength="128"
                 autocomplete="off"
                 spellcheck="false"
               >
@@ -362,7 +369,7 @@
           <div class="viz-flow-pills" aria-hidden="true">
             <span class="flow-pill">01 물리 타건 &amp; 오타 봉합</span>
             <span class="flow-arrow">→</span>
-            <span class="flow-pill">02 속도 불변 17채널 · KeyPrintNet</span>
+            <span class="flow-pill">02 듀얼 KeyPrintNet (문장 17ch · 암호 9ch)</span>
             <span class="flow-arrow">→</span>
             <span class="flow-pill">03 다중 문장 프로필 수렴 &amp; 분리</span>
           </div>
@@ -452,8 +459,8 @@
                 <p>백스페이스 비율·한 번에 지우는 길이·오타 인지/재개 지연, Shift·CapsLock 사용 방식, 멈춤 리듬을 누적합니다. 관찰 횟수가 적은 특징은 자동으로 영향이 0에 가까워지고, 융합 가중치는 검증 데이터로 정합니다.</p>
               </div>
               <div class="detail-col">
-                <strong>⑤ KeyPrintNet 인코더 2개 (각 600KB ONNX)</strong>
-                <p>상대 위치 고조파 + 다중 스케일 잔차 SE-Conv1D + 6모드 DCT 스펙트럼 풀링으로 길이에 무관하게 <code>64-D</code> 단위 초구면 벡터로 압축합니다. 타자연습 문장은 17채널 인코더를, 비밀번호는 사람마다 내용이 달라 학습에 없던 문자열이므로 키 정보를 보지 않는 9채널(Ch 0~8) 인코더를 씁니다.</p>
+                <strong>⑤ 듀얼 인코더 아키텍처 (문장 17채널 KeyPrintNet + 비밀번호 내용 무관 9채널 타이밍 인코더 및 듀얼 점수 보정)</strong>
+                <p>상대 위치 신호(<code>(t+0.5)/L</code>) + 다중 스케일 잔차 SE-Conv1D + 스펙트럼 축소(<code>80→24</code>) 기반 6모드 DCT(<code>144-D</code>) 및 주의 집중 통계 풀링(<code>ASP, 160-D</code>) 결합으로 길이에 무관하게 <code>64-D</code> 단위 초구면 벡터로 압축합니다. 자유 문장 식별은 키 기하를 포함한 17채널 인코더(AS-Norm + 행동 프로필 LLR)를, 사용자 지정 비밀번호 검증은 내용 무관 9채널(Ch 0~8) 타이밍 인코더와 17채널 인코더를 길이별 타인 분포로 표준화 결합하는 듀얼 점수 보정(<code>dualPasswordScore</code>)을 수행합니다.</p>
               </div>
             </div>
           </details>
@@ -490,14 +497,14 @@
 
           <div class="viz-stat-grid">
             <div class="viz-stat-tile is-highlight">
-              <span class="tile-label">프로필 수렴 안정도</span>
+              <span class="tile-label">평균 쌍별 코사인 (안정도)</span>
               <strong id="viz-stat-stability" class="tile-val">—</strong>
-              <span id="viz-stat-stability-sub" class="tile-sub">누적 샘플 수에 따른 중심 수렴률</span>
+              <span id="viz-stat-stability-sub" class="tile-sub">단위 정규화 샘플 쌍별 유사도</span>
             </div>
             <div class="viz-stat-tile">
-              <span class="tile-label">문장 간 지문 일관성</span>
+              <span class="tile-label">지문 방향 일관성</span>
               <strong id="viz-stat-coherence" class="tile-val">—</strong>
-              <span class="tile-sub">서로 다른 문장 간 평균 유사도</span>
+              <span class="tile-sub">쌍별 코사인 정규화 일관성 [0~100%]</span>
             </div>
             <div class="viz-stat-tile">
               <span class="tile-label">평균 홀드 습관</span>
@@ -537,6 +544,11 @@
             큰 원(<code>●</code>)은 완성된 <strong>대표 프로필 중심점(Centroid)</strong>입니다.
             동시 접속 방에 새 참가자가 등록되거나 새 문장을 치면(<code>★</code>) 지도 위에 실시간으로 반영됩니다.
           </p>
+
+          <div id="viz-verdict-banner" class="viz-verdict-banner is-preview" aria-live="polite">
+            <span id="viz-verdict-status" class="viz-verdict-status">실시간 탐색 미리보기 (공식 인증 판정 전)</span>
+            <span id="viz-verdict-adapt-badge" class="viz-adapt-badge" hidden>판정 당시 템플릿 기준 (판정 직후 자동 적응 반영됨)</span>
+          </div>
 
           <div id="viz-step3-svg" class="viz-svg-stage"></div>
 
@@ -584,6 +596,10 @@
         <p class="modal-help">
           다른 노트북이나 PC에서 초대 링크를 열면 <strong>같은 방에 동시 접속</strong>되어 등록한 프로필이 실시간으로 공유됩니다.
           혼자서는 다른 사람의 타이핑을 일관되게 흉내 내기 어려우므로, 주변 사람과 함께 접속해 서로 테스트해 보세요.
+        </p>
+
+        <p class="public-room-notice is-compact" role="note">
+          안내: 공유 방 코드(예: GACHON) 사용 시 시연용 프로필과 입력한 데모 문자열이 같은 방 참가자에게 실시간 공개 공유됩니다. 실제 사용하는 개인 비밀번호는 절대 입력하지 마세요.
         </p>
 
         <form id="change-room-form" class="room-switch-row">

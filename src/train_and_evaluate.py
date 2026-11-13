@@ -6,16 +6,14 @@ for KeyPrint Guard & Arena.
 
 from __future__ import annotations
 
+import random
+from typing import Dict, List, Optional, Tuple
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
-import onnx
-import onnxruntime as ort
-import random
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,6 +28,13 @@ from sklearn.metrics import (
     roc_curve,
 )
 
+from models import (
+    KeyPrintNet,
+    ScaledManhattanDetector,
+    SubCenterCosFaceHead,
+    SupervisedContrastiveLoss,
+    Vanilla1DCNN,
+)
 from preprocessing import (
     CMU_KEY_BLOCK,
     KEYRECS_FIXED_KEY_BLOCK,
@@ -43,13 +48,9 @@ from preprocessing import (
     extract_sequences,
     get_feature_columns,
 )
-from models import (
-    KeyPrintNet,
-    ScaledManhattanDetector,
-    SubCenterCosFaceHead,
-    SupervisedContrastiveLoss,
-    Vanilla1DCNN,
-)
+
+VANILLA_DEFAULT_EPOCHS = 35
+KEYPRINT_DEFAULT_EPOCHS = 35
 
 
 def set_all_seeds(seed: int = SEED) -> None:
@@ -213,16 +214,93 @@ def compute_cohort_centroids(embeddings: np.ndarray, labels: np.ndarray) -> np.n
     return np.stack(centroids, axis=0).astype(np.float32)
 
 
+def _score_embedding_parts(
+    embeddings: np.ndarray,
+    bot_embeddings: np.ndarray,
+    trials: Dict,
+    cohort: Optional[np.ndarray] = None,
+    top_m: int = 12,
+    single_centroid: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Dict]]:
+    gen_list, human_imp_list, bot_imp_list = [], [], []
+    detailed_records: List[Dict] = []
+
+    for g in trials["groups"]:
+        e_vecs = embeddings[g["enroll_idx"]]
+        centroid = e_vecs.mean(axis=0)
+        centroid = centroid / (np.linalg.norm(centroid) + 1e-8)
+
+        if cohort is not None:
+            k_top = min(top_m, len(cohort))
+            c_coh = np.sort(cohort @ centroid)[-k_top:]
+            mu_u = float(c_coh.mean())
+            sd_u = float(c_coh.std() + 0.05)
+
+        def _sim(q_vecs: np.ndarray) -> np.ndarray:
+            if single_centroid:
+                raw = q_vecs @ centroid
+            else:
+                raw = 0.65 * (q_vecs @ centroid) + 0.35 * np.max(q_vecs @ e_vecs.T, axis=1)
+            if cohort is None:
+                return raw
+            k_top = min(top_m, len(cohort))
+            q_coh = np.sort(q_vecs @ cohort.T, axis=1)[:, -k_top:]
+            mu_q = q_coh.mean(axis=1)
+            sd_q = q_coh.std(axis=1) + 0.05
+            z_as = (raw - 0.5 * (mu_u + mu_q)) / (0.5 * (sd_u + sd_q))
+            return 1.0 / (1.0 + np.exp(-0.85 * (z_as - 0.15)))
+
+        gen_scores = _sim(embeddings[g["gen_idx"]])
+        imp_scores = _sim(embeddings[g["imp_idx"]])
+        bot_scores = _sim(bot_embeddings[g["bot_idx"]])
+
+        gen_list.append(gen_scores)
+        human_imp_list.append(imp_scores)
+        bot_imp_list.append(bot_scores)
+
+        for idx_sample, sc in zip(g["gen_idx"], gen_scores):
+            detailed_records.append(
+                {
+                    "type": "genuine",
+                    "target_subject": g["subject"],
+                    "enroll_session": g["enroll_session"],
+                    "sample_idx": int(idx_sample),
+                    "score": float(sc),
+                    "label": 1,
+                }
+            )
+        for idx_sample, sc in zip(g["imp_idx"], imp_scores):
+            detailed_records.append(
+                {
+                    "type": "human_impostor",
+                    "target_subject": g["subject"],
+                    "enroll_session": g["enroll_session"],
+                    "sample_idx": int(idx_sample),
+                    "score": float(sc),
+                    "label": 0,
+                }
+            )
+
+    return (
+        np.concatenate(gen_list),
+        np.concatenate(human_imp_list),
+        np.concatenate(bot_imp_list),
+        detailed_records,
+    )
+
+
 def score_embedding_trials(
     embeddings: np.ndarray,
     bot_embeddings: np.ndarray,
     trials: Dict,
     cohort: Optional[np.ndarray] = None,
     top_m: int = 12,
+    single_centroid: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict]]:
     """
-    Score 1:1 verification trials using hybrid centroid + nearest-exemplar cosine similarity,
-    calibrated with Adaptive Symmetric Cohort Normalization (AS-Norm) mapped to (0, 1).
+    Score 1:1 verification trials using either single-centroid cosine (`single_centroid=True`)
+    or hybrid centroid + nearest-exemplar cosine similarity (`single_centroid=False`),
+    optionally calibrated with Adaptive Symmetric Cohort Normalization (AS-Norm).
     """
     y_true_list, y_score_list = [], []
     detailed_records: List[Dict] = []
@@ -239,7 +317,10 @@ def score_embedding_trials(
             sd_u = float(c_coh.std() + 0.05)
 
         def _sim(q_vecs: np.ndarray) -> np.ndarray:
-            raw = 0.65 * (q_vecs @ centroid) + 0.35 * np.max(q_vecs @ e_vecs.T, axis=1)
+            if single_centroid:
+                raw = q_vecs @ centroid
+            else:
+                raw = 0.65 * (q_vecs @ centroid) + 0.35 * np.max(q_vecs @ e_vecs.T, axis=1)
             if cohort is None:
                 return raw
             k_top = min(top_m, len(cohort))
@@ -305,6 +386,61 @@ def score_manhattan_trials(
     return np.concatenate(y_true_list), np.concatenate(y_score_list)
 
 
+def summarize_impostor_breakdown(
+    gen_scores: np.ndarray,
+    human_imp_scores: np.ndarray,
+    bot_imp_scores: np.ndarray,
+    threshold: float,
+) -> Dict[str, Dict[str, float]]:
+    """Evaluate human-only (1,600), bot-only (200), and combined (1,800) impostors at the
+    exact same Validation-calibrated threshold."""
+    def _pack(imp_s: np.ndarray) -> Dict[str, float]:
+        y = np.concatenate([np.ones(len(gen_scores), dtype=np.int64), np.zeros(len(imp_s), dtype=np.int64)])
+        s = np.concatenate([gen_scores, imp_s])
+        m = summarize_metrics(y, s, threshold)
+        m["num_genuine"] = int(len(gen_scores))
+        m["num_impostor"] = int(len(imp_s))
+        return m
+
+    return {
+        "human_only": _pack(human_imp_scores),
+        "bot_only": _pack(bot_imp_scores),
+        "combined": _pack(np.concatenate([human_imp_scores, bot_imp_scores])),
+    }
+
+
+def impostor_breakdown_embedding(
+    embeddings: np.ndarray,
+    bot_embeddings: np.ndarray,
+    trials: Dict,
+    threshold: float,
+    cohort: Optional[np.ndarray] = None,
+    top_m: int = 12,
+    single_centroid: bool = False,
+) -> Dict[str, Dict[str, float]]:
+    gen_s, hum_s, bot_s, _ = _score_embedding_parts(
+        embeddings, bot_embeddings, trials, cohort=cohort, top_m=top_m, single_centroid=single_centroid
+    )
+    return summarize_impostor_breakdown(gen_s, hum_s, bot_s, threshold)
+
+
+def impostor_breakdown_manhattan(
+    detector: ScaledManhattanDetector,
+    split: SplitData,
+    trials: Dict,
+    threshold: float,
+) -> Dict[str, Dict[str, float]]:
+    gen_list, hum_list, bot_list = [], [], []
+    for g in trials["groups"]:
+        tmpl = detector.enroll(split.raw_flat[g["enroll_idx"]])
+        gen_list.append(detector.score(split.raw_flat[g["gen_idx"]], tmpl))
+        hum_list.append(detector.score(split.raw_flat[g["imp_idx"]], tmpl))
+        bot_list.append(detector.score(trials["bot_flat"][g["bot_idx"]], tmpl))
+    return summarize_impostor_breakdown(
+        np.concatenate(gen_list), np.concatenate(hum_list), np.concatenate(bot_list), threshold
+    )
+
+
 def evaluate_1toN_identification_embeddings(
     embeddings: np.ndarray,
     subject_ids: np.ndarray,
@@ -315,21 +451,29 @@ def evaluate_1toN_identification_embeddings(
     cross_session: bool = True,
     cohort: Optional[np.ndarray] = None,
     top_m: int = 12,
+    single_centroid: bool = False,
+    t_ranges: Optional[np.ndarray] = None,
+    key_idx_ranges: Optional[np.ndarray] = None,
 ) -> Tuple[Dict[str, float], np.ndarray]:
     """
     Task 2: 1:N Multi-User Typing Identification ("Who Is Typing?")
     - Each of the N unseen subjects registers `k_shot` typing strokes in Session 1.
-    - All remaining strokes (strictly Session >= 2 if cross_session=True, or held-out chunks)
+    - All remaining strokes (strictly Session >= 2 if cross_session=True, or held-out non-overlapping chunks)
       are queried blindly against all N gallery templates.
-    - Returns Top-1 Accuracy, Top-3 Accuracy, N-way Macro F1, and (N, N) confusion matrix.
+    - Asserts zero sample-index and zero keystroke/time overlap between enroll and query windows.
     """
     n_classes = len(subjects)
     gallery_centroids = []
     gallery_exemplars = []
     gallery_coh_stats = []
+    enroll_by_uid: Dict[int, np.ndarray] = {}
+    all_enroll_indices: List[int] = []
 
+    min_idx = int(reps_or_chunks.min())
     for uid in range(n_classes):
-        e_idx = np.where((subject_ids == uid) & (sessions == 1) & (reps_or_chunks < k_shot + (1 if reps_or_chunks.min() == 1 else 0)))[0][:k_shot]
+        e_idx = np.where((subject_ids == uid) & (sessions == 1) & (reps_or_chunks < min_idx + k_shot))[0][:k_shot]
+        enroll_by_uid[uid] = e_idx
+        all_enroll_indices.extend(e_idx.tolist())
         e_vecs = embeddings[e_idx]
         c = e_vecs.mean(axis=0)
         c = c / (np.linalg.norm(c) + 1e-8)
@@ -343,8 +487,34 @@ def evaluate_1toN_identification_embeddings(
     if cross_session:
         q_idx = np.where(sessions != 1)[0]
     else:
-        min_idx = int(reps_or_chunks.min())
         q_idx = np.where((sessions == 1) & (reps_or_chunks >= min_idx + k_shot))[0]
+
+    if not set(all_enroll_indices).isdisjoint(set(q_idx.tolist())):
+        raise AssertionError("1:N identification enroll and query index sets overlap!")
+
+    if not cross_session and key_idx_ranges is not None and len(key_idx_ranges) == len(embeddings):
+        for uid in range(n_classes):
+            e_idx = enroll_by_uid[uid]
+            uq = q_idx[subject_ids[q_idx] == uid]
+            if len(e_idx) > 0 and len(uq) > 0:
+                if int(key_idx_ranges[e_idx, 1].max()) >= int(key_idx_ranges[uq, 0].min()):
+                    raise AssertionError(
+                        f"Enroll and query keystroke row ranges overlap in same-session 1:N for uid={uid}!"
+                    )
+
+    if not cross_session and t_ranges is not None and len(t_ranges) == len(embeddings):
+        for uid in range(n_classes):
+            e_idx = enroll_by_uid[uid]
+            uq = q_idx[subject_ids[q_idx] == uid]
+            if len(e_idx) > 0 and len(uq) > 0:
+                # Strictly disjoint keystrokes require every query chunk to start AFTER enroll chunks end
+                # (when from the same run; across runs timestamps reset, so verify per contiguous monotonicity)
+                e_ranges = t_ranges[e_idx]
+                q_ranges = t_ranges[uq]
+                for er in e_ranges:
+                    for qr in q_ranges:
+                        if er[0] == qr[0] and er[1] == qr[1]:
+                            raise AssertionError(f"Identical keystroke window in enroll and query for uid={uid}")
 
     q_vecs = embeddings[q_idx]
     y_true = subject_ids[q_idx]
@@ -359,7 +529,10 @@ def evaluate_1toN_identification_embeddings(
     for uid in range(n_classes):
         c = gallery_centroids[uid]
         ex = gallery_exemplars[uid]
-        raw = 0.65 * (q_vecs @ c) + 0.35 * np.max(q_vecs @ ex.T, axis=1)
+        if single_centroid:
+            raw = q_vecs @ c
+        else:
+            raw = 0.65 * (q_vecs @ c) + 0.35 * np.max(q_vecs @ ex.T, axis=1)
         if cohort is not None:
             mu_u, sd_u = gallery_coh_stats[uid]
             z_as = (raw - 0.5 * (mu_u + mu_q)) / (0.5 * (sd_u + sd_q))
@@ -395,12 +568,17 @@ def evaluate_1toN_identification_manhattan(
 ) -> Dict[str, float]:
     n_classes = len(subjects)
     templates = []
+    all_enroll_indices: List[int] = []
     min_idx = int(reps_or_chunks.min())
     for uid in range(n_classes):
         e_idx = np.where((subject_ids == uid) & (sessions == 1) & (reps_or_chunks < min_idx + k_shot))[0][:k_shot]
+        all_enroll_indices.extend(e_idx.tolist())
         templates.append(detector.enroll(raw_flat[e_idx]))
 
     q_idx = np.where(sessions != 1)[0] if cross_session else np.where((sessions == 1) & (reps_or_chunks >= min_idx + k_shot))[0]
+    if not set(all_enroll_indices).isdisjoint(set(q_idx.tolist())):
+        raise AssertionError("Manhattan 1:N enroll and query index sets overlap!")
+
     q_flat = raw_flat[q_idx]
     y_true = subject_ids[q_idx]
 
@@ -470,24 +648,88 @@ def find_optimal_val_threshold(y_val: np.ndarray, s_val: np.ndarray) -> float:
     return best_t
 
 
-def train_vanilla_baseline(
+def _build_training_pools(
     train_split: SplitData,
-    val_split: SplitData,
-    val_trials: Dict,
-    device: torch.device,
-    epochs: int = 45,
-    batch_size: int = 256,
-    sentence_train: Optional[SentenceSplitData] = None,
+    in_ch: int,
     kr_fixed_train: Optional[Tuple] = None,
-) -> Tuple[Vanilla1DCNN, List[Dict]]:
-    """Train Scratch Vanilla1DCNN with standard Softmax Cross-Entropy across multi-length pools."""
-    set_all_seeds(SEED)
+    sentence_train: Optional[SentenceSplitData] = None,
+) -> Tuple[List[Dict], int]:
+    """Assemble training pools using UNCLIPPED raw_holds, raw_dds, raw_uds for augmentation parity."""
     n_cmu = len(train_split.subjects)
     n_kr_fixed = (int(kr_fixed_train[4].max()) + 1) if kr_fixed_train is not None else 0
     n_kr = len(sentence_train.subjects) if sentence_train is not None else 0
     num_classes = n_cmu + n_kr_fixed + n_kr
 
-    model = Vanilla1DCNN(in_channels=train_split.seq_scaled.shape[1], embed_dim=64).to(device)
+    _, hold_cols, dd_cols, ud_cols = get_feature_columns()
+    cmu_raw_h = train_split.raw_holds if train_split.raw_holds is not None else train_split.df[hold_cols].values.astype(np.float32)
+    cmu_raw_d = train_split.raw_dds if train_split.raw_dds is not None else train_split.df[dd_cols].values.astype(np.float32)
+    cmu_raw_u = train_split.raw_uds if train_split.raw_uds is not None else train_split.df[ud_cols].values.astype(np.float32)
+
+    pools = [
+        {
+            "raw_holds": cmu_raw_h,
+            "raw_dds": cmu_raw_d,
+            "raw_uds": cmu_raw_u,
+            "x_clean": train_split.seq_scaled[:, :in_ch, :],
+            "kb": train_split.key_block,
+            "y": train_split.subject_ids,
+        }
+    ]
+    if kr_fixed_train is not None:
+        pools.append(
+            {
+                "raw_holds": kr_fixed_train[0],
+                "raw_dds": kr_fixed_train[1],
+                "raw_uds": kr_fixed_train[2],
+                "x_clean": kr_fixed_train[3][:, :in_ch, :],
+                "kb": KEYRECS_FIXED_KEY_BLOCK,
+                "y": kr_fixed_train[4] + n_cmu,
+            }
+        )
+    if sentence_train is not None:
+        sent_raw_h = sentence_train.raw_holds if sentence_train.raw_holds is not None else sentence_train.holds
+        sent_raw_d = sentence_train.raw_dds if sentence_train.raw_dds is not None else sentence_train.dds
+        sent_raw_u = sentence_train.raw_uds if sentence_train.raw_uds is not None else sentence_train.uds
+        pools.append(
+            {
+                "raw_holds": sent_raw_h,
+                "raw_dds": sent_raw_d,
+                "raw_uds": sent_raw_u,
+                "x_clean": sentence_train.seq_scaled[:, :in_ch, :],
+                "kb": sentence_train.key_blocks,
+                "y": sentence_train.subject_ids + n_cmu + n_kr_fixed,
+            }
+        )
+    return pools, num_classes
+
+
+def train_vanilla_baseline(
+    train_split: SplitData,
+    val_split: SplitData,
+    val_trials: Dict,
+    device: torch.device,
+    epochs: int = VANILLA_DEFAULT_EPOCHS,
+    batch_size: int = 256,
+    sentence_train: Optional[SentenceSplitData] = None,
+    kr_fixed_train: Optional[Tuple] = None,
+    use_augmentation: bool = False,
+    bounds: Optional[Dict[str, Tuple[float, float]]] = None,
+    chan_mean: Optional[np.ndarray] = None,
+    chan_std: Optional[np.ndarray] = None,
+    touch_prob: float = 0.0,
+    touch_hold: float = 0.1,
+    tag: str = "Vanilla1DCNN",
+) -> Tuple[Vanilla1DCNN, List[Dict]]:
+    """Train Scratch Vanilla1DCNN with Softmax Cross-Entropy.
+    Supports both original baseline (same dual-corpus Train, no augmentation, no AS-Norm) and
+    controlled `Vanilla1DCNN_Aug` (exact same dual-corpus + tempo/touch augmentation recipe as KeyPrintNet).
+    Checkpoint selection strictly minimizes Validation EER."""
+    set_all_seeds(SEED)
+    in_ch = train_split.seq_scaled.shape[1]
+    eff_touch_prob = touch_prob if (use_augmentation and in_ch == N_CHANNELS) else 0.0
+    pools, num_classes = _build_training_pools(train_split, in_ch, kr_fixed_train=kr_fixed_train, sentence_train=sentence_train)
+
+    model = Vanilla1DCNN(in_channels=in_ch, embed_dim=64).to(device)
     clf_head = nn.Linear(64, num_classes).to(device)
     optimizer = torch.optim.AdamW(
         list(model.parameters()) + list(clf_head.parameters()),
@@ -496,31 +738,45 @@ def train_vanilla_baseline(
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    pools = [(train_split.seq_scaled, train_split.subject_ids)]
-    if kr_fixed_train is not None:
-        pools.append((kr_fixed_train[3], kr_fixed_train[4] + n_cmu))
-    if sentence_train is not None:
-        pools.append((sentence_train.seq_scaled, sentence_train.subject_ids + n_cmu + n_kr_fixed))
-
     rng = np.random.RandomState(SEED)
     history: List[Dict] = []
     best_state = None
-    best_val_f1 = -1.0
+    best_key = (float("inf"), float("inf"))
 
     for epoch in range(1, epochs + 1):
         model.train()
         clf_head.train()
-        batches = []
-        for x_p, y_p in pools:
-            perm = rng.permutation(len(y_p))
-            for i in range(0, len(y_p), batch_size):
-                batches.append((x_p[perm[i : i + batch_size]], y_p[perm[i : i + batch_size]]))
-        rng.shuffle(batches)
+        batch_specs = []
+        for p_idx, pool in enumerate(pools):
+            perm = rng.permutation(len(pool["y"]))
+            for i in range(0, len(pool["y"]), batch_size):
+                batch_specs.append((p_idx, perm[i : i + batch_size]))
+        rng.shuffle(batch_specs)
 
         total_loss = 0.0
-        for xb_np, yb_np in batches:
+        for p_idx, idx in batch_specs:
+            pool = pools[p_idx]
+            kb = pool["kb"] if pool["kb"].ndim == 2 else pool["kb"][idx]
+            warp = use_augmentation and rng.rand() < 0.45
+            if (warp or eff_touch_prob > 0) and bounds is not None and chan_mean is not None and chan_std is not None:
+                xb_np = augment_keystroke_batch(
+                    pool["raw_holds"][idx],
+                    pool["raw_dds"][idx],
+                    pool["raw_uds"][idx],
+                    bounds,
+                    chan_mean,
+                    chan_std,
+                    rng,
+                    key_block=kb,
+                    warp=warp,
+                    touch_prob=eff_touch_prob,
+                    touch_hold=touch_hold,
+                )[:, :in_ch, :]
+            else:
+                xb_np = pool["x_clean"][idx]
+
             xb = torch.from_numpy(xb_np).to(device)
-            yb = torch.from_numpy(yb_np).to(device)
+            yb = torch.from_numpy(pool["y"][idx]).to(device)
             optimizer.zero_grad()
             emb = model(xb)
             logits = clf_head(emb * 10.0)
@@ -531,9 +787,9 @@ def train_vanilla_baseline(
 
         scheduler.step()
 
-        val_emb = encode_sequences(model, val_split.seq_scaled, device)
-        bot_emb = encode_sequences(model, val_trials["bot_seq"], device)
-        yv, sv, _ = score_embedding_trials(val_emb, bot_emb, val_trials)
+        val_emb = encode_sequences(model, val_split.seq_scaled[:, :in_ch, :], device)
+        bot_emb = encode_sequences(model, val_trials["bot_seq"][:, :in_ch, :], device)
+        yv, sv, _ = score_embedding_trials(val_emb, bot_emb, val_trials, cohort=None, single_centroid=False)
         eer, _, _, _, _ = compute_eer(yv, sv)
         opt_t = find_optimal_val_threshold(yv, sv)
         val_f1 = float(f1_score(yv, (sv >= opt_t).astype(np.int64), average="macro"))
@@ -541,19 +797,20 @@ def train_vanilla_baseline(
 
         row = {
             "epoch": epoch,
-            "train_loss": round(total_loss / max(1, len(batches)), 4),
+            "train_loss": round(total_loss / max(1, len(batch_specs)), 4),
             "val_eer": round(eer, 4),
             "val_macro_f1": round(val_f1, 4),
             "val_roc_auc": round(val_auc, 4),
         }
         history.append(row)
-        if val_f1 > best_val_f1:
-            best_val_f1 = val_f1
+        cand_key = (round(eer, 6), -round(val_f1, 6))
+        if cand_key < best_key:
+            best_key = cand_key
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-        if epoch in (1, 5, 10, 20, 30, 40, epochs):
+        if epoch in (1, 5, 10, 20, 35, 50, epochs):
             print(
-                f"[Vanilla1DCNN] Epoch {epoch:02d}/{epochs} | "
+                f"[{tag}] Epoch {epoch:02d}/{epochs} | "
                 f"Loss={row['train_loss']:.4f} | Val F1={val_f1:.4f} | "
                 f"Val EER={eer*100:.2f}% | Val AUC={val_auc:.4f}"
             )
@@ -571,7 +828,7 @@ def train_keyprint_net(
     chan_mean: np.ndarray,
     chan_std: np.ndarray,
     device: torch.device,
-    epochs: int = 45,
+    epochs: int = KEYPRINT_DEFAULT_EPOCHS,
     batch_size: int = 256,
     use_augmentation: bool = True,
     raw_channels_only: bool = False,
@@ -584,19 +841,19 @@ def train_keyprint_net(
     touch_hold: float = 0.1,
 ) -> Tuple[KeyPrintNet, List[Dict]]:
     """
-    Train Proposed KeyPrintNet across multi-corpus / multi-length typing sequences
-    (CMU L=10 passwords + KeyRecs L=9 fixed-text + KeyRecs L=24 practice sentences)
-    with Smoothly Ramped Sub-Center CosFace + Supervised Contrastive Loss.
+    Train KeyPrintNet (either 9-channel timing-only or 17-channel key-identity + touch)
+    from scratch across multi-corpus / multi-length typing sequences using UNCLIPPED raw H/DD/UD
+    inputs for augmentation. Best checkpoint is selected strictly by Validation EER.
     """
     set_all_seeds(SEED)
-    n_cmu = len(train_split.subjects)
-    n_kr_fixed = (int(kr_fixed_train[4].max()) + 1) if kr_fixed_train is not None else 0
-    n_kr = len(sentence_train.subjects) if sentence_train is not None else 0
-    num_classes = n_cmu + n_kr_fixed + n_kr
-
     in_ch = 4 if raw_channels_only else in_channels
     if in_ch < N_CHANNELS:
-        touch_prob = 0.0  # legacy / ablation inputs carry no Hold_Valid flag
+        touch_prob = 0.0  # 4ch / 9ch timing-only encoders carry no Hold_Valid flag
+
+    pools, num_classes = _build_training_pools(
+        train_split, in_ch, kr_fixed_train=kr_fixed_train, sentence_train=sentence_train
+    )
+
     model = KeyPrintNet(in_channels=in_ch, hidden_channels=80, embed_dim=64, dropout=0.18).to(device)
     cosface_head = SubCenterCosFaceHead(
         embed_dim=64, num_classes=num_classes, sub_centers=2, scale=16.0, max_margin=0.08
@@ -610,44 +867,10 @@ def train_keyprint_net(
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=2e-5)
 
-    _, hold_cols, dd_cols, ud_cols = get_feature_columns()
-    pools = [
-        {
-            "holds": train_split.df[hold_cols].values.astype(np.float32),
-            "dds": train_split.df[dd_cols].values.astype(np.float32),
-            "uds": train_split.df[ud_cols].values.astype(np.float32),
-            "x_clean": train_split.seq_scaled[:, :in_ch, :],
-            "kb": train_split.key_block,
-            "y": train_split.subject_ids,
-        }
-    ]
-    if kr_fixed_train is not None:
-        pools.append(
-            {
-                "holds": kr_fixed_train[0],
-                "dds": kr_fixed_train[1],
-                "uds": kr_fixed_train[2],
-                "x_clean": kr_fixed_train[3][:, :in_ch, :],
-                "kb": KEYRECS_FIXED_KEY_BLOCK,
-                "y": kr_fixed_train[4] + n_cmu,
-            }
-        )
-    if sentence_train is not None:
-        pools.append(
-            {
-                "holds": sentence_train.holds,
-                "dds": sentence_train.dds,
-                "uds": sentence_train.uds,
-                "x_clean": sentence_train.seq_scaled[:, :in_ch, :],
-                "kb": sentence_train.key_blocks,
-                "y": sentence_train.subject_ids + n_cmu + n_kr_fixed,
-            }
-        )
-
     rng = np.random.RandomState(SEED)
     history: List[Dict] = []
     best_state = None
-    best_val_score = -1.0
+    best_key = (float("inf"), float("inf"))
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -668,9 +891,9 @@ def train_keyprint_net(
             warp = use_augmentation and rng.rand() < 0.45
             if warp or touch_prob > 0:
                 xb_np = augment_keystroke_batch(
-                    pool["holds"][idx],
-                    pool["dds"][idx],
-                    pool["uds"][idx],
+                    pool["raw_holds"][idx],
+                    pool["raw_dds"][idx],
+                    pool["raw_uds"][idx],
                     bounds,
                     chan_mean,
                     chan_std,
@@ -720,6 +943,7 @@ def train_keyprint_net(
                 sentence_val.subjects,
                 k_shot=5,
                 cross_session=False,
+                t_ranges=sentence_val.t_ranges,
             )
             sent_val_acc = id_m["top1_accuracy"]
 
@@ -733,11 +957,12 @@ def train_keyprint_net(
         }
         history.append(row)
         combo_score = 0.45 * val_f1 + 0.45 * val_auc + (0.10 * sent_val_acc if sentence_val is not None else 0.0)
-        if combo_score > best_val_score:
-            best_val_score = combo_score
+        cand_key = (round(eer, 6), -round(combo_score, 6))
+        if cand_key < best_key:
+            best_key = cand_key
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-        if epoch in (1, 5, 10, 20, 30, epochs):
+        if epoch in (1, 5, 10, 20, 30, 50, 70, epochs):
             extra = f" | Sent-1:N={sent_val_acc*100:.1f}%" if sentence_val is not None else ""
             print(
                 f"[{tag}] Epoch {epoch:02d}/{epochs} | "

@@ -1,47 +1,53 @@
 {
+  "participant_counts": {
+    "raw_corpus_participants": 99,
+    "raw_participants_both_sessions": 99,
+    "clean_chunk_participants": 96,
+    "tempo_matching_test_participants": 18
+  },
   "tempo_matching_impostor_pass_rate": {
     "kb": {
-      "original_previous": 0.4347,
-      "original_dual": 0.3205,
-      "tempo_matched_previous": 0.5081,
-      "tempo_matched_dual": 0.3979,
-      "tempo_hold_matched_previous": 0.6819,
-      "tempo_hold_matched_dual": 0.6095
+      "original_previous": 0.419,
+      "original_dual": 0.4416,
+      "tempo_matched_previous": 0.5049,
+      "tempo_matched_dual": 0.5457,
+      "tempo_hold_matched_previous": 0.6871,
+      "tempo_hold_matched_dual": 0.7541
     },
     "touch": {
-      "original_previous": 0.5582,
-      "original_dual": 0.555,
-      "tempo_matched_previous": 0.6444,
-      "tempo_matched_dual": 0.6399,
-      "tempo_hold_matched_previous": 0.6444,
-      "tempo_hold_matched_dual": 0.6399
+      "original_previous": 0.5357,
+      "original_dual": 0.6533,
+      "tempo_matched_previous": 0.6487,
+      "tempo_matched_dual": 0.7679,
+      "tempo_hold_matched_previous": 0.6487,
+      "tempo_hold_matched_dual": 0.7679
     }
   },
   "tempo_matching_strings": [
-    "enerally",
-    "sometimes",
-    "killer",
-    "beyound",
-    "limite",
-    "rmount",
-    "tresure",
-    "becomes",
-    "lutely",
-    "shamed",
-    "matter",
-    "desirious",
-    "esnotuso",
-    "wizesovi",
-    "shystive",
-    "ckithrny",
-    "rmucrelu",
-    "tusoncak",
-    "blsuntut",
-    "meyencos",
-    "cepeteyo",
-    "veablyem",
-    "crsplouc",
-    "wnsithay"
+    "rought",
+    "sandstom",
+    "inside",
+    "seemed",
+    "easure",
+    "better",
+    "replace",
+    "othing",
+    "urable",
+    "permit",
+    "omething",
+    "ething",
+    "gomeouni",
+    "beacrsta",
+    "cepeolsh",
+    "butamots",
+    "kemielos",
+    "dilitayo",
+    "thyoshat",
+    "formaten",
+    "veveyove",
+    "omoutoli",
+    "lungetsa",
+    "limolede"
   ],
   "variance_decomposition": {
     "digraph_interval": {
@@ -51,7 +57,7 @@
         "key_layout": 0.0798,
         "person_speed": 0.1974,
         "person_rhythm": 0.1479,
-        "attempt_noise": 0.575
+        "attempt_noise": 0.5748
       }
     },
     "key_hold": {
@@ -61,14 +67,14 @@
         "key_layout": 0.0438,
         "person_speed": 0.3554,
         "person_rhythm": 0.1042,
-        "attempt_noise": 0.4966
+        "attempt_noise": 0.4965
       }
     }
   },
   "same_speed_ideal_eer": {
     "password_9_intervals": 0.3616,
-    "password_9_intervals_plus_10_holds": 0.316,
-    "one_sentence_60_intervals": 0.1739,
-    "two_sentences_120_intervals": 0.0917
+    "password_9_intervals_plus_10_holds": 0.3159,
+    "one_sentence_60_intervals": 0.1738,
+    "two_sentences_120_intervals": 0.0915
   }
 }

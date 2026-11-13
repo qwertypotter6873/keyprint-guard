@@ -9,7 +9,12 @@ function esc(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeColor(c, fallback = '#2563eb') {
+  return typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : fallback;
 }
 
 function dot(a, b) {
@@ -19,9 +24,26 @@ function dot(a, b) {
   return s;
 }
 
+function vecNorm(v) {
+  let sumSq = 0;
+  for (let i = 0; i < v.length; i++) sumSq += v[i] * v[i];
+  return Math.sqrt(sumSq);
+}
+
 function normalizeVec(v) {
-  const norm = Math.hypot(...v) || 1e-8;
+  const norm = vecNorm(v) || 1e-8;
   return v.map((x) => x / norm);
+}
+
+function isFiniteNonZeroVec(v, expectedDim) {
+  if (!Array.isArray(v) || v.length !== expectedDim || expectedDim < 1) return false;
+  let sumSq = 0;
+  for (let i = 0; i < expectedDim; i++) {
+    const x = v[i];
+    if (typeof x !== 'number' || !Number.isFinite(x)) return false;
+    sumSq += x * x;
+  }
+  return Math.sqrt(sumSq) > 1e-6;
 }
 
 /**
@@ -51,8 +73,12 @@ export function createPresetCapture(mode = 'normal') {
 
   const jitter = (i) => (mode === 'slow' ? ((i % 3) - 1) * 3 : 0);
   const events = [];
-  const holds = [];
-  const holdValid = [];
+  const uniqueHolds = [];
+  const uniqueHoldValid = [];
+  const hCurr = [];
+  const hNext = [];
+  const hvCurr = [];
+  const hvNext = [];
   const dds = [];
   const uds = [];
   const stitchFlags = [];
@@ -76,6 +102,7 @@ export function createPresetCapture(mode = 'normal') {
       startMs,
       endMs,
       holdMs,
+      holdKnown: true,
       ddMs: stitched ? null : ddMs,
       udMs,
       isRollover: udMs !== null && udMs < 0,
@@ -84,26 +111,43 @@ export function createPresetCapture(mode = 'normal') {
     });
   }
 
+  let prevAcceptedNextIdx = null;
   for (let i = 0; i < events.length - 1; i++) {
     const c0 = events[i];
     const c1 = events[i + 1];
     if (c1.stitchedBefore) continue;
-    if (holds.length === 0) {
-      holds.push(c0.holdMs / 1000);
-      holdValid.push(true);
+
+    const h0 = c0.holdMs / 1000;
+    const h1 = c1.holdMs / 1000;
+    const dd = c1.ddMs / 1000;
+    const ud = c1.udMs / 1000;
+
+    const isNewSegment = dds.length === 0 || prevAcceptedNextIdx !== i;
+    const isStitched = dds.length > 0 && (prevAcceptedNextIdx !== i || c0.stitchedBefore);
+
+    hCurr.push(h0);
+    hNext.push(h1);
+    hvCurr.push(true);
+    hvNext.push(true);
+    if (isNewSegment) {
+      uniqueHolds.push(h0);
+      uniqueHoldValid.push(true);
     }
-    holds.push(c1.holdMs / 1000);
-    holdValid.push(true);
-    dds.push(c1.ddMs / 1000);
-    uds.push(c1.udMs / 1000);
-    stitchFlags.push(i > 0 && c0.stitchedBefore);
+    uniqueHolds.push(h1);
+    uniqueHoldValid.push(true);
+    dds.push(dd);
+    uds.push(ud);
+    stitchFlags.push(isStitched);
     pairKeys.push([c0.code, c1.code]);
+    prevAcceptedNextIdx = i + 1;
   }
 
-  const meanHoldMs = Math.round((holds.reduce((a, b) => a + b, 0) / holds.length) * 1000);
-  const meanDdSec = dds.reduce((a, b) => a + b, 0) / dds.length;
-  const cpm = Math.round(60 / meanDdSec);
-  const rolloverPct = Math.round((uds.filter((u) => u < 0).length / uds.length) * 100);
+  const meanHoldMs = uniqueHolds.length
+    ? Math.round((uniqueHolds.reduce((a, b) => a + b, 0) / uniqueHolds.length) * 1000)
+    : 0;
+  const meanDdSec = dds.length ? dds.reduce((a, b) => a + b, 0) / dds.length : 0;
+  const cpm = meanDdSec > 0 ? Math.round(60 / meanDdSec) : 0;
+  const rolloverPct = uds.length ? Math.round((uds.filter((u) => u < 0).length / uds.length) * 100) : 0;
 
   return {
     isPreset: true,
@@ -121,7 +165,18 @@ export function createPresetCapture(mode = 'normal') {
     timeline: { events, poppedCount: 1 },
     inputMode: 'keyboard',
     behavior: null,
-    stroke: { holds, holdValid, dds, uds, stitchFlags, pairKeys },
+    stroke: {
+      holds: uniqueHolds,
+      holdValid: uniqueHoldValid,
+      hCurr,
+      hNext,
+      hvCurr,
+      hvNext,
+      dds,
+      uds,
+      stitchFlags,
+      pairKeys,
+    },
   };
 }
 
@@ -135,7 +190,6 @@ export function renderPianoRollSvg(capture, { maxEvents = 120 } = {}) {
     return `<div class="viz-empty">최소 2글자 이상 타이핑하면 실시간 건반 리듬 타임라인이 그려집니다.</div>`;
   }
 
-  // Render full sentence sequence (no 14-key cutoff; container scrolls smoothly if very long)
   const slice = allEvents.length > maxEvents ? allEvents.slice(-maxEvents) : allEvents;
 
   const baseMs = slice[0].startMs;
@@ -174,12 +228,10 @@ export function renderPianoRollSvg(capture, { maxEvents = 120 } = {}) {
     const x2 = Math.max(x1 + 8, xOf(ev.e));
     const prev = i > 0 ? normEvents[i - 1] : null;
 
-    // Alternating subtle horizontal guide
     rowItems.push(
       `<line x1="${padL}" y1="${yCenter}" x2="${W - padR}" y2="${yCenter}" stroke="rgba(24,24,27,0.035)" stroke-width="1"/>`
     );
 
-    // 1) Rollover highlight band (when current key starts BEFORE previous key released!)
     if (prev && ev.isRollover && ev.s < prev.e) {
       const rx1 = xOf(ev.s);
       const rx2 = Math.max(rx1 + 3, xOf(prev.e));
@@ -194,7 +246,6 @@ export function renderPianoRollSvg(capture, { maxEvents = 120 } = {}) {
       );
     }
 
-    // 2) Backspace / Pause Stitch Scissors Marker
     if (prev && ev.stitchedBefore) {
       const sx = ((xOf(prev.e) + x1) / 2).toFixed(1);
       bgBands.push(
@@ -204,7 +255,6 @@ export function renderPianoRollSvg(capture, { maxEvents = 120 } = {}) {
       );
     }
 
-    // Keycap badge on left
     const keyBg = ev.isRollover ? '#eff6ff' : '#f4f4f5';
     const keyStroke = ev.isRollover ? '#bfdbfe' : 'rgba(24,24,27,0.12)';
     const keyColor = ev.isRollover ? '#1d4ed8' : '#27272a';
@@ -215,7 +265,6 @@ export function renderPianoRollSvg(capture, { maxEvents = 120 } = {}) {
       )}</text>`
     );
 
-    // Hold duration bar
     const barFill = ev.stitchedBefore ? '#059669' : ev.isRollover ? '#2563eb' : '#18181b';
     rowItems.push(
       `<rect x="${x1.toFixed(1)}" y="${(yCenter - 5).toFixed(1)}" width="${(x2 - x1).toFixed(
@@ -223,33 +272,35 @@ export function renderPianoRollSvg(capture, { maxEvents = 120 } = {}) {
       )}" height="10" rx="5" fill="${barFill}"/>`
     );
 
-    // Micro timing annotation on right of bar
-    let metaLabel = `${ev.holdMs}ms`;
+    const safeHoldMs = Number(ev.holdMs) || 0;
+    const safeUdMs = Number(ev.udMs) || 0;
+    let metaLabel = `${safeHoldMs}ms`;
     let metaColor = '#71717a';
     if (ev.isRollover) {
-      metaLabel = `${ev.holdMs}ms · 겹침 ${ev.udMs}ms`;
+      metaLabel = `${safeHoldMs}ms · 겹침 ${safeUdMs}ms`;
       metaColor = '#2563eb';
     } else if (ev.stitchedBefore) {
-      metaLabel = `${ev.holdMs}ms · 가속도 0 리셋`;
+      metaLabel = `${safeHoldMs}ms · 가속도 0 리셋`;
       metaColor = '#059669';
     }
     rowItems.push(
       `<text x="${(x2 + 6).toFixed(1)}" y="${(yCenter + 3.5).toFixed(
         1
-      )}" fill="${metaColor}" font-size="10" font-weight="600" font-family="var(--font-mono)">${metaLabel}</text>`
+      )}" fill="${metaColor}" font-size="10" font-weight="600" font-family="var(--font-mono)">${esc(
+        metaLabel
+      )}</text>`
     );
 
-    // Full-row interactive hover hit target
-    const tipTitle = `타건 #${ev.idx + 1} · 키 [${ev.label}]`;
+    const tipTitle = `타건 #${(Number(ev.idx) || 0) + 1} · 키 [${ev.label}]`;
     const tipLines = [
-      `누름(Hold): ${ev.holdMs} ms (${ev.s}ms → ${ev.e}ms)`,
+      `누름(Hold): ${safeHoldMs} ms (${ev.s}ms → ${ev.e}ms)`,
       ev.ddMs !== null
-        ? `키 간격(DD): ${ev.ddMs} ms`
+        ? `키 간격(DD): ${Number(ev.ddMs) || 0} ms`
         : ev.stitchedBefore
           ? '전환 상태: ✂ 오타 격리 후 리듬 봉합'
           : '전환 상태: 첫 타건 시작점',
       ev.udMs !== null
-        ? `*비행(UD): ${ev.udMs} ms ${ev.isRollover ? '(연타 롤오버 중첩!)' : '(일반 순차 타건)'}`
+        ? `*비행(UD): ${safeUdMs} ms ${ev.isRollover ? '(연타 롤오버 중첩!)' : '(일반 순차 타건)'}`
         : ev.stitchedBefore
           ? '*보정: 가속도(Ch8) = 0.0 리셋 완료'
           : '',
@@ -280,18 +331,21 @@ export function renderPianoRollSvg(capture, { maxEvents = 120 } = {}) {
  */
 export function renderTempoInvarianceSvg(capture) {
   const dds = capture?.stroke?.dds || [];
-  // Touch keyboards report no hold time: show the same median the model imputes
-  const holds = (capture?.stroke?.holds || []).map((h) => (h === null || h === undefined ? 0.088 : h));
+  const rawUniqueHolds = capture?.stroke?.holds || [];
+  const rawHCurr = Array.isArray(capture?.stroke?.hCurr)
+    ? capture.stroke.hCurr
+    : rawUniqueHolds.slice(0, dds.length);
+  const imputeHold = (h) => (h === null || h === undefined ? 0.088 : h);
+  const uniqueHolds = rawUniqueHolds.map(imputeHold);
+  const transHCurr = rawHCurr.map(imputeHold);
   const stitches = capture?.stroke?.stitchFlags || [];
 
   if (dds.length < 3) {
     return `<div class="viz-empty">연속 타건 전이 구간이 3개 이상 모이면 속도 불변 정규화 파형이 표시됩니다.</div>`;
   }
 
-  // Plot the entire variable-length sentence (matching KeyPrintNet [1, 17, L] full-sequence input!)
   const m = dds.length;
   const rawFastMs = dds.slice(0, m).map((v) => v * 1000);
-  // Simulated 0.62x slower condition (1.61x interval + slight natural +/- 4ms micro-variance)
   const rawSlowMs = rawFastMs.map((v, i) => v * 1.61 + ((i % 3) - 1) * 4.5);
 
   const meanFast = rawFastMs.reduce((a, b) => a + b, 0) / m;
@@ -299,9 +353,7 @@ export function renderTempoInvarianceSvg(capture) {
   const relFast = rawFastMs.map((v) => v / meanFast);
   const relSlow = rawSlowMs.map((v) => v / meanSlow);
 
-  // Cosine similarity between fast & slow normalized rhythm vectors
-  const cosMatch =
-    (dot(normalizeVec(relFast), normalizeVec(relSlow)) * 100).toFixed(1);
+  const cosMatch = (dot(normalizeVec(relFast), normalizeVec(relSlow)) * 100).toFixed(1);
 
   const W = 710;
   const H = 252;
@@ -310,11 +362,9 @@ export function renderTempoInvarianceSvg(capture) {
   const plotW = W - padL - padR;
   const xAt = (i) => padL + (i / Math.max(1, m - 1)) * plotW;
 
-  // Top subplot: Raw ms (y: 34..112)
   const maxMs = Math.max(320, ...rawSlowMs) * 1.08;
   const yRaw = (ms) => 110 - (Math.min(maxMs, Math.max(0, ms)) / maxMs) * 72;
 
-  // Bottom subplot: Normalized Rel_DD (y: 162..234), range [0.3, 1.9]
   const yRel = (r) => 232 - ((Math.min(1.9, Math.max(0.3, r)) - 0.3) / 1.6) * 70;
   const yRelOne = yRel(1.0).toFixed(1);
 
@@ -331,9 +381,12 @@ export function renderTempoInvarianceSvg(capture) {
     }
   }
 
-  // Relative Hold dots & full-height interactive scrub bands
-  const relHolds = holds.slice(0, m);
-  const meanH = relHolds.reduce((a, b) => a + b, 0) / Math.max(1, relHolds.length);
+  const meanH = Math.max(
+    1e-4,
+    uniqueHolds.length
+      ? uniqueHolds.reduce((a, b) => a + b, 0) / uniqueHolds.length
+      : transHCurr.reduce((a, b) => a + b, 0) / Math.max(1, transHCurr.length)
+  );
   const stepW = m > 1 ? plotW / (m - 1) : plotW;
 
   const fastDots = relFast
@@ -350,7 +403,7 @@ export function renderTempoInvarianceSvg(capture) {
       const cx = xAt(i);
       const hx = Math.max(padL, cx - stepW / 2);
       const hw = Math.min(W - padR - hx, stepW);
-      const rh = (relHolds[i] ?? meanH) / meanH;
+      const rh = (transHCurr[i] ?? meanH) / meanH;
       const tipTitle = `전이 구간 #${i + 1} / ${m}${stitches[i] ? ' (✂ 봉합 지점)' : ''}`;
       const tipLines = [
         `고속 원시 DD: ${Math.round(rawFastMs[i])} ms`,
@@ -367,12 +420,12 @@ export function renderTempoInvarianceSvg(capture) {
     })
     .join('');
 
+  const safeCpm = Number(capture?.cpm) || 0;
   return `<svg viewBox="0 0 ${W} ${H}" class="viz-svg" aria-label="원시 시간 대비 속도 불변 정규화 파형 비교">
-    <!-- Top Panel: Raw Milliseconds -->
     <rect x="${padL}" y="32" width="${plotW}" height="80" rx="8" fill="#fafafa" stroke="rgba(24,24,27,0.06)"/>
     <text x="${padL}" y="22" fill="#18181b" font-size="11.5" font-weight="700">① 정규화 전: 원시 키 간격 DD (ms) — 피곤해서 천천히 치면 숫자가 크게 벌어짐</text>
-    <text x="${W - padR}" y="22" text-anchor="end" fill="#71717a" font-size="10.5">실선 ${capture.cpm}타/분 vs 점선 ${Math.round(
-      capture.cpm * 0.62
+    <text x="${W - padR}" y="22" text-anchor="end" fill="#71717a" font-size="10.5">실선 ${safeCpm}타/분 vs 점선 ${Math.round(
+      safeCpm * 0.62
     )}타/분</text>
     <text x="${padL - 8}" y="44" text-anchor="end" fill="#9ca3af" font-size="9.5" font-family="var(--font-mono)">${Math.round(
       maxMs
@@ -385,7 +438,6 @@ export function renderTempoInvarianceSvg(capture) {
     )}"/>
     <polyline fill="none" stroke="#18181b" stroke-width="2.2" points="${poly(rawFastMs, yRaw)}"/>
 
-    <!-- Bottom Panel: Tempo-Invariant Relative Rhythm -->
     <rect x="${padL}" y="158" width="${plotW}" height="78" rx="8" fill="#f8fafc" stroke="rgba(37,99,235,0.16)"/>
     <text x="${padL}" y="147" fill="#1d4ed8" font-size="11.5" font-weight="700">② 정규화 후: 상대 리듬 비율 (DD / 평균DD) — 속도가 변해도 개인 고유 박자 파형 ${cosMatch}% 일치</text>
     <line x1="${padL}" y1="${yRelOne}" x2="${W - padR}" y2="${yRelOne}" stroke="rgba(37,99,235,0.22)" stroke-width="1" stroke-dasharray="3 3"/>
@@ -403,51 +455,71 @@ export function renderTempoInvarianceSvg(capture) {
 }
 
 /**
- * Compute partial centroid, spherical stability %, and signature dimension indices
+ * Compute partial centroid, Mean Pairwise Cosine stability, and signature dimension indices
  * for Step 2 (Profile Formation Inspector).
  */
 export function analyzeProfileConvergence(template, stepCount) {
-  const exemplars = Array.isArray(template?.exemplars) && template.exemplars.length > 0
-    ? template.exemplars
-    : template?.centroid
-      ? [template.centroid]
-      : [];
+  const exemplars = Array.isArray(template)
+    ? template
+    : Array.isArray(template?.exemplars) && template.exemplars.length > 0
+      ? template.exemplars
+      : template?.centroid !== undefined && template?.centroid !== null
+        ? [template.centroid]
+        : [];
 
   const totalAvailable = exemplars.length;
-  const k = Math.max(1, Math.min(stepCount || totalAvailable, totalAvailable));
-  const activeExemplars = exemplars.slice(0, k);
-  const dim = activeExemplars[0]?.length || 64;
-
-  // L2-normalized centroid of the first k exemplars
-  const sum = new Array(dim).fill(0);
-  for (const ex of activeExemplars) {
-    for (let d = 0; d < dim; d++) sum[d] += ex[d];
+  if (totalAvailable === 0) {
+    return {
+      status: 'insufficient',
+      exemplars: [],
+      totalAvailable: 0,
+      activeCount: 0,
+      partialCentroid: [],
+      meanPairwiseCos: null,
+      stabilityPct: null,
+      consistencyPct: null,
+      pairwiseCosPct: null,
+      stabilityText: '근거 부족 (2개 이상 필요)',
+      topDims: new Set(),
+    };
   }
-  const partialCentroid = normalizeVec(sum);
 
-  // Mean pairwise cosine correlation rho across all available exemplars of this person
-  let pairSum = 0;
-  let pairCnt = 0;
-  for (let i = 0; i < exemplars.length; i++) {
-    for (let j = i + 1; j < exemplars.length; j++) {
-      pairSum += dot(exemplars[i], exemplars[j]);
-      pairCnt += 1;
+  const k = Math.max(1, Math.min(stepCount ?? totalAvailable, totalAvailable));
+  const activeExemplars = exemplars.slice(0, k);
+  const dim = Array.isArray(activeExemplars[0]) && activeExemplars[0].length > 0 ? activeExemplars[0].length : 64;
+
+  for (const ex of activeExemplars) {
+    if (!isFiniteNonZeroVec(ex, dim)) {
+      return {
+        status: 'invalid',
+        exemplars,
+        totalAvailable,
+        activeCount: k,
+        partialCentroid: new Array(dim).fill(0),
+        meanPairwiseCos: null,
+        stabilityPct: null,
+        consistencyPct: null,
+        pairwiseCosPct: null,
+        stabilityText: '무효 벡터',
+        topDims: new Set(),
+      };
     }
   }
-  const rho = pairCnt > 0 ? Math.max(0.35, Math.min(0.92, pairSum / pairCnt)) : 0.64;
 
-  // Expected cosine alignment with asymptotic true user center on unit hypersphere:
-  // E[cos(c_k, mu)] = sqrt((k * rho) / (1 + (k - 1) * rho))
-  const expectedCos = Math.sqrt((k * rho) / (1 + (k - 1) * rho));
-  const stabilityPct = Math.round(expectedCos * 1000) / 10;
+  const unitExemplars = activeExemplars.map((ex) => normalizeVec(ex));
+  const sum = new Array(dim).fill(0);
+  for (const u of unitExemplars) {
+    for (let d = 0; d < dim; d++) sum[d] += u[d];
+  }
+  const sumNorm = vecNorm(sum);
+  const partialCentroid = sumNorm > 1e-8 ? sum.map((x) => x / sumNorm) : new Array(dim).fill(0);
 
-  // Find Top-8 most prominent & sign-consistent signature dimensions
   const scoredDims = [];
   for (let d = 0; d < dim; d++) {
     const sign = Math.sign(partialCentroid[d]);
     let sameSign = 0;
-    for (const ex of activeExemplars) {
-      if (Math.sign(ex[d]) === sign) sameSign += 1;
+    for (const u of unitExemplars) {
+      if (Math.sign(u[d]) === sign) sameSign += 1;
     }
     const consistency = sameSign / k;
     scoredDims.push({
@@ -458,13 +530,46 @@ export function analyzeProfileConvergence(template, stepCount) {
   scoredDims.sort((a, b) => b.score - a.score);
   const topDims = new Set(scoredDims.slice(0, 8).map((it) => it.d));
 
+  if (k < 2) {
+    return {
+      status: 'insufficient',
+      exemplars,
+      totalAvailable,
+      activeCount: k,
+      partialCentroid,
+      meanPairwiseCos: null,
+      stabilityPct: null,
+      consistencyPct: null,
+      pairwiseCosPct: null,
+      stabilityText: '근거 부족 (2개 이상 필요)',
+      topDims,
+    };
+  }
+
+  let pairSum = 0;
+  let pairCnt = 0;
+  for (let i = 0; i < k; i++) {
+    for (let j = i + 1; j < k; j++) {
+      pairSum += dot(unitExemplars[i], unitExemplars[j]);
+      pairCnt += 1;
+    }
+  }
+  const meanCos = Math.max(-1.0, Math.min(1.0, pairSum / pairCnt));
+  const consistencyPct = Math.round(((meanCos + 1) / 2) * 1000) / 10;
+  const pairwiseCosPct = Math.round(meanCos * 1000) / 10;
+  const signedCos = `${meanCos >= 0 ? '+' : ''}${meanCos.toFixed(2)}`;
+
   return {
+    status: 'ok',
     exemplars,
     totalAvailable,
     activeCount: k,
     partialCentroid,
-    stabilityPct,
-    pairwiseCosPct: Math.round(rho * 1000) / 10,
+    meanPairwiseCos: meanCos,
+    stabilityPct: consistencyPct,
+    consistencyPct,
+    pairwiseCosPct,
+    stabilityText: `평균 쌍별 코사인 ${signedCos} (일관성 ${consistencyPct.toFixed(1)}%)`,
     topDims,
   };
 }
@@ -473,14 +578,22 @@ export function analyzeProfileConvergence(template, stepCount) {
  * STEP 2: Aligned 64-D Biometric Barcode Stack -> Centroid Convergence SVG
  */
 export function renderProfileBarcodeSvg(template, { color = '#2563eb', stepCount = 3, unitLabel = '문장' } = {}) {
+  const cleanColor = safeColor(color, '#2563eb');
   const info = analyzeProfileConvergence(template, stepCount);
   const { exemplars, activeCount, partialCentroid, topDims } = info;
+  if (info.status === 'invalid') {
+    return { svg: `<div class="viz-empty">무효 벡터가 감지되어 프로필 바코드를 표시할 수 없습니다.</div>`, info };
+  }
   if (exemplars.length === 0) {
     return { svg: `<div class="viz-empty">선택한 프로필에 임베딩 데이터가 없습니다.</div>`, info };
   }
 
-  // Display up to 4 individual sample strips so height stays compact and scannable
-  const displayRows = exemplars.slice(0, Math.min(4, exemplars.length));
+  const displayRows = exemplars
+    .slice(0, Math.min(4, exemplars.length))
+    .filter((vec) => isFiniteNonZeroVec(vec, partialCentroid.length));
+  if (displayRows.length === 0) {
+    return { svg: `<div class="viz-empty">표시 가능한 임베딩 샘플이 없습니다.</div>`, info };
+  }
   const dim = partialCentroid.length;
 
   const W = 710;
@@ -499,14 +612,13 @@ export function renderProfileBarcodeSvg(template, { color = '#2563eb', stepCount
 
   const parts = [];
 
-  // Column header ticks & Top-8 invariant signature column highlights
   for (let d = 0; d < dim; d++) {
     const x = padL + d * colStep;
     if (topDims.has(d)) {
       parts.push(
         `<rect x="${(x - 1).toFixed(1)}" y="${padT - 6}" width="${(barW + 2).toFixed(
           1
-        )}" height="${H - padT - 8}" rx="3" fill="${color}" opacity="0.07"/>`
+        )}" height="${H - padT - 8}" rx="3" fill="${cleanColor}" opacity="0.07"/>`
       );
     }
     if (d % 16 === 0 || d === 63) {
@@ -541,7 +653,7 @@ export function renderProfileBarcodeSvg(template, { color = '#2563eb', stepCount
     parts.push(
       `<rect x="${padL - 4}" y="${yTop}" width="${stripW + 8}" height="${height}" rx="7" fill="${
         isCentroid ? '#f8fafc' : '#fafafa'
-      }" stroke="${isCentroid ? color : 'rgba(24,24,27,0.08)'}" stroke-width="${
+      }" stroke="${isCentroid ? cleanColor : 'rgba(24,24,27,0.08)'}" stroke-width="${
         isCentroid ? '1.5' : '1'
       }"/>`,
       `<line x1="${padL - 2}" y1="${midY.toFixed(1)}" x2="${
@@ -549,14 +661,14 @@ export function renderProfileBarcodeSvg(template, { color = '#2563eb', stepCount
       }" y2="${midY.toFixed(1)}" stroke="rgba(24,24,27,0.08)" stroke-width="1"/>`
     );
 
-    const maxScale = 0.28; // Typical L2-normalized 64-D component range [-0.28, +0.28]
+    const maxScale = 0.28;
     for (let d = 0; d < dim; d++) {
       const val = vec[d] || 0;
       const mag = Math.min(1, Math.abs(val) / maxScale);
       const halfH = Math.max(1.8, mag * (height * 0.44));
       const x = padL + d * colStep;
       const y = val >= 0 ? midY - halfH : midY;
-      const barColor = val >= 0 ? color : '#475569';
+      const barColor = val >= 0 ? cleanColor : '#475569';
       const op = (0.28 + 0.72 * mag).toFixed(2);
       parts.push(
         `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(
@@ -578,7 +690,6 @@ export function renderProfileBarcodeSvg(template, { color = '#2563eb', stepCount
     });
   });
 
-  // Merge divider banner
   const mergeY = padT + displayRows.length * (rowH + rowGap) + 14;
   parts.push(
     `<line x1="${padL}" y1="${mergeY}" x2="${W - padR}" y2="${mergeY}" stroke="rgba(24,24,27,0.12)" stroke-dasharray="4 3"/>`,
@@ -589,14 +700,17 @@ export function renderProfileBarcodeSvg(template, { color = '#2563eb', stepCount
   );
 
   const centroidY = mergeY + 20;
+  const centroidSub =
+    info.status === 'ok'
+      ? `${activeCount}개 누적 · cos ${info.meanPairwiseCos >= 0 ? '+' : ''}${info.meanPairwiseCos.toFixed(2)}`
+      : `${activeCount}개 · 근거 부족`;
   drawBarcodeRow(partialCentroid, centroidY, centroidH, {
     active: true,
     isCentroid: true,
     label: '대표 프로필 지문',
-    subLabel: `${activeCount}개 누적 완성`,
+    subLabel: centroidSub,
   });
 
-  // Full-height column hover strips across all sentences + Centroid for each of the 64 dimensions!
   const fmtSigned = (n) => `${n >= 0 ? '+' : ''}${n.toFixed(4)}`;
   for (let d = 0; d < dim; d++) {
     const x = padL + d * colStep;
@@ -636,7 +750,6 @@ function compute2DPcaBasis(vectors) {
   const centered = vectors.map((v) => v.map((x, d) => x - mean[d]));
 
   const powerIter = (deflateVec = null) => {
-    // Deterministic non-zero seed vector
     let u = new Array(dim).fill(0).map((_, d) => Math.cos((d + 1) * 0.73) + 0.2 * Math.sin(d * 1.9));
     u = normalizeVec(u);
 
@@ -650,12 +763,11 @@ function compute2DPcaBasis(vectors) {
         const overlap = dot(next, deflateVec);
         for (let d = 0; d < dim; d++) next[d] -= overlap * deflateVec[d];
       }
-      const norm = Math.hypot(...next);
+      const norm = vecNorm(next);
       if (norm < 1e-8) break;
       u = next.map((x) => x / norm);
     }
 
-    // Canonical sign so chart orientation never flips arbitrarily
     let maxIdx = 0;
     for (let d = 1; d < dim; d++) {
       if (Math.abs(u[d]) > Math.abs(u[maxIdx])) maxIdx = d;
@@ -671,23 +783,27 @@ function compute2DPcaBasis(vectors) {
 
 /**
  * STEP 3: Live Multi-User 2D Hypersphere Constellation Map SVG
+ * Preserves TRUE undistorted linear 2D PCA coordinates for all centroids, exemplars, and query points;
+ * collision avoidance is applied strictly to text label anchors (`labelPos`) with thin leader lines.
  */
 export function renderHypersphereMapSvg(entries, queryPoint = null) {
-  // entries: [{ id, name, color, isSample, centroid, exemplars }]
-  if (!entries || entries.length === 0) {
+  const validEntries = (entries || []).filter((e) => isFiniteNonZeroVec(e?.centroid, 64));
+  if (validEntries.length === 0) {
     return `<div class="viz-empty">표시할 참가자 프로필이 없습니다.</div>`;
   }
 
-  // Fit 2D PCA specifically on person centroids first to maximize between-user separation!
-  const centroidVecs = entries.map((e) => e.centroid).filter(Boolean);
+  const centroidVecs = validEntries.map((e) => e.centroid);
   const allVecs = [];
-  for (const ent of entries) {
-    if (ent.centroid) allVecs.push(ent.centroid);
+  for (const ent of validEntries) {
+    allVecs.push(ent.centroid);
     if (Array.isArray(ent.exemplars)) {
-      for (const ex of ent.exemplars) allVecs.push(ex);
+      for (const ex of ent.exemplars) {
+        if (isFiniteNonZeroVec(ex, 64)) allVecs.push(ex);
+      }
     }
   }
-  if (queryPoint?.embedding) allVecs.push(queryPoint.embedding);
+  const hasValidQuery = isFiniteNonZeroVec(queryPoint?.embedding, 64);
+  if (hasValidQuery) allVecs.push(queryPoint.embedding);
 
   const basisSource = centroidVecs.length >= 3 ? centroidVecs : allVecs;
   const { mean, u1, u2 } = compute2DPcaBasis(basisSource);
@@ -713,14 +829,19 @@ export function renderHypersphereMapSvg(entries, queryPoint = null) {
   const rxScale = (W - 160) / 2;
   const ryScale = (H - 96) / 2;
 
-  const clampScreen = (pt) => ({
+  const clampNode = (pt) => ({
     x: Math.max(58, Math.min(W - 58, pt.x)),
     y: Math.max(44, Math.min(H - 46, pt.y)),
   });
 
+  const clampLabel = (pt, halfW = 32) => ({
+    x: Math.max(20 + halfW, Math.min(W - 20 - halfW, pt.x)),
+    y: Math.max(24, Math.min(H - 16, pt.y)),
+  });
+
   const toScreen = (v) => {
     const p = projectRaw(v);
-    return clampScreen({
+    return clampNode({
       x: cx + (p.x / maxSpanX) * rxScale,
       y: cy - (p.y / maxSpanY) * ryScale,
     });
@@ -728,7 +849,6 @@ export function renderHypersphereMapSvg(entries, queryPoint = null) {
 
   const parts = [
     `<rect x="12" y="12" width="${W - 24}" height="${H - 24}" rx="14" fill="#fafafa" stroke="rgba(24,24,27,0.07)"/>`,
-    // Subtle hypersphere polar rings & axes
     `<ellipse cx="${cx}" cy="${cy}" rx="${(rxScale * 0.45).toFixed(1)}" ry="${(
       ryScale * 0.45
     ).toFixed(1)}" fill="none" stroke="rgba(24,24,27,0.05)" stroke-dasharray="3 3"/>`,
@@ -741,59 +861,63 @@ export function renderHypersphereMapSvg(entries, queryPoint = null) {
     `<text x="${cx + 8}" y="28" fill="#9ca3af" font-size="9.5" font-family="var(--font-mono)">PC2 (주성분 축 2)</text>`,
   ];
 
-  const projectedEntries = entries.map((ent) => {
+  // Exact linear 2D PCA positions — NEVER shifted by artificial point-repulsion!
+  const projectedEntries = validEntries.map((ent, idx) => {
+    const cleanCol = safeColor(ent.color, '#2563eb');
     const cPos = toScreen(ent.centroid);
-    const exPos = (ent.exemplars || []).map((ex, i) => ({
+    const validEx = (ent.exemplars || []).filter((ex) => isFiniteNonZeroVec(ex, 64));
+    const exPos = validEx.map((ex, i) => ({
       ...toScreen(ex),
       idx: i + 1,
+      vec: ex,
     }));
-    return { ...ent, cPos, exPos, radius: 24 };
+    let radius = 24;
+    for (const ep of exPos) {
+      const dist = Math.hypot(ep.x - cPos.x, ep.y - cPos.y);
+      if (dist + 9 > radius) radius = Math.min(68, dist + 9);
+    }
+    const defaultBelow = cPos.y <= H - 54;
+    const labelPos = clampLabel({
+      x: cPos.x + ((idx % 2 === 0 ? -1 : 1) * 2),
+      y: defaultBelow ? cPos.y + 24 : cPos.y - 18,
+    });
+    return { ...ent, color: cleanCol, cPos, exPos, radius, labelPos };
   });
 
-  // Gentle collision-avoidance relaxation between centroids (shifts exemplars rigidly with centroid)
-  const minCentroidDist = 66;
-  for (let pass = 0; pass < 16; pass++) {
+  // Label-only collision avoidance (keeps cPos and exPos 100% undistorted!)
+  for (let pass = 0; pass < 18; pass++) {
     for (let i = 0; i < projectedEntries.length; i++) {
       for (let j = i + 1; j < projectedEntries.length; j++) {
         const a = projectedEntries[i];
         const b = projectedEntries[j];
-        let dx = b.cPos.x - a.cPos.x;
-        let dy = b.cPos.y - a.cPos.y;
-        let dist = Math.hypot(dx, dy);
-        if (dist < minCentroidDist) {
-          if (dist < 1e-3) {
-            dx = 1;
-            dy = 0;
-            dist = 1;
-          }
-          const push = ((minCentroidDist - dist) / 2) * 0.65;
-          const ux = (dx / dist) * push;
-          const uy = (dy / dist) * push;
-          const nextA = clampScreen({ x: a.cPos.x - ux, y: a.cPos.y - uy });
-          const nextB = clampScreen({ x: b.cPos.x + ux, y: b.cPos.y + uy });
-          const dAx = nextA.x - a.cPos.x;
-          const dAy = nextA.y - a.cPos.y;
-          const dBx = nextB.x - b.cPos.x;
-          const dBy = nextB.y - b.cPos.y;
-          a.cPos = nextA;
-          b.cPos = nextB;
-          a.exPos = a.exPos.map((ep) => clampScreen({ ...ep, x: ep.x + dAx, y: ep.y + dAy }));
-          b.exPos = b.exPos.map((ep) => clampScreen({ ...ep, x: ep.x + dBx, y: ep.y + dBy }));
+        const dx = b.labelPos.x - a.labelPos.x;
+        const dy = b.labelPos.y - a.labelPos.y;
+        if (Math.abs(dx) < 58 && Math.abs(dy) < 18) {
+          const pushX = dx === 0 ? (i % 2 === 0 ? -14 : 14) : Math.sign(dx) * ((58 - Math.abs(dx)) * 0.35);
+          const pushY = dy === 0 ? (i % 2 === 0 ? -9 : 9) : Math.sign(dy) * ((18 - Math.abs(dy)) * 0.55);
+          a.labelPos = clampLabel({ x: a.labelPos.x - pushX, y: a.labelPos.y - pushY });
+          b.labelPos = clampLabel({ x: b.labelPos.x + pushX, y: b.labelPos.y + pushY });
+        }
+      }
+      // Keep label text clear of centroid circles
+      for (const node of projectedEntries) {
+        const cur = projectedEntries[i];
+        const dx = cur.labelPos.x - node.cPos.x;
+        const dy = cur.labelPos.y - node.cPos.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 19) {
+          const uy = dy === 0 ? 1 : dy / dist;
+          const ux = dx === 0 ? 0.2 : dx / dist;
+          cur.labelPos = clampLabel({
+            x: cur.labelPos.x + ux * (19 - dist),
+            y: cur.labelPos.y + uy * (19 - dist),
+          });
         }
       }
     }
   }
 
-  for (const ent of projectedEntries) {
-    let radius = 24;
-    for (const ep of ent.exPos) {
-      const dist = Math.hypot(ep.x - ent.cPos.x, ep.y - ent.cPos.y);
-      if (dist + 9 > radius) radius = Math.min(68, dist + 9);
-    }
-    ent.radius = radius;
-  }
-
-  // Layer 1: Territory halos & spokes
+  // Layer 1: Territory halos & spokes (at exact PCA coordinates)
   for (const ent of projectedEntries) {
     parts.push(
       `<circle cx="${ent.cPos.x.toFixed(1)}" cy="${ent.cPos.y.toFixed(1)}" r="${ent.radius.toFixed(
@@ -816,36 +940,16 @@ export function renderHypersphereMapSvg(entries, queryPoint = null) {
     }
   }
 
-  // Layer 2: Live Query Connector (if any)
+  // Layer 2: Live Query Connector (at exact PCA coordinates)
   let qScreen = null;
   let targetEnt = null;
-  if (queryPoint?.embedding) {
+  let qLabelPos = null;
+  if (hasValidQuery) {
     qScreen = toScreen(queryPoint.embedding);
     targetEnt =
       projectedEntries.find((e) => e.id === queryPoint.winnerId) || projectedEntries[0];
     if (targetEnt) {
-      // Iteratively keep query star >= 54px away from ALL profile avatars so it never covers any node
-      for (let pass = 0; pass < 10; pass++) {
-        for (const ent of projectedEntries) {
-          let vx = qScreen.x - ent.cPos.x;
-          let vy = qScreen.y - ent.cPos.y;
-          let vd = Math.hypot(vx, vy);
-          if (vd < 54) {
-            if (vd < 1e-3) {
-              vx = 1;
-              vy = -0.4;
-              vd = Math.hypot(vx, vy);
-            }
-            const push = (54 - vd) * 0.85;
-            qScreen = clampScreen({
-              x: qScreen.x + (vx / vd) * push,
-              y: qScreen.y + (vy / vd) * push,
-            });
-          }
-        }
-      }
-
-      const lineCol = queryPoint.identified ? '#2563eb' : '#e11d48';
+      const lineCol = queryPoint.isPreview ? '#6366f1' : queryPoint.identified ? '#2563eb' : '#e11d48';
       parts.push(
         `<line x1="${qScreen.x.toFixed(1)}" y1="${qScreen.y.toFixed(
           1
@@ -854,52 +958,84 @@ export function renderHypersphereMapSvg(entries, queryPoint = null) {
         )}" stroke="${lineCol}" stroke-width="2" stroke-dasharray="5 4"/>`
       );
     }
+
+    const placeBelow = targetEnt ? qScreen.y >= targetEnt.cPos.y : false;
+    qLabelPos = clampLabel(
+      {
+        x: qScreen.x,
+        y: placeBelow ? qScreen.y + 26 : qScreen.y - 20,
+      },
+      70
+    );
+    for (let pass = 0; pass < 12; pass++) {
+      for (const ent of projectedEntries) {
+        if (Math.abs(qLabelPos.x - ent.labelPos.x) < 92 && Math.abs(qLabelPos.y - ent.labelPos.y) < 18) {
+          const dir = qLabelPos.y <= ent.labelPos.y ? -1 : 1;
+          qLabelPos = clampLabel({ x: qLabelPos.x, y: qLabelPos.y + dir * 10 }, 70);
+        }
+      }
+    }
   }
 
-  // Layer 3: Centroid Avatar Badges & Labels
+  // Layer 3: Centroid Avatar Badges & Non-Overlapping Labels with Leader Lines
   for (const ent of projectedEntries) {
-    const initial = esc(ent.name.trim().charAt(0) || '?');
-    const shortName = esc(ent.name.replace(/\s*\(샘플.*\)$/, ''));
-    const labelY = ent.cPos.y > H - 52 ? ent.cPos.y - 16 : ent.cPos.y + 23;
+    const initial = esc(String(ent.name || '').trim().charAt(0) || '?');
+    const shortName = esc(String(ent.name || '').replace(/\s*\(샘플.*\)$/, ''));
+    const shiftDist = Math.hypot(ent.labelPos.x - ent.cPos.x, ent.labelPos.y - ent.cPos.y);
+    if (shiftDist > 28) {
+      parts.push(
+        `<line x1="${ent.cPos.x.toFixed(1)}" y1="${ent.cPos.y.toFixed(
+          1
+        )}" x2="${ent.labelPos.x.toFixed(1)}" y2="${(ent.labelPos.y - 4).toFixed(
+          1
+        )}" stroke="${ent.color}" stroke-opacity="0.45" stroke-width="1"/>`
+      );
+    }
     parts.push(
-      `<circle cx="${ent.cPos.x.toFixed(1)}" cy="${ent.cPos.y.toFixed(
+      `<circle class="pca-centroid" data-profile-id="${esc(ent.id)}" cx="${ent.cPos.x.toFixed(
         1
-      )}" r="11" fill="${ent.color}" stroke="#ffffff" stroke-width="2.2">
+      )}" cy="${ent.cPos.y.toFixed(1)}" r="11" fill="${ent.color}" stroke="#ffffff" stroke-width="2.2">
         <title>${esc(ent.name)} 대표 프로필 중심점 (Centroid)</title>
       </circle>`,
       `<text x="${ent.cPos.x.toFixed(1)}" y="${(ent.cPos.y + 3.8).toFixed(
         1
       )}" text-anchor="middle" fill="#ffffff" font-size="10.5" font-weight="800">${initial}</text>`,
-      `<rect x="${(ent.cPos.x - 24).toFixed(1)}" y="${(labelY - 10.5).toFixed(
+      `<rect x="${(ent.labelPos.x - 26).toFixed(1)}" y="${(ent.labelPos.y - 10.5).toFixed(
         1
-      )}" width="48" height="14" rx="4" fill="#fafafa" fill-opacity="0.85"/>`,
-      `<text x="${ent.cPos.x.toFixed(1)}" y="${labelY.toFixed(
+      )}" width="52" height="14" rx="4" fill="#fafafa" fill-opacity="0.88"/>`,
+      `<text class="pca-centroid-label" x="${ent.labelPos.x.toFixed(1)}" y="${ent.labelPos.y.toFixed(
         1
       )}" text-anchor="middle" fill="#18181b" font-size="11" font-weight="700">${shortName}</text>`
     );
   }
 
-  // Layer 4: Live Query Star Marker on top
-  if (qScreen) {
-    const qCol = queryPoint.identified ? '#18181b' : '#e11d48';
-    const placeBelow = targetEnt ? qScreen.y >= targetEnt.cPos.y : false;
-    const qLabelY = placeBelow
-      ? Math.min(H - 18, qScreen.y + 24)
-      : Math.max(26, qScreen.y - 16);
+  // Layer 4: Query Star Marker on top
+  if (qScreen && qLabelPos) {
+    const qCol = queryPoint.isPreview ? '#4f46e5' : queryPoint.identified ? '#18181b' : '#e11d48';
     const simSuffix = queryPoint.similarityPct ? ` (${queryPoint.similarityPct}%)` : '';
     const fullQueryLabel = `${queryPoint.label || '방금 입력한 타건'}${simSuffix}`;
+    const qShift = Math.hypot(qLabelPos.x - qScreen.x, qLabelPos.y - qScreen.y);
+    if (qShift > 30) {
+      parts.push(
+        `<line x1="${qScreen.x.toFixed(1)}" y1="${qScreen.y.toFixed(
+          1
+        )}" x2="${qLabelPos.x.toFixed(1)}" y2="${(qLabelPos.y - 4).toFixed(
+          1
+        )}" stroke="${qCol}" stroke-opacity="0.45" stroke-width="1"/>`
+      );
+    }
 
     parts.push(
-      `<circle cx="${qScreen.x.toFixed(1)}" cy="${qScreen.y.toFixed(
+      `<circle class="pca-query" cx="${qScreen.x.toFixed(1)}" cy="${qScreen.y.toFixed(
         1
       )}" r="12" fill="${qCol}" stroke="#ffffff" stroke-width="2.5"/>`,
       `<text x="${qScreen.x.toFixed(1)}" y="${(qScreen.y + 4).toFixed(
         1
       )}" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="800">★</text>`,
-      `<rect x="${(qScreen.x - 66).toFixed(1)}" y="${(qLabelY - 11).toFixed(
+      `<rect x="${(qLabelPos.x - 72).toFixed(1)}" y="${(qLabelPos.y - 11).toFixed(
         1
-      )}" width="132" height="15" rx="5" fill="#fafafa" fill-opacity="0.9"/>`,
-      `<text x="${qScreen.x.toFixed(1)}" y="${qLabelY.toFixed(
+      )}" width="144" height="15" rx="5" fill="#fafafa" fill-opacity="0.92"/>`,
+      `<text x="${qLabelPos.x.toFixed(1)}" y="${qLabelPos.y.toFixed(
         1
       )}" text-anchor="middle" fill="${qCol}" font-size="10.2" font-weight="800">${esc(
         fullQueryLabel
@@ -907,15 +1043,14 @@ export function renderHypersphereMapSvg(entries, queryPoint = null) {
     );
   }
 
-  // Layer 5: Topmost generous hit circles so hover tooltips work effortlessly on every node!
+  // Layer 5: Interactive Hover Targets
   for (const ent of projectedEntries) {
-    (ent.exPos || []).forEach((ep, idx) => {
-      const exVec = ent.exemplars?.[idx];
-      const cosToCenter = exVec && ent.centroid ? (dot(exVec, ent.centroid) * 100).toFixed(1) : '—';
+    (ent.exPos || []).forEach((ep) => {
+      const cosToCenter = ep.vec && ent.centroid ? (dot( normalizeVec(ep.vec), normalizeVec(ent.centroid) ) * 100).toFixed(1) : '—';
       const tipTitle = `${ent.name} · 개별 샘플 #${ep.idx}`;
       const tipLines = [
         `대표 중심점(Centroid)과 코사인 일치율: ${cosToCenter}%`,
-        `2D 투영 좌표: (${((ep.x - cx) / rxScale).toFixed(2)}, ${((cy - ep.y) / ryScale).toFixed(2)})`,
+        `2D 선형 PCA 좌표: (${((ep.x - cx) / rxScale).toFixed(2)}, ${((cy - ep.y) / ryScale).toFixed(2)})`,
       ].join('||');
       parts.push(
         `<circle class="viz-node-hit" cx="${ep.x.toFixed(1)}" cy="${ep.y.toFixed(
@@ -929,9 +1064,9 @@ export function renderHypersphereMapSvg(entries, queryPoint = null) {
     const tmpl = ent.template || {};
     const tipTitle = `${ent.name} — 대표 프로필 중심`;
     const tipLines = [
-      `누적 샘플 수: ${tmpl.count || ent.exemplars?.length || 1}개`,
-      `평균 타속: ${tmpl.cpm || 0} 타/분 · 홀드: ${tmpl.holdMs || 0} ms`,
-      `*연타 롤오버 비율: ${tmpl.rolloverPct || 0}%`,
+      `누적 샘플 수: ${Number(tmpl.count) || ent.exPos.length || 1}개`,
+      `평균 타속: ${Number(tmpl.cpm) || 0} 타/분 · 홀드: ${Number(tmpl.holdMs) || 0} ms`,
+      `*연타 롤오버 비율: ${Number(tmpl.rolloverPct) || 0}%`,
     ].join('||');
     parts.push(
       `<circle class="viz-node-hit" cx="${ent.cPos.x.toFixed(1)}" cy="${ent.cPos.y.toFixed(
@@ -942,11 +1077,18 @@ export function renderHypersphereMapSvg(entries, queryPoint = null) {
 
   if (qScreen && queryPoint) {
     const tipTitle = `★ ${queryPoint.label || '방금 입력한 타건'}`;
+    const verdictDetail =
+      queryPoint.verdictLine ||
+      `*생체 일치도: ${queryPoint.similarityPct || '—'}% (${
+        queryPoint.isPreview
+          ? '실시간 탐색 미리보기'
+          : queryPoint.identified
+            ? '인증/식별 통과'
+            : '임계치 미달 또는 보류'
+      })`;
     const tipLines = [
-      `가장 가까운 프로필: ${queryPoint.winnerName || '—'}`,
-      `*AS-Norm 생체 일치도: ${queryPoint.similarityPct || '—'}% (${
-        queryPoint.identified ? '식별 통과' : '임계치 미달/외부인'
-      })`,
+      `비교 대상 프로필: ${queryPoint.winnerName || '—'}`,
+      verdictDetail,
     ].join('||');
     parts.push(
       `<circle class="viz-node-hit" cx="${qScreen.x.toFixed(1)}" cy="${qScreen.y.toFixed(
