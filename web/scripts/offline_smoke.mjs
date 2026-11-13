@@ -370,6 +370,18 @@ async function enrollArena(page, name, lang, planFor) {
   return { feedbacks, profile, expected: n };
 }
 
+async function enrollOneSentence(page, planFor) {
+  await page.click('#arena-sub-enroll').catch(() => {});
+  const sentence = await api(page, () => window.__keyprintTestApi.state.arenaEnrollSentence);
+  await runPlan(page, '#arena-enroll-input', planFor(sentence));
+  await page.waitForTimeout(250);
+  return (await page.textContent('#arena-enroll-feedback'))?.trim();
+}
+
+async function arenaCount(page, name, lang) {
+  return api(page, ({ name, lang }) => window.__keyprintTestApi.state.profiles.find((p) => p.name === name && !p.isSample)?.arena?.[lang]?.count ?? null, { name, lang });
+}
+
 async function blindIdentify(page, planFor) {
   await page.click('#arena-sub-blind');
   await page.evaluate(() => { document.getElementById('arena-result-card').hidden = true; });
@@ -466,6 +478,20 @@ async function run() {
       const id = await blindIdentify(page, (s) => keyboardPlan(s, FAST, { typo: true }));
       expect(id.sentences === 2 && id.interim[0]?.cardHidden && /1\/2/.test(id.interim[0]?.feedback || ''), `identification waits for the 2nd sentence: "${id.interim[0]?.feedback}"`);
       expect(id.title?.includes('Typist A'), `blind 1:N (keyboard, 2 sentences) → "${id.title}" | ${id.meta}`);
+
+      // Extra practice on an existing profile: verified 1:1 before a sentence is added
+      await page.click('#arena-sub-enroll');
+      await page.click('#arena-roster-list [data-arena-pick="Typist A"]');
+      const mode = (await page.textContent('#arena-step-text'))?.trim();
+      expect(/추가 연습 중/.test(mode || '') && /Typist A/.test(mode || '') && /5문장/.test(mode || ''), `extra-practice indicator: "${mode}"`);
+      const own = await enrollOneSentence(page, (s) => keyboardPlan(s, FAST));
+      const c1 = await arenaCount(page, 'Typist A', 'en');
+      expect(/반영했습니다/.test(own || '') && c1 === 6, `own sentence verified and added (count ${c1}): "${own}"`);
+      const other = await enrollOneSentence(page, (s) => keyboardPlan(s, SLOW));
+      const c2 = await arenaCount(page, 'Typist A', 'en');
+      expect(/반영하지 않았습니다/.test(other || '') && c2 === 6, `someone else's sentence under Typist A refused (count ${c2}): "${other}"`);
+      await page.fill('#arena-name-input', '');
+      await page.dispatchEvent('#arena-name-input', 'input');
       if (SHOT_DIR) await page.screenshot({ path: path.join(SHOT_DIR, 'smoke_desktop_identify.png') });
 
       const shortFb = await enrollPassword(page, 'Typist A', 'gachon2026', (pw) => keyboardPlan(pw, FAST), 1);
@@ -498,6 +524,25 @@ async function run() {
         window.__keyprintTestApi.state.profiles.filter((p) => p.isSample).map((p) => ({ name: p.name, ko: Boolean(p.arena?.ko), en: Boolean(p.arena?.en), pw: Boolean(p.password) })),
       );
       expect(sampleState.length === 4 && sampleState.every((s) => s.en && s.pw), `samples loaded: ${JSON.stringify(sampleState)}`);
+      // Sample profiles are protected; only the exact sample name is reserved
+      await page.click('#nav-arena-btn').catch(() => {});
+      await page.click('#arena-sub-enroll');
+      const sampleName = sampleState[0].name;
+      await page.click(`#arena-roster-list [data-arena-pick="${sampleName}"]`);
+      const sampleFb = (await page.textContent('#arena-enroll-feedback'))?.trim();
+      const nameAfter = await page.inputValue('#arena-name-input');
+      expect(/샘플 프로필이라/.test(sampleFb || '') && nameAfter !== sampleName, `sample chip click refused: "${sampleFb}"`);
+      await page.fill('#arena-name-input', sampleName);
+      await page.dispatchEvent('#arena-name-input', 'input');
+      const reserved = await enrollOneSentence(page, (s) => keyboardPlan(s, FAST));
+      expect(/샘플 프로필 이름은 쓸 수 없습니다/.test(reserved || ''), `exact sample name refused: "${reserved}"`);
+      const shortName = sampleName.split(' ')[0];
+      await page.fill('#arena-name-input', shortName);
+      await page.dispatchEvent('#arena-name-input', 'input');
+      const allowed = await enrollOneSentence(page, (s) => keyboardPlan(s, FAST));
+      expect(/1\/5 완료/.test(allowed || ''), `"${shortName}" (part of a sample name) is allowed: "${allowed}"`);
+      await page.fill('#arena-name-input', '');
+      await page.dispatchEvent('#arena-name-input', 'input');
       await page.click('#nav-arena-btn').catch(() => {});
       const id2 = await blindIdentify(page, (s) => keyboardPlan(s, FAST));
       expect(id2.title?.includes('Typist A'), `blind 1:N with samples present → "${id2.title}"`);

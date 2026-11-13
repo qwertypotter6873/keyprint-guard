@@ -35837,6 +35837,8 @@
   "arena_margin": 0.0,
   "arena_margin_touch": 0.08,
   "arena_enroll_sentences": 5,
+  "arena_add_threshold": 0.7159,
+  "arena_add_threshold_touch": 0.481,
   "arena_query_sentences": 2,
   "password_dual": {
     "keyboard": {

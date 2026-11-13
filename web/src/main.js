@@ -147,6 +147,7 @@ const roomSync = new RoomProfileSync({
     state.profiles = profiles;
     ensureSelectedGuardAccount();
     renderAllRosters();
+    if (state.ready) renderEnrollMode();
     renderModalProfiles();
     if (state.mode === 'principles') {
       renderPrinciplesView();
@@ -308,7 +309,8 @@ function renderAllRosters() {
       .map((c) => {
         const initial = escapeHtml(c.name.trim().charAt(0) || '?');
         const cnt = c.template.count || 1;
-        return `<button type="button" class="user-chip" data-arena-pick="${escapeHtml(c.name)}" title="클릭하면 이 이름으로 추가 문장을 연습할 수 있습니다">
+        const tip = c.isSample ? '샘플 프로필은 시연용이라 수정할 수 없습니다' : '클릭하면 이 프로필에 문장을 추가로 연습합니다 (본인 확인 후 반영)';
+        return `<button type="button" class="user-chip" data-arena-pick="${escapeHtml(c.name)}" data-sample="${c.isSample ? '1' : '0'}" title="${tip}">
           <span class="chip-avatar" style="background:${c.color}">${initial}</span>
           <span>${escapeHtml(c.name)}</span>
           <span class="chip-count">${cnt}문장</span>
@@ -320,8 +322,19 @@ function renderAllRosters() {
       btn.addEventListener('click', () => {
         const pickedName = btn.getAttribute('data-arena-pick');
         if (state.arenaSub !== 'enroll') switchArenaSub('enroll');
+        if (btn.getAttribute('data-sample') === '1') {
+          // Sample profiles are fixed demo data: never extended with someone's typing
+          setFeedback(
+            $('arena-enroll-feedback'),
+            `'${pickedName}'은(는) 샘플 프로필이라 문장을 추가할 수 없습니다. 내 이름으로 새로 등록해 주세요.`,
+            'error'
+          );
+          $('arena-name-input').focus();
+          return;
+        }
         $('arena-name-input').value = pickedName;
         resetArenaEnrollProgress();
+        setFeedback($('arena-enroll-feedback'), '');
         $('arena-enroll-input').focus();
       });
     });
@@ -460,6 +473,33 @@ function resetArenaEnrollProgress() {
   const typedName = $('arena-name-input').value.trim();
   state.arenaEnrollBuffer = { name: typedName, lang: state.lang, items: [] };
   renderStepDots($('arena-step-dots'), $('arena-step-text'), 0, TARGET_ARENA_SHOTS, '문장');
+  renderEnrollMode();
+}
+
+/** Existing (non-sample) profile with a template in this language -> extra-practice mode. */
+function extraPracticeTarget() {
+  const name = $('arena-name-input').value.trim();
+  const existing = name ? roomSync.findProfileByName(name) : null;
+  return existing && existing.arena?.[state.lang] ? existing : null;
+}
+
+function renderEnrollMode() {
+  const target = extraPracticeTarget();
+  const dots = $('arena-step-dots');
+  if (target) {
+    const n = target.arena[state.lang].count || 0;
+    $('arena-step-text').textContent = `추가 연습 중 · '${target.name}' ${n}문장 (최근 12문장 반영, 본인 확인 후 추가)`;
+    dots.hidden = true;
+  } else {
+    dots.hidden = false;
+  }
+}
+
+/** Only a sample's exact full name is reserved ("서연 (샘플·고속연타)"); "서연" stays available. */
+function isSampleName(name) {
+  const norm = String(name || '').trim().toLowerCase();
+  const samples = [...(engine.config?.mvp_sample_profiles || []), ...state.profiles.filter((p) => p.isSample)];
+  return samples.some((p) => p.name.trim().toLowerCase() === norm);
 }
 
 function switchLanguage(lang) {
@@ -522,6 +562,11 @@ async function handleArenaEnrollSubmit() {
     $('arena-name-input').focus();
     return;
   }
+  if (isSampleName(name)) {
+    setFeedback($('arena-enroll-feedback'), '샘플 프로필 이름은 쓸 수 없습니다. 다른 이름을 입력해 주세요.', 'error');
+    $('arena-name-input').focus();
+    return;
+  }
 
   // If name changed mid-buffer, start fresh buffer for the new name
   if (state.arenaEnrollBuffer.name !== name || state.arenaEnrollBuffer.lang !== state.lang) {
@@ -564,12 +609,31 @@ async function handleArenaEnrollSubmit() {
   const done = state.arenaEnrollBuffer.items.length;
   const existing = roomSync.findProfileByName(name);
 
-  // If adding to an existing profile that already has a template in this language, commit immediately per sentence!
+  // Extra practice on an existing profile: each sentence is checked 1:1 against that profile first,
+  // so someone else typing under this name cannot drift the profile toward their rhythm (README §5.6)
   if (existing && existing.arena?.[state.lang]) {
-    let mergedTmpl = existing.arena[state.lang];
-    for (const item of state.arenaEnrollBuffer.items) {
-      mergedTmpl = mergeTemplateSample(mergedTmpl, item);
+    const tmpl = existing.arena[state.lang];
+    const item = state.arenaEnrollBuffer.items[state.arenaEnrollBuffer.items.length - 1];
+    state.arenaEnrollBuffer.items = [];
+    const mode = capture.inputMode === 'touch' ? 'touch' : 'keyboard';
+    const verdict = engine.scoreTemplate(item.embedding, tmpl, {
+      domain: 'sentence',
+      behavior: capture.behavior,
+      inputMode: mode,
+      threshold: engine.arenaAddThreshold(mode),
+    });
+    dealArenaEnrollSentence();
+    const pct = (v) => `${Math.round(v * 100)}%`;
+    if (!verdict.accepted) {
+      setFeedback(
+        $('arena-enroll-feedback'),
+        `'${name}'님의 등록 리듬과 달라 이 문장은 반영하지 않았습니다 (일치도 ${pct(verdict.similarity)}, 기준 ${pct(verdict.threshold)}). 본인이 맞다면 다음 문장을 이어서 쳐 보세요.`,
+        'error'
+      );
+      renderEnrollMode();
+      return;
     }
+    const mergedTmpl = mergeTemplateSample(tmpl, item);
     roomSync.upsertProfile({
       ...existing,
       arena: {
@@ -577,13 +641,12 @@ async function handleArenaEnrollSubmit() {
         [state.lang]: mergedTmpl,
       },
     });
-    state.arenaEnrollBuffer.items = [];
-    dealArenaEnrollSentence();
     setFeedback(
       $('arena-enroll-feedback'),
-      `'${name}' 프로필에 문장이 추가 반영되었습니다 (총 ${mergedTmpl.count}문장).`,
+      `'${name}' 프로필에 반영했습니다 (본인 확인 일치도 ${pct(verdict.similarity)} · 총 ${mergedTmpl.count}문장, 최근 12문장 사용).`,
       'success'
     );
+    renderEnrollMode();
     return;
   }
 

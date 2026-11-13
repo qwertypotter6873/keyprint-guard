@@ -52,6 +52,7 @@ from feature_eval import (
     eval_password_transfer,
     open_set_eval,
     open_set_matrix,
+    sentence_add_check,
     tune_open_set_rule,
 )
 from password_synth import (
@@ -1505,6 +1506,15 @@ def main() -> None:
             }
     print(f"[Arena protocol] {arena_protocol}")
 
+    # (d) Extra practice on an existing profile: a sentence joins the profile only if it verifies 1:1
+    #     against it (keeps other people's typing out of someone else's profile)
+    arena_add = {
+        "keyboard": sentence_add_check(banks["val"], banks["test"], "emb", sent_cohort, behavior_model, beta_kb, ARENA_ENROLL_SENTENCES),
+        "touch": sentence_add_check(banks["val_touch"], banks["test_touch"], "emb", sent_cohort_touch, behavior_model, beta_touch,
+                                    ARENA_ENROLL_SENTENCES),
+    }
+    print(f"[Arena add check] {arena_add}")
+
     web_identification = {
         "keyboard": {
             "legacy_9ch": eval_web_identification(banks["test"], "emb_legacy", sent_cohort_legacy),
@@ -1665,6 +1675,7 @@ def main() -> None:
             "test": pw_len_eval,
         },
         "arena_protocol": {"enroll_sentences": ARENA_ENROLL_SENTENCES, "query_sentences": ARENA_QUERY_SENTENCES, **arena_protocol},
+        "arena_add_check": arena_add,
     }
 
     # 7. Export ONNX + Verify Numerical Parity + Export Web Assets
@@ -1721,6 +1732,8 @@ def main() -> None:
             "arena_margin": arena_protocol["keyboard"]["rule"]["margin"],
             "arena_margin_touch": arena_protocol["touch"]["rule"]["margin"],
             "arena_enroll_sentences": ARENA_ENROLL_SENTENCES,
+            "arena_add_threshold": arena_add["keyboard"]["threshold"],
+            "arena_add_threshold_touch": arena_add["touch"]["threshold"],
             "arena_query_sentences": ARENA_QUERY_SENTENCES,
             "password_dual": {
                 "keyboard": pw_dual["kb"],
