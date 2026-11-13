@@ -31,12 +31,16 @@ from sklearn.metrics import (
 )
 
 from preprocessing import (
+    CMU_KEY_BLOCK,
+    KEYRECS_FIXED_KEY_BLOCK,
+    N_CHANNELS,
     SEED,
+    TOUCH_PROB,
     SentenceSplitData,
     SplitData,
     apply_channel_scaler,
     augment_keystroke_batch,
-    extract_9channel_sequences,
+    extract_sequences,
     get_feature_columns,
 )
 from models import (
@@ -134,7 +138,7 @@ def generate_bot_sequences(
     flat_parts.append(holds[:, 10:11])
     flat = np.concatenate(flat_parts, axis=1).astype(np.float32)
 
-    seq_unscaled = extract_9channel_sequences(holds, dds, uds)
+    seq_unscaled = extract_sequences(holds, dds, uds, CMU_KEY_BLOCK)
     seq_scaled = apply_channel_scaler(seq_unscaled, chan_mean, chan_std)
     return flat, seq_scaled
 
@@ -483,7 +487,7 @@ def train_vanilla_baseline(
     n_kr = len(sentence_train.subjects) if sentence_train is not None else 0
     num_classes = n_cmu + n_kr_fixed + n_kr
 
-    model = Vanilla1DCNN(in_channels=9, embed_dim=64).to(device)
+    model = Vanilla1DCNN(in_channels=train_split.seq_scaled.shape[1], embed_dim=64).to(device)
     clf_head = nn.Linear(64, num_classes).to(device)
     optimizer = torch.optim.AdamW(
         list(model.parameters()) + list(clf_head.parameters()),
@@ -575,6 +579,9 @@ def train_keyprint_net(
     kr_fixed_train: Optional[Tuple] = None,
     sentence_val: Optional[SentenceSplitData] = None,
     tag: str = "KeyPrintNet",
+    in_channels: int = N_CHANNELS,
+    touch_prob: float = TOUCH_PROB,
+    touch_hold: float = 0.1,
 ) -> Tuple[KeyPrintNet, List[Dict]]:
     """
     Train Proposed KeyPrintNet across multi-corpus / multi-length typing sequences
@@ -587,7 +594,9 @@ def train_keyprint_net(
     n_kr = len(sentence_train.subjects) if sentence_train is not None else 0
     num_classes = n_cmu + n_kr_fixed + n_kr
 
-    in_ch = 4 if raw_channels_only else 9
+    in_ch = 4 if raw_channels_only else in_channels
+    if in_ch < N_CHANNELS:
+        touch_prob = 0.0  # legacy / ablation inputs carry no Hold_Valid flag
     model = KeyPrintNet(in_channels=in_ch, hidden_channels=80, embed_dim=64, dropout=0.18).to(device)
     cosface_head = SubCenterCosFaceHead(
         embed_dim=64, num_classes=num_classes, sub_centers=2, scale=16.0, max_margin=0.08
@@ -608,6 +617,7 @@ def train_keyprint_net(
             "dds": train_split.df[dd_cols].values.astype(np.float32),
             "uds": train_split.df[ud_cols].values.astype(np.float32),
             "x_clean": train_split.seq_scaled[:, :in_ch, :],
+            "kb": train_split.key_block,
             "y": train_split.subject_ids,
         }
     ]
@@ -618,6 +628,7 @@ def train_keyprint_net(
                 "dds": kr_fixed_train[1],
                 "uds": kr_fixed_train[2],
                 "x_clean": kr_fixed_train[3][:, :in_ch, :],
+                "kb": KEYRECS_FIXED_KEY_BLOCK,
                 "y": kr_fixed_train[4] + n_cmu,
             }
         )
@@ -628,6 +639,7 @@ def train_keyprint_net(
                 "dds": sentence_train.dds,
                 "uds": sentence_train.uds,
                 "x_clean": sentence_train.seq_scaled[:, :in_ch, :],
+                "kb": sentence_train.key_blocks,
                 "y": sentence_train.subject_ids + n_cmu + n_kr_fixed,
             }
         )
@@ -652,7 +664,9 @@ def train_keyprint_net(
         total_loss = 0.0
         for p_idx, idx in batch_specs:
             pool = pools[p_idx]
-            if use_augmentation and rng.rand() < 0.45:
+            kb = pool["kb"] if pool["kb"].ndim == 2 else pool["kb"][idx]
+            warp = use_augmentation and rng.rand() < 0.45
+            if warp or touch_prob > 0:
                 xb_np = augment_keystroke_batch(
                     pool["holds"][idx],
                     pool["dds"][idx],
@@ -661,6 +675,10 @@ def train_keyprint_net(
                     chan_mean,
                     chan_std,
                     rng,
+                    key_block=kb,
+                    warp=warp,
+                    touch_prob=touch_prob,
+                    touch_hold=touch_hold,
                 )[:, :in_ch, :]
             else:
                 xb_np = pool["x_clean"][idx]

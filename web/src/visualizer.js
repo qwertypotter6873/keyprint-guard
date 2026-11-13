@@ -52,9 +52,11 @@ export function createPresetCapture(mode = 'normal') {
   const jitter = (i) => (mode === 'slow' ? ((i % 3) - 1) * 3 : 0);
   const events = [];
   const holds = [];
+  const holdValid = [];
   const dds = [];
   const uds = [];
   const stitchFlags = [];
+  const pairKeys = [];
 
   let cursorMs = 0;
   for (let i = 0; i < spec.length; i++) {
@@ -86,11 +88,16 @@ export function createPresetCapture(mode = 'normal') {
     const c0 = events[i];
     const c1 = events[i + 1];
     if (c1.stitchedBefore) continue;
-    if (holds.length === 0) holds.push(c0.holdMs / 1000);
+    if (holds.length === 0) {
+      holds.push(c0.holdMs / 1000);
+      holdValid.push(true);
+    }
     holds.push(c1.holdMs / 1000);
+    holdValid.push(true);
     dds.push(c1.ddMs / 1000);
     uds.push(c1.udMs / 1000);
     stitchFlags.push(i > 0 && c0.stitchedBefore);
+    pairKeys.push([c0.code, c1.code]);
   }
 
   const meanHoldMs = Math.round((holds.reduce((a, b) => a + b, 0) / holds.length) * 1000);
@@ -112,7 +119,9 @@ export function createPresetCapture(mode = 'normal') {
     holdMs: meanHoldMs,
     rolloverPct,
     timeline: { events, poppedCount: 1 },
-    stroke: { holds, dds, uds, stitchFlags },
+    inputMode: 'keyboard',
+    behavior: null,
+    stroke: { holds, holdValid, dds, uds, stitchFlags, pairKeys },
   };
 }
 
@@ -271,14 +280,15 @@ export function renderPianoRollSvg(capture, { maxEvents = 120 } = {}) {
  */
 export function renderTempoInvarianceSvg(capture) {
   const dds = capture?.stroke?.dds || [];
-  const holds = capture?.stroke?.holds || [];
+  // Touch keyboards report no hold time: show the same median the model imputes
+  const holds = (capture?.stroke?.holds || []).map((h) => (h === null || h === undefined ? 0.088 : h));
   const stitches = capture?.stroke?.stitchFlags || [];
 
   if (dds.length < 3) {
     return `<div class="viz-empty">연속 타건 전이 구간이 3개 이상 모이면 속도 불변 정규화 파형이 표시됩니다.</div>`;
   }
 
-  // Plot the entire variable-length sentence (matching KeyPrintNet [1, 9, L] full-sequence input!)
+  // Plot the entire variable-length sentence (matching KeyPrintNet [1, 17, L] full-sequence input!)
   const m = dds.length;
   const rawFastMs = dds.slice(0, m).map((v) => v * 1000);
   // Simulated 0.62x slower condition (1.61x interval + slight natural +/- 4ms micro-variance)

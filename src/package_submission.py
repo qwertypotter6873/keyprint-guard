@@ -67,7 +67,10 @@ def build_zip() -> None:
         root / "models" / "keyprint_net.onnx",
         root / "models" / "keyprint_net.pt",
         root / "models" / "vanilla_1dcnn.pt",
+        *sorted((root / "models" / "legacy").glob("*")),  # 9ch password encoder (.pt + .onnx)
         root / "models" / "evaluation_report.json",
+        root / "models" / "password_calibration.json",
+        root / "models" / "typing_style_analysis.json",
         *sorted((root / "assets" / "figures").glob("*.png")),
         *sorted((root / "assets" / "screenshots").glob("*.png")),
         root / "web" / "package.json",
@@ -75,6 +78,7 @@ def build_zip() -> None:
         root / "web" / "index.html",
         *sorted((root / "web" / "src").glob("*")),
         *sorted((root / "web" / "scripts").glob("*.mjs")),
+        *sorted((root / "web" / "scripts" / "fixtures").glob("*.json")),  # parity_check.mjs input
         *sorted((root / "web" / "public" / "models").glob("*")),
         root / "data" / "processed" / "scaler_and_metadata.json",
         root / ".github" / "workflows" / "deploy.yml",

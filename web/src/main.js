@@ -2,10 +2,13 @@ import {
   KeyPrintEngine,
   SmartKeystrokeRecorder,
   computeTypingAccuracy,
+  describeBehavior,
+  combineEmbeddings,
   mergeTemplateSample,
   validatePasswordCapture,
   validateSentenceCapture,
 } from './biometrics.js';
+import { mergeBehavior } from './features.js';
 import {
   RoomProfileSync,
   getInitialRoomCode,
@@ -21,7 +24,9 @@ import {
   renderTempoInvarianceSvg,
 } from './visualizer.js';
 
-const TARGET_ARENA_SHOTS = 3;
+// Typing-practice protocol comes from model_config.json (arena_enroll_sentences / arena_query_sentences)
+let TARGET_ARENA_SHOTS = 5;
+let TARGET_BLIND_SHOTS = 2;
 const TARGET_PW_SHOTS = 4;
 
 const engine = new KeyPrintEngine();
@@ -33,7 +38,7 @@ const state = {
   arenaSub: 'enroll', // 'enroll' | 'blind'
   guardSub: 'verify', // 'verify' | 'enroll'
   lang: 'ko', // 'ko' | 'en'
-  threshold: 0.49,
+  thresholdOffset: 0, // 여유(-) / 표준(0) / 엄격(+) relative to the validation-calibrated threshold
   showPasswordPlain: true,
 
   // Current prompts
@@ -42,6 +47,7 @@ const state = {
 
   // In-progress enrollment buffers
   arenaEnrollBuffer: { name: '', lang: 'ko', items: [] },
+  arenaBlindBuffer: [],
   pwEnrollBuffer: { name: '', targetPw: '', items: [] },
 
   // Selected target account for Mode B (Password Guard)
@@ -84,6 +90,36 @@ function renderSentencePrompt(containerEl, targetSentence, typedValue) {
     parts.push(`<span class="${cls}">${ch}</span>`);
   }
   containerEl.innerHTML = parts.join('');
+}
+
+const INPUT_MODE_LABEL = { keyboard: '키보드', touch: '터치 키보드', mixed: '혼합 입력' };
+
+function guardThreshold(inputMode) {
+  return engine.passwordThreshold(inputMode) + state.thresholdOffset;
+}
+
+function behaviorNote(res) {
+  if (!res || !res.behaviorWeight) return '';
+  const delta = res.similarity - res.embeddingSimilarity;
+  if (Math.abs(delta) < 0.005) return ' · 행동 프로필 근거 부족(영향 없음)';
+  return ` · 행동 프로필 ${delta > 0 ? '+' : ''}${(delta * 100).toFixed(1)}%p 반영`;
+}
+
+function deviceMismatchNote(template, inputMode) {
+  const tMode = template?.inputMode;
+  if (!tMode || tMode === 'mixed' || !inputMode || inputMode === 'mixed' || tMode === inputMode) return '';
+  return ` · 주의: ${INPUT_MODE_LABEL[tMode]}로 등록된 프로필을 ${INPUT_MODE_LABEL[inputMode]}로 비교 중(정확도 저하 가능)`;
+}
+
+function behaviorSummaryText(stats) {
+  const d = describeBehavior(stats);
+  if (!d) return '';
+  const parts = [];
+  if (d.backspacePct !== null) parts.push(`백스페이스 ${d.backspacePct}%`);
+  if (d.corrections > 0 && d.singleFixPct !== null) parts.push(`한 글자 수정 ${d.singleFixPct}%`);
+  if (d.capsStyle) parts.push(`대문자 ${d.capsStyle}`);
+  if (d.rightShiftPct !== null && d.shiftCount >= 2) parts.push(`오른쪽 Shift ${d.rightShiftPct}%`);
+  return parts.join(' · ');
 }
 
 function setFeedback(el, message, kind = '') {
@@ -264,7 +300,7 @@ function renderAllRosters() {
   const arenaList = $('arena-roster-list');
   const cands = getArenaCandidates();
   if (cands.length === 0) {
-    arenaList.innerHTML = `<span class="roster-empty">아직 없습니다 — 아래에서 3문장을 연습해 첫 프로필을 등록하세요</span>`;
+    arenaList.innerHTML = `<span class="roster-empty">아직 없습니다 — 아래에서 ${TARGET_ARENA_SHOTS}문장을 연습해 첫 프로필을 등록하세요</span>`;
   } else {
     arenaList.innerHTML = cands
       .map((c) => {
@@ -364,8 +400,10 @@ function renderModalProfiles() {
       if (p.arena?.en) badges.push(`영문 ${p.arena.en.count}문장`);
       if (p.password) badges.push(`암호(${p.password.count}회)`);
       const refTmpl = p.arena?.ko || p.arena?.en || p.password;
+      const behTxt = refTmpl ? behaviorSummaryText(refTmpl.behavior) : '';
+      const modeTxt = refTmpl?.inputMode && refTmpl.inputMode !== 'keyboard' ? ` · ${INPUT_MODE_LABEL[refTmpl.inputMode]}` : '';
       const statsTxt = refTmpl
-        ? `평균 ${refTmpl.cpm || 0} 타/분 · 홀드 ${refTmpl.holdMs || 0}ms · 롤오버 ${refTmpl.rolloverPct || 0}%`
+        ? `평균 ${refTmpl.cpm || 0} 타/분 · 홀드 ${refTmpl.holdMs || 0}ms · 롤오버 ${refTmpl.rolloverPct || 0}%${modeTxt}${behTxt ? ` · ${behTxt}` : ''}`
         : '';
 
       return `<li class="profile-row">
@@ -410,6 +448,12 @@ function dealArenaBlindSentence() {
   $('arena-blind-edit-hint').textContent = '백스페이스 자유 사용';
 }
 
+function resetArenaBlindProgress() {
+  state.arenaBlindBuffer = [];
+  renderStepDots($('arena-blind-step-dots'), $('arena-blind-step-text'), 0, TARGET_BLIND_SHOTS, '문장');
+  $('arena-blind-need').textContent = `문장 ${TARGET_BLIND_SHOTS}개`;
+}
+
 function resetArenaEnrollProgress() {
   const typedName = $('arena-name-input').value.trim();
   state.arenaEnrollBuffer = { name: typedName, lang: state.lang, items: [] };
@@ -422,6 +466,7 @@ function switchLanguage(lang) {
   $('lang-en-btn').classList.toggle('is-active', lang === 'en');
 
   resetArenaEnrollProgress();
+  resetArenaBlindProgress();
   dealArenaEnrollSentence();
   dealArenaBlindSentence();
   $('arena-result-card').hidden = true;
@@ -506,6 +551,7 @@ async function handleArenaEnrollSubmit() {
   };
   state.viz.lastQuery = {
     embedding,
+    embeddings: { sentence: embedding },
     label: `${name} 방금 입력`,
     domain: 'arena',
   };
@@ -515,6 +561,8 @@ async function handleArenaEnrollSubmit() {
     holdMs: capture.holdMs,
     rolloverPct: capture.rolloverPct,
     backspaceCount: capture.backspaceCount,
+    behavior: capture.behavior,
+    inputMode: capture.inputMode,
   });
 
   const done = state.arenaEnrollBuffer.items.length;
@@ -556,7 +604,7 @@ async function handleArenaEnrollSubmit() {
     return;
   }
 
-  // Completed 3 diverse sentences -> save & broadcast profile!
+  // Completed the enrolment sentences -> save & broadcast profile!
   let tmpl = existing?.arena?.[state.lang] || null;
   for (const item of state.arenaEnrollBuffer.items) {
     tmpl = mergeTemplateSample(tmpl, item);
@@ -612,8 +660,30 @@ async function handleArenaBlindSubmit() {
     return;
   }
 
+  const { embedding: oneEmbedding, latencyMs } = await engine.embedStroke(capture.stroke);
+  state.arenaBlindBuffer.push({ embedding: oneEmbedding, capture, accuracy: check.accuracy });
+  const got = state.arenaBlindBuffer.length;
+  if (got < TARGET_BLIND_SHOTS) {
+    // Two sentences carry about twice the rhythm evidence: identify only after the last one (README §5.6)
+    renderStepDots($('arena-blind-step-dots'), $('arena-blind-step-text'), got, TARGET_BLIND_SHOTS, '문장');
+    setFeedback(
+      $('arena-blind-feedback'),
+      `${got}/${TARGET_BLIND_SHOTS} 완료 — 한 문장 더 이어서 타이핑하면 판별합니다.`,
+      'success'
+    );
+    dealArenaBlindSentence();
+    return;
+  }
+
   setFeedback($('arena-blind-feedback'), '');
-  const { embedding, latencyMs } = await engine.embedStroke(capture.stroke);
+  const items = state.arenaBlindBuffer;
+  const embedding = combineEmbeddings(items.map((it) => it.embedding));
+  let behavior = null;
+  for (const it of items) behavior = mergeBehavior(behavior, it.capture.behavior || null);
+  const modes = [...new Set(items.map((it) => it.capture.inputMode))];
+  const inputMode = modes.length === 1 ? modes[0] : 'mixed';
+  resetArenaBlindProgress();
+
   state.viz.capture = {
     ...capture,
     isPreset: false,
@@ -622,19 +692,24 @@ async function handleArenaBlindSubmit() {
   state.viz.mapDomain = 'arena';
   state.viz.lastQuery = {
     embedding,
+    embeddings: { sentence: embedding },
     label: '방금 판별 타건',
     domain: 'arena',
   };
   const res = engine.identifyTypist(embedding, candidates, {
-    openSetThreshold: 0.42,
+    behavior,
+    inputMode: inputMode === 'mixed' ? 'touch' : inputMode,
   });
 
+  const mean = (k) => Math.round(items.reduce((a, it) => a + (it.capture[k] || 0), 0) / items.length);
   renderArenaResult(res, {
-    cpm: capture.cpm,
-    accuracy: check.accuracy,
-    backspaceCount: capture.backspaceCount,
-    cleanDigraphs: capture.cleanDigraphCount,
+    cpm: mean('cpm'),
+    accuracy: Math.round(items.reduce((a, it) => a + it.accuracy, 0) / items.length),
+    backspaceCount: items.reduce((a, it) => a + (it.capture.backspaceCount || 0), 0),
+    cleanDigraphs: items.reduce((a, it) => a + (it.capture.cleanDigraphCount || 0), 0),
     latencyMs,
+    inputMode,
+    sentences: items.length,
   });
 
   // Immediately prepare a fresh unseen sentence for the next round
@@ -652,6 +727,10 @@ function renderArenaResult(res, stats) {
     card.className = 'result-card is-pass';
     $('arena-result-kicker').textContent = `후보 ${res.rankings.length}명 중 1위 일치`;
     $('arena-result-title').textContent = `지금 타이핑한 사람은 '${res.winner.name}'님입니다`;
+  } else if (res.rejectedByMargin) {
+    card.className = 'result-card is-block';
+    $('arena-result-kicker').textContent = '판별 보류 (1·2위 점수 차 부족)';
+    $('arena-result-title').textContent = `'${res.winner.name}'님과 '${res.rankings[1].name}'님의 리듬이 너무 비슷해 판별하지 않았습니다`;
   } else {
     card.className = 'result-card is-block';
     $('arena-result-kicker').textContent = '미등록 외부인 기각 (Open-Set Rejection)';
@@ -676,7 +755,9 @@ function renderArenaResult(res, stats) {
 
   const editTxt =
     stats.backspaceCount > 0 ? `백스페이스 ${stats.backspaceCount}회 자동 보정` : '무수정 타이핑';
-  $('arena-result-meta').textContent = `${stats.cpm} 타/분 · 정확도 ${stats.accuracy}% · ${editTxt} (유효 전이 ${stats.cleanDigraphs}구간) · 추론 ${stats.latencyMs}ms`;
+  const modeTxt = stats.inputMode && stats.inputMode !== 'keyboard' ? ` · ${INPUT_MODE_LABEL[stats.inputMode]}(누름 시간 대체)` : '';
+  const sentTxt = stats.sentences > 1 ? `문장 ${stats.sentences}개 · ` : '';
+  $('arena-result-meta').textContent = `${sentTxt}${stats.cpm} 타/분 · 정확도 ${stats.accuracy}% · ${editTxt} (유효 전이 ${stats.cleanDigraphs}구간)${modeTxt}${behaviorNote(res.winner)}${deviceMismatchNote(res.winner.template, stats.inputMode)} · 추론 ${stats.latencyMs}ms`;
 }
 
 async function handleGuardEnrollSubmit() {
@@ -698,7 +779,7 @@ async function handleGuardEnrollSubmit() {
   }
 
   const capture = guardEnrollRecorder.extractCleanStroke();
-  const check = validatePasswordCapture(capture, targetPw);
+  const check = validatePasswordCapture(capture, targetPw, { minLength: engine.config?.password_min_length ?? 12 });
   if (!check.ok) {
     setFeedback($('guard-enroll-feedback'), check.message, 'error');
     $('guard-enroll-input').value = '';
@@ -706,12 +787,17 @@ async function handleGuardEnrollSubmit() {
     return;
   }
 
-  const { embedding } = await engine.embedStroke(capture.stroke);
+  // Password embedding (9ch) + 17ch embedding of the same stroke: scored together (dualPasswordScore)
+  const both = await engine.embedAll(capture.stroke);
   state.pwEnrollBuffer.items.push({
-    embedding,
+    embedding: both.password,
+    embedding17: both.sentence,
+    capitalMethods: capture.capitalMethods,
     cpm: capture.cpm,
     holdMs: capture.holdMs,
     rolloverPct: capture.rolloverPct,
+    behavior: capture.behavior,
+    inputMode: capture.inputMode,
   });
 
   $('guard-enroll-input').value = '';
@@ -774,7 +860,7 @@ async function handleGuardVerifySubmit() {
   const expectedPw = targetAcc.password.target;
 
   const capture = guardVerifyRecorder.extractCleanStroke();
-  const check = validatePasswordCapture(capture, expectedPw);
+  const check = validatePasswordCapture(capture, expectedPw, { minLength: 1 });
 
   $('guard-verify-input').value = '';
   guardVerifyRecorder.reset();
@@ -785,7 +871,10 @@ async function handleGuardVerifySubmit() {
   }
 
   setFeedback($('guard-verify-feedback'), '');
-  const { embedding, latencyMs } = await engine.embedStroke(capture.stroke);
+  const both = await engine.embedAll(capture.stroke);
+  const embedding = both.password;
+  const embedding17 = both.sentence;
+  const latencyMs = both.latencyMs;
   state.viz.capture = {
     ...capture,
     isPreset: false,
@@ -794,13 +883,40 @@ async function handleGuardVerifySubmit() {
   state.viz.mapDomain = 'guard';
   state.viz.lastQuery = {
     embedding,
+    embeddings: { password: embedding },
     label: '방금 입력한 암호',
     domain: 'guard',
   };
-  const res = engine.scoreTemplate(embedding, targetAcc.password, {
+  const scoreOpts = {
     domain: 'password',
-    threshold: state.threshold,
-  });
+    thresholdOffset: state.thresholdOffset,
+    behavior: capture.behavior,
+    inputMode: capture.inputMode,
+    embedding17,
+    capitalMethods: capture.capitalMethods,
+  };
+  const res = engine.scoreTemplate(embedding, targetAcc.password, scoreOpts);
+  const threshold = res.threshold;
+
+  // Template adaptation: a confident accept joins the template (last 12 kept), so the owner is not
+  // rejected once they get fluent at a new password (README §5.6). Sample accounts stay fixed, and a
+  // template only learns from the device type it was enrolled on.
+  let adapted = false;
+  if (res.adapt && !targetAcc.isSample && capture.inputMode === (targetAcc.password.inputMode || 'keyboard')) {
+    const merged = mergeTemplateSample(targetAcc.password, {
+      embedding,
+      embedding17,
+      cpm: capture.cpm,
+      holdMs: capture.holdMs,
+      rolloverPct: capture.rolloverPct,
+      behavior: capture.behavior,
+      inputMode: capture.inputMode,
+      capitalMethods: capture.capitalMethods,
+    });
+    roomSync.upsertProfile({ ...targetAcc, password: { ...merged, target: targetAcc.password.target } });
+    adapted = true;
+  }
+  const touchReference = capture.inputMode !== 'keyboard' && engine.passwordTouchReferenceOnly();
 
   // Check if another registered user's rhythm matches closer when blocked
   let closerOther = null;
@@ -809,10 +925,7 @@ async function handleGuardVerifySubmit() {
       .filter((a) => a.id !== targetAcc.id)
       .map((a) => ({
         name: a.name,
-        sim: engine.scoreTemplate(embedding, a.password, {
-          domain: 'password',
-          threshold: state.threshold,
-        }).similarity,
+        sim: engine.scoreTemplate(embedding, a.password, scoreOpts).similarity,
       }))
       .sort((a, b) => b.sim - a.sim);
     if (others[0] && others[0].sim > res.similarity + 0.08 && others[0].sim >= 0.45) {
@@ -830,7 +943,7 @@ async function handleGuardVerifySubmit() {
     $('guard-result-kicker').textContent = 'ACCESS GRANTED · 본인 인증 승인';
     $('guard-result-title').textContent = `${targetAcc.name}님의 타이핑 리듬과 일치합니다`;
     $('guard-result-desc').textContent = `비밀번호 문자열과 손가락 전환 리듬이 모두 기준치(${Math.round(
-      state.threshold * 100
+      threshold * 100
     )}%)를 통과했습니다.`;
   } else {
     card.className = 'result-card is-block';
@@ -845,10 +958,22 @@ async function handleGuardVerifySubmit() {
       targetAcc.name
     }님의 고유 홀드·전환 리듬과 달라 접속을 차단했습니다.${hint}`;
   }
+  card.dataset.reference = touchReference ? 'true' : 'false';
+  if (touchReference) {
+    // Phones expose no key-hold timing: ~9 intervals of a password cannot separate people reliably
+    $('guard-result-kicker').textContent += ' · 모바일 참고용';
+    $('guard-result-desc').textContent +=
+      ' 모바일 터치 입력은 누름 시간을 알 수 없어 비밀번호 길이의 입력만으로는 다른 사람을 충분히 구분하지 못합니다. 이 결과는 참고용으로만 보세요.';
+  }
 
   const editTxt =
     capture.backspaceCount > 0 ? `백스페이스 ${capture.backspaceCount}회 보정` : '무수정 입력';
-  $('guard-result-meta').textContent = `${capture.cpm} 타/분 · 홀드 ${capture.holdMs}ms · 롤오버 ${capture.rolloverPct}% · ${editTxt} · 추론 ${latencyMs}ms`;
+  const holdTxt =
+    capture.inputMode === 'touch'
+      ? `${INPUT_MODE_LABEL.touch}(누름 시간 대체)`
+      : `홀드 ${capture.holdMs}ms · 롤오버 ${capture.rolloverPct}%`;
+  const adaptTxt = adapted ? ` · 등록 리듬 갱신(최근 ${Math.min(12, (targetAcc.password.count || 0) + 1)}회 반영)` : '';
+  $('guard-result-meta').textContent = `${capture.cpm} 타/분 · ${holdTxt} · ${editTxt}${behaviorNote(res)}${deviceMismatchNote(targetAcc.password, capture.inputMode)}${adaptTxt} · 추론 ${latencyMs}ms`;
 }
 
 // ================= MODE C: VISUAL EXPLAINER & PROFILE FORMATION =================
@@ -869,9 +994,10 @@ const vizSandboxRecorder = new SmartKeystrokeRecorder($('viz-sandbox-input'), {
     if (state.ready && cap.cleanDigraphCount >= 4) {
       vizEmbedTimer = setTimeout(async () => {
         try {
-          const { embedding } = await engine.embedStroke(cap.stroke);
+          const embeddings = await engine.embedAll(cap.stroke);
           state.viz.lastQuery = {
-            embedding,
+            embedding: embeddings.sentence,
+            embeddings,
             label: '방금 입력한 내 타건',
             domain: state.viz.mapDomain,
           };
@@ -892,9 +1018,10 @@ const vizSandboxRecorder = new SmartKeystrokeRecorder($('viz-sandbox-input'), {
     };
     renderVizStep1();
     if (state.ready && cap.cleanDigraphCount >= 4) {
-      const { embedding } = await engine.embedStroke(cap.stroke);
+      const embeddings = await engine.embedAll(cap.stroke);
       state.viz.lastQuery = {
-        embedding,
+        embedding: embeddings.sentence,
+        embeddings,
         label: '방금 입력한 내 타건',
         domain: state.viz.mapDomain,
       };
@@ -1071,15 +1198,17 @@ function renderVizStep3() {
     .filter(Boolean);
 
   let queryPoint = null;
-  if (state.viz.lastQuery?.embedding && entries.length > 0 && state.ready) {
-    const scored = engine.identifyTypist(
-      state.viz.lastQuery.embedding,
-      entries,
-      { openSetThreshold: isArenaMap ? 0.42 : state.threshold }
-    );
+  // Sentence and password profiles live in different encoder spaces: only plot a query embedded in this one
+  const q = state.viz.lastQuery;
+  const qEmb = q?.embeddings ? q.embeddings[isArenaMap ? 'sentence' : 'password'] : q?.embedding;
+  if (qEmb && entries.length > 0 && state.ready) {
+    const scored = engine.identifyTypist(qEmb, entries, {
+      domain: isArenaMap ? 'sentence' : 'password',
+      openSetThreshold: isArenaMap ? engine.arenaThreshold() : guardThreshold('keyboard'),
+    });
     if (scored?.winner) {
       queryPoint = {
-        embedding: state.viz.lastQuery.embedding,
+        embedding: qEmb,
         label: state.viz.lastQuery.label || '방금 입력한 타건',
         winnerId: scored.winner.id,
         winnerName: scored.winner.name,
@@ -1105,9 +1234,10 @@ async function applyVizPreset(mode) {
   state.viz.capture = cap;
   renderVizStep1();
   if (state.ready) {
-    const { embedding } = await engine.embedStroke(cap.stroke);
+    const embeddings = await engine.embedAll(cap.stroke);
     state.viz.lastQuery = {
-      embedding,
+      embedding: embeddings.sentence,
+      embeddings,
       label: mode === 'slow' ? '예시 타건 (저속)' : '예시 타건 (고속)',
       domain: state.viz.mapDomain,
     };
@@ -1259,7 +1389,7 @@ function bindEvents() {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tau-btn').forEach((b) => b.classList.remove('is-active'));
       btn.classList.add('is-active');
-      state.threshold = Number(btn.getAttribute('data-tau'));
+      state.thresholdOffset = Number(btn.getAttribute('data-tau-offset'));
     });
   });
 
@@ -1339,15 +1469,20 @@ async function bootstrap() {
 
   try {
     await engine.init();
+    ({ enroll: TARGET_ARENA_SHOTS, query: TARGET_BLIND_SHOTS } = engine.arenaProtocol());
+    resetArenaEnrollProgress();
+    resetArenaBlindProgress();
+    renderAllRosters();
     state.ready = true;
     $('engine-pill').classList.add('is-ready');
     $('engine-status-text').textContent = `ONNX 준비 완료 (${engine.loadTimeMs}ms)`;
 
     // Compute real ONNX 64-D embedding for the initial preset capture so Step 3 map shows ★ immediately
     if (!state.viz.lastQuery && state.viz.capture?.stroke) {
-      const { embedding } = await engine.embedStroke(state.viz.capture.stroke);
+      const embeddings = await engine.embedAll(state.viz.capture.stroke);
       state.viz.lastQuery = {
-        embedding,
+        embedding: embeddings.sentence,
+        embeddings,
         label: '예시 타건 지문',
         domain: 'arena',
       };
