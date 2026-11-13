@@ -211,6 +211,36 @@ function imeValues(text) {
   return out;
 }
 
+/** Physical keyboard in macOS Safari: keydown Process, composition updates (a final consonant moving on
+ *  passes through an intermediate value) and delete + re-insert of the composition on commit. */
+const KO_CODE = { ㅂ: 'KeyQ', ㅈ: 'KeyW', ㄷ: 'KeyE', ㄱ: 'KeyR', ㅅ: 'KeyT', ㅛ: 'KeyY', ㅕ: 'KeyU', ㅑ: 'KeyI', ㅐ: 'KeyO', ㅔ: 'KeyP',
+  ㅁ: 'KeyA', ㄴ: 'KeyS', ㅇ: 'KeyD', ㄹ: 'KeyF', ㅎ: 'KeyG', ㅗ: 'KeyH', ㅓ: 'KeyJ', ㅏ: 'KeyK', ㅣ: 'KeyL', ㅋ: 'KeyZ', ㅌ: 'KeyX',
+  ㅊ: 'KeyC', ㅍ: 'KeyV', ㅠ: 'KeyB', ㅜ: 'KeyN', ㅡ: 'KeyM', ' ': 'Space' };
+function safariKoreanPlan(text, cadence) {
+  const plan = [];
+  let t = 20;
+  let prev = '';
+  const keys = textToKeystrokes(text);
+  imeValues(text).forEach((v, i) => {
+    const code = KO_CODE[keys[i]] || 'KeyA';
+    const space = keys[i] === ' ';
+    plan.push({ t, type: 'keydown', key: space ? ' ' : 'Process', code });
+    const grew = [...v].length > [...prev].length;
+    if (prev && grew && /[가-힣]$/.test(prev)) {
+      plan.push({ t: t + 0.1, type: 'input', value: prev.slice(0, -1), inputType: 'deleteCompositionText' });
+      plan.push({ t: t + 0.2, type: 'input', value: prev, inputType: 'insertFromComposition' });
+    }
+    if (!v.startsWith(prev) && v.length > 1) {
+      plan.push({ t: t + 0.3, type: 'input', value: v.slice(0, -1), inputType: 'insertCompositionText' });
+    }
+    plan.push({ t: t + 0.5, type: 'input', value: v, inputType: space ? 'insertText' : 'insertCompositionText' });
+    plan.push({ t: t + cadence.holdMs * factor(cadence.seed, `h${keys[i]}`), type: 'keyup', key: 'Process', code });
+    t += cadence.ddMs * factor(cadence.seed, `d${keys[i]}`) * (1 + cadence.jitter * (rand() - 0.5)) + (space ? cadence.spaceExtraMs : 0);
+    prev = v;
+  });
+  return plan.sort((a, b) => a.t - b.t);
+}
+
 /** iOS / Samsung style soft keyboard: a changed syllable arrives as delete + insert input events. */
 function iosPlan(text, cadence) {
   const plan = [];
@@ -478,6 +508,19 @@ async function run() {
       await runPlan(page, '#viz-sandbox-input', keyboardPlan('keyprint live rhythm', FAST).filter((e) => e.key !== 'Enter'));
       const badge = await page.textContent('#viz-signal-badge');
       expect(badge && !badge.includes('예시 파형'), `principles sandbox live badge: ${badge?.trim()}`);
+      // Piano roll with Hangul typed through a macOS-Safari-like IME: no false Backspace / stitches,
+      // and the keys are labelled with the typed jamo rather than the Latin key names
+      await page.evaluate(() => { document.getElementById('viz-sandbox-input').value = ''; });
+      await page.click('#viz-preset-fast-btn');
+      await runPlan(page, '#viz-sandbox-input', safariKoreanPlan('안녕하세요 반가워요', FAST));
+      await page.waitForTimeout(300);
+      const roll = await api(page, () => {
+        const c = window.__keyprintTestApi.state.viz.capture;
+        return { bs: c.backspaceCount, digraphs: c.cleanDigraphCount, stitches: c.timeline.events.filter((e) => e.stitchedBefore).length,
+          labels: c.timeline.events.map((e) => e.label).join('') };
+      });
+      expect(roll.bs === 0 && roll.stitches === 0 && /^[ㄱ-ㅣ␣]+$/.test(roll.labels) && roll.digraphs >= 18,
+        `piano roll, Hangul via Safari-like IME: ${JSON.stringify(roll)}`);
       // Password map lives in the 9ch encoder space: the query must be re-plotted from its password embedding
       await page.click('#viz-map-domain-guard');
       await page.waitForTimeout(200);
