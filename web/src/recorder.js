@@ -7,6 +7,10 @@ const LONG_PAUSE_MS = 2200;
 const MIN_VALID_HOLD_SEC = 0.008;
 const MAX_HOLD_SEC = 1.2;
 const PENDING_TTL_MS = 1000;
+// IME edits that arrive as "delete, then insert" within this window are one edit (README §6.2):
+// iOS / Samsung Korean keyboards and Safari replace the composing syllable this way, and a final
+// consonant moving to the next syllable (간 + ㅏ → 가나) can pass through an intermediate "가".
+const IME_PAIR_MS = 30;
 
 const CODE_SHORT_LABELS = {
   Space: '␣',
@@ -78,6 +82,8 @@ export class SmartKeystrokeRecorder {
     this.pendingKeyStrokes = []; // keydown timestamps awaiting their input event
     this.pendingKeyDeletes = [];
     this.pendingRepeats = [];
+    if (this.imeChain?.timer) clearTimeout(this.imeChain.timer);
+    this.imeChain = null; // deletion without a Backspace keydown, waiting for its IME re-insert
     this.prevKeys = textToKeystrokes(this.inputEl?.value || '');
     this.justEdited = false;
     this.backspaceCount = 0;
@@ -234,10 +240,82 @@ export class SmartKeystrokeRecorder {
     });
   }
 
-  /** Diff the field value (in keystroke space) and add strokes no keydown produced. */
+  /**
+   * Diff the field value (in keystroke space) and add strokes no keydown produced.
+   * A deletion that no Backspace keydown explains is held for IME_PAIR_MS: if the IME re-inserts
+   * text right away (composition replacement, final consonant moving on), the whole chain is applied
+   * as one net change, so composing Hangul never looks like a typo. Only a deletion that stays a
+   * deletion is a (soft-keyboard) Backspace.
+   */
   _syncFromValue(now, inputType) {
     const nextKeys = textToKeystrokes(this.inputEl.value);
+    if (this.imeChain) {
+      const last = this.imeChain.events[this.imeChain.events.length - 1];
+      if (now - last.t <= IME_PAIR_MS) {
+        this.imeChain.events.push({ t: now, keys: nextKeys, inputType });
+        this._armImeTimer();
+        return;
+      }
+      this._resolveImeChain();
+    }
+
     const prev = this.prevKeys;
+    let p = 0;
+    while (p < prev.length && p < nextKeys.length && prev[p] === nextKeys[p]) p++;
+    const removed = prev.length - p;
+    const added = nextKeys.length - p;
+    const pendingDeletes = this.pendingKeyDeletes.filter((t) => now - t <= PENDING_TTL_MS).length;
+    const compositionDelete = inputType === 'deleteCompositionText' || inputType === 'deleteByComposition';
+    if ((removed > pendingDeletes && added === 0) || compositionDelete) {
+      this.imeChain = { base: prev, events: [{ t: now, keys: nextKeys, inputType }], timer: null };
+      this._armImeTimer();
+      return;
+    }
+    this._applyDiff(prev, nextKeys, now, inputType);
+  }
+
+  _armImeTimer() {
+    if (this.imeChain.timer) clearTimeout(this.imeChain.timer);
+    // Wall-clock fallback for a deletion nothing follows (event timestamps decide everything else)
+    this.imeChain.timer = setTimeout(() => {
+      if (this.imeChain) {
+        this._resolveImeChain();
+        if (this.onLiveUpdate) this.onLiveUpdate(this.getLiveStats());
+      }
+    }, IME_PAIR_MS * 3);
+  }
+
+  /** Apply a held deletion chain as one net change. */
+  _resolveImeChain() {
+    const chain = this.imeChain;
+    if (!chain) return;
+    if (chain.timer) clearTimeout(chain.timer);
+    this.imeChain = null;
+    const first = chain.events[0];
+    const final = chain.events[chain.events.length - 1];
+    const fk = final.keys;
+    let p = 0;
+    while (p < chain.base.length && p < fk.length && chain.base[p] === fk[p]) p++;
+    if (chain.events.length === 1 || fk.length === p) {
+      // Nothing re-inserted: a real deletion (composition deletes never count as Backspace)
+      const compositionDelete = first.inputType === 'deleteCompositionText' || first.inputType === 'deleteByComposition';
+      this._applyDiff(chain.base, fk, first.t, compositionDelete ? 'insertCompositionText' : first.inputType || 'deleteContentBackward');
+      return;
+    }
+    // Each net-added key gets the time of the first event in which it appeared
+    const times = [];
+    for (let j = p; j < fk.length; j++) {
+      const ev = chain.events.find((e) => {
+        let q = 0;
+        while (q < e.keys.length && q < fk.length && e.keys[q] === fk[q]) q++;
+        return q > j;
+      });
+      times.push(ev ? ev.t : final.t);
+    }
+    this._applyDiff(chain.base, fk, first.t, 'insertCompositionText', { addedTimes: times, imeChain: true });
+  }
+
+  _applyDiff(prev, nextKeys, now, inputType, { addedTimes = null, imeChain = false } = {}) {
     let p = 0;
     while (p < prev.length && p < nextKeys.length && prev[p] === nextKeys[p]) p++;
     const removed = prev.length - p;
@@ -271,20 +349,29 @@ export class SmartKeystrokeRecorder {
       if (s && !s.char) s.char = added[i];
     }
     let rest = added.slice(matched);
+    let restTimes = (addedTimes || added.map(() => now)).slice(matched);
     const repeats = Math.min(rest.length, this.pendingRepeats.length);
     this.pendingRepeats.splice(0, repeats);
-    for (let i = 0; i < repeats; i++) this._pushStroke({ code: null, char: rest[i], t: now, source: 'input', synthetic: true });
+    for (let i = 0; i < repeats; i++) this._pushStroke({ code: null, char: rest[i], t: restTimes[i], source: 'input', synthetic: true });
     rest = rest.slice(repeats);
+    restTimes = restTimes.slice(repeats);
 
-    const bulk = rest.length > 1 || isReplacement || inputType === 'insertReplacementText' || inputType === 'insertFromPaste';
-    for (const ch of rest) {
+    // Several keys in one edit are synthetic (autocomplete, paste) unless an IME chain spread them
+    // over distinct taps; a replacement inside an IME chain is a re-segmentation, not autocorrect.
+    const distinctTimes = new Set(restTimes).size === restTimes.length;
+    const bulk =
+      (rest.length > 1 && !(imeChain && distinctTimes)) ||
+      (isReplacement && !imeChain) ||
+      inputType === 'insertReplacementText' ||
+      inputType === 'insertFromPaste';
+    rest.forEach((ch, i) => {
       if (bulk) {
-        this._pushStroke({ code: null, char: ch, t: now, source: 'input', synthetic: true });
+        this._pushStroke({ code: null, char: ch, t: restTimes[i], source: 'input', synthetic: true });
       } else {
-        this._pushStroke({ code: null, char: ch, t: now, source: 'input' });
-        this.rawEvents.push({ kind: ch === ' ' ? 'space' : 'char', side: null, t: now, up: null, rep: false });
+        this._pushStroke({ code: null, char: ch, t: restTimes[i], source: 'input' });
+        this.rawEvents.push({ kind: ch === ' ' ? 'space' : 'char', side: null, t: restTimes[i], up: null, rep: false });
       }
-    }
+    });
   }
 
   getLiveStats() {
@@ -372,6 +459,7 @@ export class SmartKeystrokeRecorder {
    * (and flagged) when the model tensor is built.
    */
   extractCleanStroke() {
+    this._resolveImeChain();
     const holds = [];
     const holdValid = [];
     const dds = [];

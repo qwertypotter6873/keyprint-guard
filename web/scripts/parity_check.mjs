@@ -29,7 +29,7 @@ import {
   openSetAccept,
   textToKeystrokes,
 } from '../src/features.js';
-import { validateSentenceCapture } from '../src/validation.js';
+import { composingTailIndex, computeLiveAccuracy, validateSentenceCapture } from '../src/validation.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = JSON.parse(readFileSync(join(here, 'fixtures', 'feature_parity.json'), 'utf8'));
@@ -338,6 +338,88 @@ unit('Physical keyboard Hangul (KeyboardEvent.code + composition)', () => {
   check(out.inputMode === 'keyboard', `mode ${out.inputMode}`);
   check(JSON.stringify(out.stroke.pairKeys.map((p) => p[0])) === JSON.stringify(['KeyG', 'KeyK', 'KeyS', 'KeyR', 'KeyM']), 'codes');
   check(rec.stack.every((s) => !s.synthetic), 'no synthetic strokes');
+});
+
+
+// ---- Hangul composition must never look like a typo ------------------------------------------
+// Value after each tap while typing "안녕하세요" (the final consonant moves on at 핫→하세, 셍→세요)
+const KO_STEPS = ['ㅇ', '아', '안', '안ㄴ', '안녀', '안녕', '안녕ㅎ', '안녕하', '안녕핫', '안녕하세', '안녕하셍', '안녕하세요'];
+
+unit('iOS / Samsung keyboard: each composition step as delete + insert is not a Backspace', () => {
+  const { el, rec } = newRecorder();
+  let t = 2000;
+  let prevVal = '';
+  for (const v of KO_STEPS) {
+    t += 190;
+    keydown(el, t, '', 'Unidentified');
+    if (v.startsWith(prevVal) && v.length > prevVal.length) {
+      setValue(el, t, v, 'insertText');
+    } else {
+      setValue(el, t, prevVal.slice(0, -1), 'deleteContentBackward'); // the IME removes the composing syllable…
+      setValue(el, t + 0.6, v, 'insertText'); // …and writes the new one right away
+    }
+    keyup(el, t + 1, '', 'Unidentified');
+    prevVal = v;
+  }
+  const out = rec.extractCleanStroke();
+  check(out.backspaceCount === 0, `backspaces ${out.backspaceCount}`);
+  check(rec.rawEvents.filter((e) => e.kind === 'bs').length === 0, 'no Backspace in the behaviour log');
+  check(out.cleanDigraphCount === 11 && !out.stroke.stitchFlags.some(Boolean), `digraphs ${out.cleanDigraphCount}, stitches ${out.stroke.stitchFlags.filter(Boolean).length}`);
+  check(rec.stack.every((x) => !x.synthetic), 'no synthetic strokes');
+});
+
+unit('Physical keyboard: final consonant moving on (간 → 가 → 가나) is not a deletion', () => {
+  const { el, rec } = newRecorder();
+  // 가나다 = ㄱ(KeyR) ㅏ(KeyK) ㄴ(KeyS) ㅏ(KeyK) ㄷ(KeyE) ㅏ(KeyK); the IME passes through "가" and "가나"
+  const seq = [['KeyR', ['ㄱ']], ['KeyK', ['가']], ['KeyS', ['간']], ['KeyK', ['가', '가나']], ['KeyE', ['가낟']], ['KeyK', ['가나', '가나다']]];
+  let t = 0;
+  for (const [code, values] of seq) {
+    keydown(el, (t += 150), code, 'Process', { isComposing: true });
+    values.forEach((v, i) => setValue(el, t + i * 0.3, v, 'insertCompositionText'));
+    keyup(el, t + 80, code, 'Process');
+  }
+  const out = rec.extractCleanStroke();
+  check(out.backspaceCount === 0, `backspaces ${out.backspaceCount}`);
+  check(rec.stack.length === 6 && rec.stack.every((x) => x.source === 'key' && !x.synthetic), `strokes ${rec.stack.map((x) => x.source).join(',')}`);
+  check(out.cleanDigraphCount === 5 && out.inputMode === 'keyboard', `digraphs ${out.cleanDigraphCount}, mode ${out.inputMode}`);
+});
+
+unit('Safari: deleteCompositionText + insertFromComposition on commit is not a Backspace', () => {
+  const { el, rec } = newRecorder();
+  const seq = [['KeyG', 'ㅎ'], ['KeyK', '하'], ['KeyS', '한'], ['KeyR', '한ㄱ'], ['KeyM', '한그'], ['KeyF', '한글']];
+  let t = 0;
+  let prevVal = '';
+  for (const [code, value] of seq) {
+    keydown(el, (t += 140), code, 'Process', { isComposing: true });
+    if (value.length > prevVal.length && prevVal.length > 0) {
+      // composition of the previous syllable ends: Safari deletes and re-inserts it before the new one
+      setValue(el, t, prevVal.slice(0, -1), 'deleteCompositionText');
+      setValue(el, t + 0.2, prevVal, 'insertFromComposition');
+    }
+    setValue(el, t + 0.4, value, 'insertCompositionText');
+    keyup(el, t + 85, code, 'Process');
+    prevVal = value;
+  }
+  const out = rec.extractCleanStroke();
+  check(out.backspaceCount === 0, `backspaces ${out.backspaceCount}`);
+  check(out.cleanDigraphCount === 5 && rec.stack.every((x) => !x.synthetic), `digraphs ${out.cleanDigraphCount}`);
+});
+
+unit('A real soft-keyboard deletion followed by normal typing still counts once', () => {
+  const { el, rec } = newRecorder();
+  let t = 0;
+  for (const ch of 'helo') tapValue(el, (t += 170), el.value + ch);
+  setValue(el, (t += 160), 'hel', 'deleteContentBackward');
+  for (const ch of 'lo') tapValue(el, (t += 170), el.value + ch);
+  const out = rec.extractCleanStroke();
+  check(out.backspaceCount === 1, `backspaces ${out.backspaceCount}`);
+});
+
+unit('Live display: a syllable still being composed is not a typo', () => {
+  check(composingTailIndex('아', '안녕') === 0 && computeLiveAccuracy('아', '안녕') === 100, 'ㅇ+ㅏ on the way to 안');
+  check(composingTailIndex('간', '가나다') === 0 && computeLiveAccuracy('간', '가나다') === 100, '간 before the ㄴ moves to 나');
+  check(composingTailIndex('가나닥', '가나다라') === -1 && computeLiveAccuracy('가나닥', '가나다라') === 67, 'a real typo still counts');
+  check(composingTailIndex('hel', 'hello') === -1 && computeLiveAccuracy('hex', 'hello') === 67, 'Latin text unchanged');
 });
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
