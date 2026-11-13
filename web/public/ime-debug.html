@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IME Event Log</title>
+<style>
+  :root { --bg: #ffffff; --ink: #18181b; --muted: #71717a; --line: #e4e4e7; --accent: #2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #18181b; --ink: #f4f4f5; --muted: #a1a1aa; --line: #3f3f46; --accent: #60a5fa; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p { margin: 4px 0 12px; color: var(--muted); }
+  input { width: 100%; box-sizing: border-box; font-size: 18px; padding: 12px; border: 1.5px solid var(--line); border-radius: 10px; background: transparent; color: var(--ink); }
+  .row { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #summary { font-size: 13px; color: var(--muted); }
+  pre { font: 12px/1.45 ui-monospace, Menlo, monospace; border: 1px solid var(--line); border-radius: 10px; padding: 10px; max-height: 50vh; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>IME 이벤트 기록 (진단용)</h1>
+  <p>한글 입력으로 아래 칸에 <strong>안녕하세요 반가워요</strong>를 평소처럼 치세요(백스페이스 없이). 그다음 [기록 복사]를 눌러 붙여 넣어 주세요. 입력한 글자와 이벤트 종류·시각만 기록하며, 페이지 밖으로 보내지 않습니다.</p>
+  <input id="field" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="여기에 입력">
+  <div class="row">
+    <button class="primary" id="copy">기록 복사</button>
+    <button id="clear">초기화</button>
+  </div>
+  <div id="summary"></div>
+  <pre id="log"></pre>
+</main>
+<script>
+  const field = document.getElementById('field');
+  const logEl = document.getElementById('log');
+  const summary = document.getElementById('summary');
+  let rows = [];
+  const ua = navigator.userAgent;
+  function add(e, extra) {
+    const r = { type: e.type, t: Math.round(e.timeStamp * 10) / 10, ...extra };
+    rows.push(r);
+    logEl.textContent += JSON.stringify(r) + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+    const counts = {};
+    for (const x of rows) {
+      const k = x.type + (x.inputType ? ':' + x.inputType : '');
+      counts[k] = (counts[k] || 0) + 1;
+    }
+    summary.textContent = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(' · ');
+  }
+  for (const type of ['keydown', 'keyup']) {
+    field.addEventListener(type, (e) => add(e, { key: e.key, code: e.code, keyCode: e.keyCode, isComposing: e.isComposing, shift: e.shiftKey, repeat: e.repeat }));
+  }
+  for (const type of ['compositionstart', 'compositionupdate', 'compositionend']) {
+    field.addEventListener(type, (e) => add(e, { data: e.data }));
+  }
+  field.addEventListener('beforeinput', (e) => add(e, { inputType: e.inputType, data: e.data, isComposing: e.isComposing }));
+  field.addEventListener('input', (e) => add(e, { inputType: e.inputType, data: e.data, isComposing: e.isComposing, value: field.value }));
+  document.getElementById('copy').addEventListener('click', async () => {
+    const text = JSON.stringify({ ua, rows });
+    try {
+      await navigator.clipboard.writeText(text);
+      summary.textContent = `복사됨 (${rows.length}개 이벤트)`;
+    } catch {
+      logEl.textContent = text;
+      summary.textContent = '자동 복사가 막혀 있습니다. 아래 내용을 전부 선택해 복사해 주세요.';
+    }
+  });
+  document.getElementById('clear').addEventListener('click', () => {
+    rows = []; logEl.textContent = ''; summary.textContent = ''; field.value = ''; field.focus();
+  });
+  field.focus();
+</script>
+</body>
+</html>
