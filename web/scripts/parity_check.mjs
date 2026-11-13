@@ -294,15 +294,16 @@ unit('Autocorrect replacement → synthetic strokes, no Backspace event', () => 
 
 unit('OS auto-repeat is not a keystroke', () => {
   const { el, rec } = newRecorder();
-  typeKey(el, 0, 'KeyA', 'a');
-  typeKey(el, 150, 'KeyB', 'b');
-  keydown(el, 300, 'KeyC', 'c');
-  setValue(el, 300, el.value + 'c', 'insertText');
-  keydown(el, 800, 'KeyC', 'c', { repeat: true });
-  setValue(el, 800, el.value + 'c', 'insertText');
-  keydown(el, 833, 'KeyC', 'c', { repeat: true });
-  setValue(el, 833, el.value + 'c', 'insertText');
-  keyup(el, 850, 'KeyC', 'c');
+  // (timestamps start at 1000: a timeStamp of 0 means "unknown" and falls back to performance.now())
+  typeKey(el, 1000, 'KeyA', 'a');
+  typeKey(el, 1150, 'KeyB', 'b');
+  keydown(el, 1300, 'KeyC', 'c');
+  setValue(el, 1300, el.value + 'c', 'insertText');
+  keydown(el, 1800, 'KeyC', 'c', { repeat: true });
+  setValue(el, 1800, el.value + 'c', 'insertText');
+  keydown(el, 1833, 'KeyC', 'c', { repeat: true });
+  setValue(el, 1833, el.value + 'c', 'insertText');
+  keyup(el, 1850, 'KeyC', 'c');
   const out = rec.extractCleanStroke();
   check(rec.stack.length === 5 && rec.stack.filter((s) => s.synthetic).length === 2, 'repeats are synthetic');
   check(out.cleanDigraphCount === 2, `digraphs ${out.cleanDigraphCount}`);
@@ -381,6 +382,7 @@ unit('Physical keyboard: final consonant moving on (간 → 가 → 가나) is n
   const out = rec.extractCleanStroke();
   check(out.backspaceCount === 0, `backspaces ${out.backspaceCount}`);
   check(rec.stack.length === 6 && rec.stack.every((x) => x.source === 'key' && !x.synthetic), `strokes ${rec.stack.map((x) => x.source).join(',')}`);
+  check(rec.stack.map((x) => x.label).join('') === 'ㄱㅏㄴㅏㄷㅏ', `labels show the typed jamo, not the Latin key names: ${rec.stack.map((x) => x.label).join(' ')}`);
   check(out.cleanDigraphCount === 5 && out.inputMode === 'keyboard', `digraphs ${out.cleanDigraphCount}, mode ${out.inputMode}`);
 });
 
@@ -403,6 +405,28 @@ unit('Safari: deleteCompositionText + insertFromComposition on commit is not a B
   const out = rec.extractCleanStroke();
   check(out.backspaceCount === 0, `backspaces ${out.backspaceCount}`);
   check(out.cleanDigraphCount === 5 && rec.stack.every((x) => !x.synthetic), `digraphs ${out.cleanDigraphCount}`);
+});
+
+unit('Live preview (principles tab) peeking mid-composition does not settle the IME edit', () => {
+  const { el, rec } = newRecorder();
+  let t = 3000;
+  let prevVal = '';
+  for (const v of KO_STEPS) {
+    t += 190;
+    keydown(el, t, '', 'Unidentified');
+    if (v.startsWith(prevVal) && v.length > prevVal.length) {
+      setValue(el, t, v, 'insertText');
+    } else {
+      setValue(el, t, prevVal.slice(0, -1), 'deleteContentBackward');
+      rec.extractCleanStroke({ resolvePending: false }); // what the live piano roll does on every input event
+      setValue(el, t + 0.6, v, 'insertText');
+    }
+    rec.extractCleanStroke({ resolvePending: false });
+    keyup(el, t + 1, '', 'Unidentified');
+    prevVal = v;
+  }
+  const out = rec.extractCleanStroke();
+  check(out.backspaceCount === 0 && out.cleanDigraphCount === 11, `backspaces ${out.backspaceCount}, digraphs ${out.cleanDigraphCount}`);
 });
 
 unit('A real soft-keyboard deletion followed by normal typing still counts once', () => {
