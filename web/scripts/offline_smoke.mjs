@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { textToKeystrokes } from '../src/features.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, '..', 'dist');
@@ -167,6 +168,67 @@ function touchPlan(text, cadence, { typo = false } = {}) {
     }
     committed += ch;
   });
+  plan.push({ t: t + 150, type: 'keydown', key: 'Enter', code: 'Enter' });
+  return plan;
+}
+
+/**
+ * Field values a real 2-beolsik IME shows after each jamo key, including the final consonant moving
+ * to the next syllable (하 + ㅅ → 핫, + ㅔ → 하세) and compound vowels / final clusters.
+ */
+const IME_CHO = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+const IME_JUNG = 'ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ';
+const IME_JONG = ['', ...'ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ'];
+const IME_VOWEL_PAIR = { ㅗㅏ: 'ㅘ', ㅗㅐ: 'ㅙ', ㅗㅣ: 'ㅚ', ㅜㅓ: 'ㅝ', ㅜㅔ: 'ㅞ', ㅜㅣ: 'ㅟ', ㅡㅣ: 'ㅢ' };
+const IME_CLUSTER = { ㄱㅅ: 'ㄳ', ㄴㅈ: 'ㄵ', ㄴㅎ: 'ㄶ', ㄹㄱ: 'ㄺ', ㄹㅁ: 'ㄻ', ㄹㅂ: 'ㄼ', ㄹㅅ: 'ㄽ', ㄹㅌ: 'ㄾ', ㄹㅍ: 'ㄿ', ㄹㅎ: 'ㅀ', ㅂㅅ: 'ㅄ' };
+const IME_SPLIT = Object.fromEntries(Object.entries(IME_CLUSTER).map(([k, v]) => [v, [...k]]));
+function imeValues(text) {
+  const out = [];
+  let done = '';
+  let cur = null; // { cho, jung, jong } jamo strings
+  const render = (c) => {
+    if (!c) return '';
+    if (c.cho && c.jung) return String.fromCodePoint(0xac00 + IME_CHO.indexOf(c.cho) * 588 + IME_JUNG.indexOf(c.jung) * 28 + IME_JONG.indexOf(c.jong || ''));
+    return c.cho || c.jung;
+  };
+  for (const k of textToKeystrokes(text)) {
+    const isVowel = IME_JUNG.includes(k);
+    const isCons = IME_CHO.includes(k) || IME_JONG.includes(k);
+    if (!isVowel && !isCons) { done += render(cur) + k; cur = null; out.push(done); continue; }
+    if (isCons) {
+      if (cur?.cho && cur.jung && !cur.jong && IME_JONG.includes(k)) cur.jong = k;
+      else if (cur?.jong && IME_CLUSTER[cur.jong + k]) cur.jong = IME_CLUSTER[cur.jong + k];
+      else { done += render(cur); cur = { cho: k, jung: '', jong: '' }; }
+    } else if (cur?.cho && !cur.jung) cur.jung = k;
+    else if (cur?.jung && !cur.jong && IME_VOWEL_PAIR[cur.jung + k]) cur.jung = IME_VOWEL_PAIR[cur.jung + k];
+    else if (cur?.jong) {
+      const [keep, move] = IME_SPLIT[cur.jong] || ['', cur.jong];
+      done += render({ ...cur, jong: keep });
+      cur = { cho: move, jung: k, jong: '' };
+    } else { done += render(cur); cur = { cho: '', jung: k, jong: '' }; }
+    out.push(done + render(cur));
+  }
+  return out;
+}
+
+/** iOS / Samsung style soft keyboard: a changed syllable arrives as delete + insert input events. */
+function iosPlan(text, cadence) {
+  const plan = [];
+  let t = 20;
+  let prev = '';
+  for (const v of imeValues(text)) {
+    plan.push({ t, type: 'keydown', key: 'Unidentified', code: '' });
+    if (v.startsWith(prev) && v.length > prev.length) {
+      plan.push({ t, type: 'input', value: v, inputType: 'insertText' });
+    } else {
+      plan.push({ t, type: 'input', value: prev.slice(0, -1), inputType: 'deleteContentBackward' });
+      plan.push({ t: t + 0.6, type: 'input', value: v, inputType: 'insertText' });
+    }
+    plan.push({ t: t + 1, type: 'keyup', key: 'Unidentified', code: '' });
+    const ch = [...v].at(-1) || '';
+    t += cadence.ddMs * factor(cadence.seed, `d${ch}`) * (1 + cadence.jitter * (rand() - 0.5)) + (ch === ' ' ? cadence.spaceExtraMs : 0);
+    prev = v;
+  }
   plan.push({ t: t + 150, type: 'keydown', key: 'Enter', code: 'Enter' });
   return plan;
 }
@@ -449,6 +511,11 @@ async function run() {
       expect(m.profile && m.profile.count === 5 && m.profile.inputMode === 'touch', `Korean touch profile enrolled: ${JSON.stringify(m.profile)}`);
       const mid = await blindIdentify(page, (s) => touchPlan(s, THUMB));
       expect(Boolean(mid.title) && !/부족/.test(mid.feedback || ''), `blind 1:N (touch) → "${mid.title}" | ${mid.meta}`);
+      // iOS / Samsung keyboards replace the composing syllable with delete + insert events and move the
+      // final consonant to the next syllable: none of that may count as a Backspace correction
+      const ios = await blindIdentify(page, (s) => iosPlan(s, THUMB));
+      expect(/무수정/.test(ios.meta || '') && !/백스페이스/.test(ios.meta || '') && ios.title?.includes('모바일 사용자'),
+        `iOS-style Hangul composition: no false Backspace → "${ios.title}" | ${ios.meta}`);
       if (SHOT_DIR) await page.screenshot({ path: path.join(SHOT_DIR, 'smoke_mobile_identify.png') });
 
       const pwFb = await enrollPassword(page, '모바일 사용자', PW, (pw) => touchPlan(pw, THUMB));

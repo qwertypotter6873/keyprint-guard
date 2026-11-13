@@ -1,7 +1,8 @@
 import {
   KeyPrintEngine,
   SmartKeystrokeRecorder,
-  computeTypingAccuracy,
+  composingTailIndex,
+  computeLiveAccuracy,
   describeBehavior,
   combineEmbeddings,
   mergeTemplateSample,
@@ -78,12 +79,13 @@ function renderSentencePrompt(containerEl, targetSentence, typedValue) {
   const target = String(targetSentence || '');
   const typed = String(typedValue || '');
   const parts = [];
+  const composing = composingTailIndex(typed, target); // half-built Hangul syllable: not a typo
 
   for (let i = 0; i < target.length; i++) {
     const ch = escapeHtml(target[i]);
     let cls = 'ch';
     if (i < typed.length) {
-      cls += typed[i] === target[i] ? ' is-ok' : ' is-err';
+      cls += typed[i] === target[i] ? ' is-ok' : i === composing ? ' is-comp' : ' is-err';
     } else if (i === typed.length) {
       cls += ' is-caret';
     }
@@ -481,10 +483,7 @@ const arenaEnrollRecorder = new SmartKeystrokeRecorder($('arena-enroll-input'), 
   onLiveUpdate: (live) => {
     renderSentencePrompt($('arena-enroll-prompt'), state.arenaEnrollSentence, live.text);
     $('arena-enroll-cpm').textContent = String(live.cpm);
-    $('arena-enroll-acc').textContent = `${computeTypingAccuracy(
-      live.text,
-      state.arenaEnrollSentence.slice(0, Math.max(1, live.text.length))
-    )}%`;
+    $('arena-enroll-acc').textContent = `${computeLiveAccuracy(live.text, state.arenaEnrollSentence)}%`;
     $('arena-enroll-edit-hint').textContent =
       live.backspaceCount > 0
         ? `백스페이스 ${live.backspaceCount}회 수정 보정됨`
@@ -497,10 +496,7 @@ const arenaBlindRecorder = new SmartKeystrokeRecorder($('arena-blind-input'), {
   onLiveUpdate: (live) => {
     renderSentencePrompt($('arena-blind-prompt'), state.arenaBlindSentence, live.text);
     $('arena-blind-cpm').textContent = String(live.cpm);
-    $('arena-blind-acc').textContent = `${computeTypingAccuracy(
-      live.text,
-      state.arenaBlindSentence.slice(0, Math.max(1, live.text.length))
-    )}%`;
+    $('arena-blind-acc').textContent = `${computeLiveAccuracy(live.text, state.arenaBlindSentence)}%`;
     $('arena-blind-edit-hint').textContent =
       live.backspaceCount > 0
         ? `백스페이스 ${live.backspaceCount}회 수정 보정됨`

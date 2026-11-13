@@ -15,7 +15,13 @@ export { combineEmbeddings } from './features.js';
 
 export { SmartKeystrokeRecorder } from './recorder.js';
 export { describeBehavior } from './features.js';
-export { computeTypingAccuracy, validatePasswordCapture, validateSentenceCapture } from './validation.js';
+export {
+  composingTailIndex,
+  computeLiveAccuracy,
+  computeTypingAccuracy,
+  validatePasswordCapture,
+  validateSentenceCapture,
+} from './validation.js';
 
 // Single-threaded SIMD WASM avoids SharedArrayBuffer COOP/COEP issues on GitHub Pages
 ort.env.wasm.wasmPaths = new URL('./ort/', window.location.href).href;

@@ -528,6 +528,12 @@ body {
   border-radius: 3px;
 }
 
+/* Hangul syllable still being composed (e.g. "아" on the way to "안"): not a typo */
+.sentence-display .ch.is-comp {
+  color: var(--ink-primary);
+  border-bottom: 2px dotted var(--accent-blue);
+}
+
 .sentence-display .ch.is-caret {
   border-bottom: 2.5px solid var(--accent-blue);
   color: #52525b;

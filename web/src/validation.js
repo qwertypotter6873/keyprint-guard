@@ -1,6 +1,34 @@
 /**
  * Capture validation (pure, Node-safe so scripts/parity_check.mjs can test it).
  */
+import { textToKeystrokes } from './features.js';
+
+/**
+ * Index of the last typed character when it is a Hangul syllable still being composed toward the
+ * target (its keystrokes are a prefix of the target's, e.g. "아" for "안", or "간" for "가나" before
+ * the final consonant moves on), else -1. Such a character is not a typo yet.
+ */
+export function composingTailIndex(typed, target) {
+  const a = String(typed || '');
+  const b = String(target || '');
+  const i = a.length - 1;
+  if (i < 0 || a[i] === b[i]) return -1;
+  for (let k = 0; k < i; k++) if (a[k] !== b[k]) return -1;
+  const ka = textToKeystrokes(a);
+  const kb = textToKeystrokes(b);
+  if (ka.length > kb.length) return -1;
+  for (let k = 0; k < ka.length; k++) if (ka[k] !== kb[k]) return -1;
+  return i;
+}
+
+/** Live accuracy while typing: a syllable still being composed is not counted as an error. */
+export function computeLiveAccuracy(typed, target) {
+  const a = String(typed || '');
+  const tail = composingTailIndex(a, target);
+  const done = tail >= 0 ? a.slice(0, tail) : a;
+  if (!done.length) return 100;
+  return computeTypingAccuracy(done, String(target || '').slice(0, done.length));
+}
 
 /**
  * Character-level accuracy (%) between typed string and target prompt.
