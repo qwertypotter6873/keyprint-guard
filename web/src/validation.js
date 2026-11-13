@@ -18,12 +18,16 @@ export function computeTypingAccuracy(typed, target) {
   return Math.round((matches / len) * 100);
 }
 
-export function validatePasswordCapture(capture, expectedPassword) {
-  if (!expectedPassword || expectedPassword.length < 6) {
+/**
+ * `minLength` applies when a new password is enrolled (12 by default in model_config.json: longer
+ * passwords carry more rhythm evidence, README §5.7); verification of an existing account passes 1.
+ */
+export function validatePasswordCapture(capture, expectedPassword, { minLength = 6 } = {}) {
+  if (!expectedPassword || expectedPassword.length < minLength) {
     return {
       ok: false,
       code: 'SHORT_PASSWORD',
-      message: '비밀번호는 최소 6자 이상으로 설정해 주세요.',
+      message: `비밀번호는 최소 ${minLength}자 이상으로 설정해 주세요. 길수록 타이핑 리듬 근거가 많아져 다른 사람을 더 잘 구분합니다.`,
     };
   }
   if (capture.hadPaste) {

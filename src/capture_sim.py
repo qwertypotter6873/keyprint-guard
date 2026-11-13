@@ -317,6 +317,7 @@ def export_parity_fixture(
     beta: float,
     dual_params: Optional[Dict[str, Dict[str, float]]] = None,
     display_slope: float = 1.0,
+    extra: Optional[Dict] = None,
 ) -> None:
     cases = []
     for seg_idx, raw in enumerate(raw_segments):
@@ -385,7 +386,7 @@ def export_parity_fixture(
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump({"beta": beta, "cases": cases, "llr_cases": llr_cases, "score_cases": score_cases,
                    "combine_case": {"inputs": pair.tolist(), "expected": combined.tolist()},
-                   "open_set_cases": open_set_cases}, f, ensure_ascii=False)
+                   "open_set_cases": open_set_cases, **(extra or {})}, f, ensure_ascii=False)
 
 
 def ms_rounded(raw: Sequence[Tuple[str, float, float]]) -> List[Tuple[str, float, float]]:

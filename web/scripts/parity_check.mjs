@@ -21,7 +21,9 @@ import { SmartKeystrokeRecorder } from '../src/recorder.js';
 import {
   behaviorLlr,
   buildInputTensor,
+  capitalMethodLlr,
   combineEmbeddings,
+  dualParamsForLength,
   dualPasswordScore,
   fuseScore,
   openSetAccept,
@@ -168,7 +170,18 @@ for (const oc of fixture.open_set_cases || []) {
   check(openSetAccept(oc.scores, oc.threshold, oc.margin) === oc.accept, `open-set rule ${JSON.stringify(oc)}`);
 }
 if (fixture.open_set_cases?.length) console.log(`  ✓ open-set threshold + margin rule: ${fixture.open_set_cases.length} cases`);
+for (const lc of fixture.length_cases || []) {
+  const got = dualParamsForLength(config.password_dual, lc.mode === 'touch' ? 'touch' : 'keyboard', lc.length);
+  for (const [k, v] of Object.entries(lc.expected)) check(close(got[k], v, 1e-9), `length ${lc.length} ${lc.mode}: ${k} JS=${got[k]} PY=${v}`);
+}
+if (fixture.length_cases?.length) console.log(`  ✓ length-aware dual parameters: ${fixture.length_cases.length} cases (interpolated / clamped)`);
+for (const cc of fixture.capital_cases || []) {
+  const got = capitalMethodLlr(cc.q_caps, cc.n_caps, cc.n_total, cc.caps_share);
+  check(close(got, cc.llr, 1e-9), `capital-method LLR ${JSON.stringify(cc)} JS=${got}`);
+}
+if (fixture.capital_cases?.length) console.log(`  ✓ capital-letter (Shift vs CapsLock) LLR: ${fixture.capital_cases.length} cases`);
 check(Boolean(config.password_dual?.keyboard && config.password_dual?.touch), 'model_config.json has dual password parameters');
+check(config.password_min_length === 12 && Array.isArray(config.password_dual?.by_length), 'password: 12-char minimum + length-aware calibration in config');
 check(config.arena_enroll_sentences === 5 && config.arena_query_sentences === 2, 'typing practice protocol: 5 enrolment / 2 query sentences');
 
 // ---------------------------------------------------------------------------------------

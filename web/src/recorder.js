@@ -203,6 +203,10 @@ export class SmartKeystrokeRecorder {
 
       const stroke = this._pushStroke({ code, char: e.key && [...e.key].length === 1 ? e.key : null, t: now, source: 'key' });
       stroke.label = formatKeyLabel(e.key, code);
+      // Capital letters: was it typed with CapsLock or with Shift? (a stable personal habit)
+      if (/^[A-Z]$/.test(e.key || '')) {
+        stroke.capital = e.getModifierState?.('CapsLock') ? 'caps' : e.shiftKey ? 'shift' : null;
+      }
       const raw = { kind: code === 'Space' ? 'space' : 'char', side: null, t: now, up: null, rep: false };
       this.rawEvents.push(raw);
       this._markDown(code, { stroke, raw });
@@ -422,6 +426,7 @@ export class SmartKeystrokeRecorder {
       rolloverPct,
       inputMode,
       behavior: summarizeBehavior(this.getBehaviorEvents()),
+      capitalMethods: this.stack.filter((s) => s.capital).map((s) => s.capital),
       timeline: this.buildVisualTimeline(),
       stroke: {
         holds,

@@ -1,7 +1,10 @@
 import * as ort from 'onnxruntime-web';
 import {
+  attemptCapitalMethod,
   behaviorLlr,
   buildInputTensor,
+  capitalMethodLlr,
+  dualParamsForLength,
   dualPasswordScore,
   fuseScore,
   mergeBehavior,
@@ -50,9 +53,17 @@ function appendExemplar(prev, embedding, keep = 12) {
  * `embedding17` (passwords only) keeps a parallel template in the 17-channel encoder space, so a
  * password attempt can be scored by both encoders (dualPasswordScore).
  */
-export function mergeTemplateSample(existing, { embedding, embedding17, cpm, holdMs, rolloverPct, behavior, inputMode }) {
+export function mergeTemplateSample(
+  existing,
+  { embedding, embedding17, cpm, holdMs, rolloverPct, behavior, inputMode, capitalMethods = null }
+) {
   const { centroid, exemplars } = appendExemplar(existing, embedding);
   const enc17 = embedding17 ? appendExemplar(existing?.enc17, embedding17) : existing?.enc17 || null;
+  // Attempts whose capitals were typed with CapsLock vs Shift: [caps, shift]
+  const capsUse = [...(existing?.capsUse || [0, 0])];
+  const method = attemptCapitalMethod(capitalMethods);
+  if (method === 'caps') capsUse[0] += 1;
+  else if (method === 'shift') capsUse[1] += 1;
 
   const prevCount = existing?.count || 0;
   const nextCount = prevCount + 1;
@@ -70,6 +81,7 @@ export function mergeTemplateSample(existing, { embedding, embedding17, cpm, hol
   return {
     ...(existing?.target ? { target: existing.target } : {}),
     ...(enc17 ? { enc17 } : {}),
+    ...(capsUse[0] + capsUse[1] > 0 ? { capsUse } : {}),
     centroid,
     exemplars,
     count: nextCount,
@@ -208,16 +220,38 @@ export class KeyPrintEngine {
   scoreTemplate(
     embedding,
     template,
-    { domain = 'password', threshold = null, thresholdOffset = 0, behavior = null, inputMode = 'keyboard', embedding17 = null } = {}
+    {
+      domain = 'password',
+      threshold = null,
+      thresholdOffset = 0,
+      behavior = null,
+      inputMode = 'keyboard',
+      embedding17 = null,
+      capitalMethods = null,
+    } = {}
   ) {
     const dual = this.config?.password_dual;
     if (domain === 'password' && dual && embedding17 && template?.enc17) {
-      // User-chosen passwords: both encoders, impostor-standardised on many real-typist strings
-      const prm = inputMode === 'touch' ? dual.touch : dual.keyboard;
-      const r = dualPasswordScore(embedding, embedding17, template, template.enc17, prm, dual.slope ?? 1.0);
+      // User-chosen passwords: both encoders, impostor-standardised on many real-typist strings,
+      // with parameters for this password's length (README §5.6–5.7)
+      const prm = { ...dualParamsForLength(dual, inputMode, template.target?.length) };
+      const base = dualPasswordScore(embedding, embedding17, template, template.enc17, prm, dual.slope ?? 1.0);
+      let z = base.z;
+      let capitalLlr = 0;
+      const cm = dual.capital_method;
+      const qMethod = attemptCapitalMethod(capitalMethods);
+      const used = template.capsUse ? template.capsUse[0] + template.capsUse[1] : 0;
+      if (cm && inputMode === 'keyboard' && qMethod && used > 0) {
+        // Shift vs CapsLock habit for capitals (keyboard only: phones hide modifier keys)
+        capitalLlr = capitalMethodLlr(qMethod === 'caps', template.capsUse[0], used, cm.caps_share, cm.alpha ?? 2.0);
+        z += cm.weight * capitalLlr;
+        prm.tau += cm.tau_offset ?? 0;
+      }
+      const r = { ...base, z, similarity: 1 / (1 + Math.exp(-(dual.slope ?? 1.0) * (z - prm.tau))) };
       const thr = threshold ?? 0.5 + thresholdOffset;
       return {
         method: 'dual',
+        capitalLlr,
         similarity: r.similarity,
         embeddingSimilarity: r.similarity,
         behaviorLlr: 0,

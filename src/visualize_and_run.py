@@ -55,7 +55,16 @@ from feature_eval import (
     tune_open_set_rule,
 )
 from password_synth import (
+    CALIB_LENGTHS,
+    capital_fusion,
+    capital_llr,
+    capital_method_rates,
+    capital_trials,
+    params_for_length,
     DISPLAY_SLOPE,
+    calibrate_by_length,
+    evaluate_lengths,
+    strings_of_length,
     adaptation_eval,
     calibrate_dual,
     choose_strings,
@@ -88,6 +97,7 @@ WEB_CAPTURE_CHARS = 68  # average length of the web app's practice sentences
 ARENA_ENROLL_SENTENCES = 5  # typing practice: sentences per profile
 ARENA_QUERY_SENTENCES = 2  # typing practice: sentences typed before "who is typing?" is answered
 PASSWORD_FRR_TARGET = 0.10  # dual password score: tau = Validation genuine quantile
+PASSWORD_MIN_LENGTH = 12  # new accounts: longer passwords carry more rhythm evidence (README section 5.7)
 # KEYPRINT_REUSE_WEIGHTS=1 re-evaluates with the saved encoders instead of retraining (MPS training is
 # not bit-reproducible, so this keeps every previously reported number for unchanged components).
 REUSE_WEIGHTS = os.environ.get("KEYPRINT_REUSE_WEIGHTS") == "1"
@@ -1416,6 +1426,35 @@ def main() -> None:
     pw_string_eval = evaluate_strings(pw_rows["test"], pw_dual, pw_deployed_thr, pw_speed)
     print(f"[Password strings] dual calibration {pw_dual} | test {pw_string_eval}")
 
+    # (a2) Length-aware calibration: z grows with length, so tau / mu / sigma are fitted per length on
+    #      Validation strings and interpolated by the web for the account's password length.
+    used = set(pw_strings["val"]["word"] + pw_strings["val"]["random"] + pw_strings["test"]["word"] + pw_strings["test"]["random"])
+    pw_len_strings = {"val": {}, "test": {}}
+    pw_len_rows = {"val": {}, "test": {}}
+    for sp, lengths in (("val", CALIB_LENGTHS), ("test", (8, 12, 16, 20))):
+        for L in lengths:
+            ws = strings_of_length(pw_tabs, pw_people[sp], L, 15, pw_rng, exclude=used)
+            used |= set(ws)
+            pw_len_strings[sp][L] = ws
+            pw_len_rows[sp][L] = string_trials(raw_sessions, pw_tabs, pw_people[sp], {"random": ws}, emb9, emb17, bounds, chan_mean,
+                                               chan_std, touch_hold, pw_cohorts, pw_rng)
+    pw_len_table = calibrate_by_length(pw_len_rows["val"], PASSWORD_FRR_TARGET)
+    pw_len_eval = evaluate_lengths(pw_len_rows["test"], pw_dual, pw_len_table)
+    print(f"[Password length] table {pw_len_table} | test {pw_len_eval}")
+
+    # (a3) Capital letters: Shift vs CapsLock habit as an extra cue (keyboard only; phones hide modifiers)
+    cap_rates = capital_method_rates(raw_sessions)
+    caps_share = float(np.mean([cap_rates[(p, 1)] for p in kr_subjs["train"] if (p, 1) in cap_rates]))
+    prm12 = params_for_length(pw_len_table, PASSWORD_MIN_LENGTH, "kb")
+    cap_rows = {sp: capital_trials(pw_tabs, cap_rates, pw_people[sp], PASSWORD_MIN_LENGTH, n, emb9, emb17, bounds, chan_mean, chan_std,
+                                   touch_hold, prm12, pw_rng) for sp, n in (("val", 12), ("test", 15))}
+    pw_capital = capital_fusion(cap_rows["val"], cap_rows["test"], caps_share)
+    both_days = [p for p in kr_subjs["train"] + kr_subjs["val"] + kr_subjs["test"] if (p, 1) in cap_rates and (p, 2) in cap_rates]
+    pw_capital["habit_same_across_days"] = round(float(np.mean([(cap_rates[(p, 1)] > 0.5) == (cap_rates[(p, 2)] > 0.5) for p in both_days])), 4)
+    pw_capital["people_mostly_capslock"] = int(sum(1 for p in both_days if cap_rates[(p, 1)] > 0.5))
+    pw_capital["people_with_capitals"] = len(both_days)
+    print(f"[Password capitals] {pw_capital}")
+
     # (b) Template adaptation: a strict threshold rejects the owner once they get fluent at a new string
     #     (KeyRecs fixed text typed 100x per session). Accepted attempts with z >= tau + margin join the
     #     template; the margin is chosen on Validation people.
@@ -1573,6 +1612,14 @@ def main() -> None:
         [fx_raw[0:150], fx_raw[600:760], fx_raw[1500:1640]],
         bounds, touch_hold, chan_mean, chan_std, behavior_model, beta_kb,
         dual_params=pw_dual, display_slope=DISPLAY_SLOPE,
+        extra={"length_cases": [
+            {"length": L, "mode": md, "expected": params_for_length(pw_len_table, L, md)}
+            for L in (6, 9, 12, 13, 17, 20, 30) for md in ("kb", "touch")
+        ], "capital_cases": [
+            {"q_caps": qc, "n_caps": nc, "n_total": nt, "caps_share": pw_capital["caps_share"],
+             "llr": capital_llr(qc, nc, nt, pw_capital["caps_share"])}
+            for qc in (True, False) for nc, nt in ((0, 4), (4, 4), (2, 4), (1, 9))
+        ]},
     )
 
     feature_upgrade = {
@@ -1610,6 +1657,13 @@ def main() -> None:
             "test": pw_string_eval,
         },
         "password_adaptation": {"margins": list(adapt_margins), "chosen_margin": adapt_margin, **pw_adapt},
+        "password_capital_method": pw_capital,
+        "password_length_calibration": {
+            "min_length": PASSWORD_MIN_LENGTH,
+            "table": pw_len_table,
+            "strings": {sp: {str(L): v for L, v in d.items()} for sp, d in pw_len_strings.items()},
+            "test": pw_len_eval,
+        },
         "arena_protocol": {"enroll_sentences": ARENA_ENROLL_SENTENCES, "query_sentences": ARENA_QUERY_SENTENCES, **arena_protocol},
     }
 
@@ -1676,7 +1730,11 @@ def main() -> None:
                 "adapt_keep": 12,
                 "frr_target": PASSWORD_FRR_TARGET,
                 "touch_reference_only": True,
+                "by_length": pw_len_table,
+                "capital_method": {"weight": pw_capital["weight"], "tau_offset": pw_capital["tau_offset"],
+                                   "caps_share": pw_capital["caps_share"], "alpha": 2.0},
             },
+            "password_min_length": PASSWORD_MIN_LENGTH,
             "calibrated_threshold_touch": password_touch["legacy_9ch_imputed_holds"]["threshold"],
             "mvp_sample_profiles": mvp_sample_profiles,
             "feature_metrics": {

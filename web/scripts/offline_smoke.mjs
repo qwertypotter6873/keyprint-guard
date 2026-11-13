@@ -94,7 +94,7 @@ function keyboardPlan(text, cadence, { typo = false } = {}) {
   const press = (ch) => {
     const code = codeForChar(ch);
     const hold = cadence.holdMs * factor(cadence.seed, `h${ch}`) * (1 + cadence.jitter * (rand() - 0.5));
-    plan.push({ t, type: 'keydown', key: ch, code });
+    plan.push({ t, type: 'keydown', key: ch, code, shift: /^[A-Z]$/.test(ch), caps: Boolean(cadence.capsLock) && /^[A-Z]$/.test(ch) });
     plan.push({ t, type: 'input', op: 'insert', data: ch, inputType: 'insertText' });
     plan.push({ t: t + hold, type: 'keyup', key: ch, code });
     t += cadence.ddMs * factor(cadence.seed, `d${ch}`) * (1 + cadence.jitter * (rand() - 0.5)) + (ch === ' ' ? cadence.spaceExtraMs : 0);
@@ -181,7 +181,10 @@ async function runPlan(page, selector, plan) {
         const wait = t0 + ev.t - performance.now();
         if (wait > 1) await new Promise((r) => setTimeout(r, wait));
         if (ev.type === 'keydown' || ev.type === 'keyup') {
-          el.dispatchEvent(new KeyboardEvent(ev.type, { key: ev.key, code: ev.code, bubbles: true, cancelable: true }));
+          el.dispatchEvent(new KeyboardEvent(ev.type, {
+            key: ev.key, code: ev.code, bubbles: true, cancelable: true,
+            shiftKey: Boolean(ev.shift && !ev.caps), modifierCapsLock: Boolean(ev.caps),
+          }));
         } else {
           if (ev.value !== undefined) el.value = ev.value;
           else if (ev.op === 'delete') el.value = [...el.value].slice(0, -1).join('');
@@ -305,17 +308,19 @@ async function blindIdentify(page, planFor) {
 async function pwTemplate(page, name) {
   return api(page, (name) => {
     const p = window.__keyprintTestApi.state.profiles.find((x) => x.name === name)?.password;
-    return p ? { count: p.count, ex9: p.exemplars?.length, ex17: p.enc17?.exemplars?.length, mode: p.inputMode } : null;
+    return p ? { count: p.count, ex9: p.exemplars?.length, ex17: p.enc17?.exemplars?.length, mode: p.inputMode, capsUse: p.capsUse || null, len: p.target?.length } : null;
   }, name);
 }
 
-async function enrollPassword(page, name, pw, planFor) {
+const PW = 'Gachon2026guard'; // 15 characters, one capital typed with Shift
+
+async function enrollPassword(page, name, pw, planFor, reps = 4) {
   await page.click('#nav-guard-btn');
   await page.click('#guard-sub-enroll');
   await page.fill('#guard-enroll-name', name);
   await page.fill('#guard-enroll-pw-target', pw);
   const feedbacks = [];
-  for (let r = 0; r < 4; r++) {
+  for (let r = 0; r < reps; r++) {
     await runPlan(page, '#guard-enroll-input', planFor(pw, r));
     await page.waitForTimeout(200);
     feedbacks.push((await page.textContent('#guard-enroll-feedback'))?.trim());
@@ -371,19 +376,25 @@ async function run() {
       expect(id.title?.includes('Typist A'), `blind 1:N (keyboard, 2 sentences) → "${id.title}" | ${id.meta}`);
       if (SHOT_DIR) await page.screenshot({ path: path.join(SHOT_DIR, 'smoke_desktop_identify.png') });
 
-      const pwFb = await enrollPassword(page, 'Typist A', 'gachon2026', (pw, r) => keyboardPlan(pw, FAST, { typo: r === 1 }));
-      expect(!pwFb.some((f) => /부족|불일치|일치하지/.test(f || '')), `password enroll x4 (keyboard): ${pwFb.at(-1) || 'ok'}`);
+      const shortFb = await enrollPassword(page, 'Typist A', 'gachon2026', (pw) => keyboardPlan(pw, FAST), 1);
+      expect(/12자/.test(shortFb[0] || ''), `10-character password refused at enrolment: "${shortFb[0]}"`);
+      const pwFb = await enrollPassword(page, 'Typist A', PW, (pw, r) => keyboardPlan(pw, FAST, { typo: r === 1 }));
+      expect(!pwFb.some((f) => /부족|불일치|일치하지|12자/.test(f || '')), `password enroll x4 (keyboard, ${PW.length} chars): ${pwFb.at(-1) || 'ok'}`);
       const t0 = await pwTemplate(page, 'Typist A');
-      expect(t0 && t0.ex9 === 4 && t0.ex17 === 4, `password template holds both encoders: ${JSON.stringify(t0)}`);
-      const genuine = await verifyPassword(page, 'gachon2026', keyboardPlan('gachon2026', FAST));
+      expect(t0 && t0.ex9 === 4 && t0.ex17 === 4 && t0.capsUse?.[1] === 4, `password template: both encoders + capital habit (Shift x4): ${JSON.stringify(t0)}`);
+      const genuine = await verifyPassword(page, PW, keyboardPlan(PW, FAST));
       expect(genuine.pass && !genuine.reference, `genuine password login → ${genuine.title} ${genuine.score} | ${genuine.meta}`);
       const t1 = await pwTemplate(page, 'Typist A');
       expect(t1.count === t0.count + 1 && /등록 리듬 갱신/.test(genuine.meta), `confident genuine login adapts the template: ${t0.count} -> ${t1.count}`);
-      const impostor = await verifyPassword(page, 'gachon2026', keyboardPlan('gachon2026', SLOW));
+      const impostor = await verifyPassword(page, PW, keyboardPlan(PW, SLOW));
       expect(!impostor.pass, `impostor with leaked password → ${impostor.title} ${impostor.score}`);
       const t2 = await pwTemplate(page, 'Typist A');
       expect(t2.count === t1.count, `rejected attempt does not touch the template (count ${t2.count})`);
-      const kbShape = await verifyPassword(page, 'gachon2026', keyboardPlan('gachon2026', FAST_OTHER_SHAPE));
+      // Same impostor rhythm, but capitals typed with CapsLock while the owner always uses Shift
+      const kbCaps = await verifyPassword(page, PW, keyboardPlan(PW, { ...FAST_OTHER_SHAPE, capsLock: true }));
+      const t3 = await pwTemplate(page, 'Typist A');
+      expect(!kbCaps.pass && t3.count === t2.count, `same-tempo impostor typing the capital with CapsLock (owner uses Shift) rejected → ${kbCaps.title} ${kbCaps.score}`);
+      const kbShape = await verifyPassword(page, PW, keyboardPlan(PW, FAST_OTHER_SHAPE));
       expectKnownLimitation(!kbShape.pass, `keyboard impostor (same tempo, other rhythm) rejected → ${kbShape.title} ${kbShape.score}`);
 
       // Samples load + identify with the rebuilt sample gallery present
@@ -440,14 +451,14 @@ async function run() {
       expect(Boolean(mid.title) && !/부족/.test(mid.feedback || ''), `blind 1:N (touch) → "${mid.title}" | ${mid.meta}`);
       if (SHOT_DIR) await page.screenshot({ path: path.join(SHOT_DIR, 'smoke_mobile_identify.png') });
 
-      const pwFb = await enrollPassword(page, '모바일 사용자', 'gachon2026', (pw) => touchPlan(pw, THUMB));
+      const pwFb = await enrollPassword(page, '모바일 사용자', PW, (pw) => touchPlan(pw, THUMB));
       expect(!pwFb.some((f) => /부족|불일치|일치하지/.test(f || '')), `password enroll x4 (touch): ${pwFb.at(-1) || 'ok'}`);
-      const mv = await verifyPassword(page, 'gachon2026', touchPlan('gachon2026', THUMB));
+      const mv = await verifyPassword(page, PW, touchPlan(PW, THUMB));
       expect(mv.pass, `genuine touch password login → ${mv.title} ${mv.score} | ${mv.meta}`);
       expect(mv.reference && /모바일 참고용/.test(mv.kicker || ''), `touch password verdict labelled reference-only: "${mv.kicker}"`);
-      const mi1 = await verifyPassword(page, 'gachon2026', touchPlan('gachon2026', THUMB_SLOW));
+      const mi1 = await verifyPassword(page, PW, touchPlan(PW, THUMB_SLOW));
       expectKnownLimitation(!mi1.pass, `touch impostor (other rhythm, slower) rejected → ${mi1.title} ${mi1.score}`);
-      const mi2 = await verifyPassword(page, 'gachon2026', touchPlan('gachon2026', THUMB_SAME_TEMPO));
+      const mi2 = await verifyPassword(page, PW, touchPlan(PW, THUMB_SAME_TEMPO));
       expectKnownLimitation(!mi2.pass, `touch impostor (same tempo, other rhythm) rejected → ${mi2.title} ${mi2.score}`);
 
       blocked.http.forEach((h) => allBlocked.http.add(h));

@@ -269,3 +269,161 @@ def adaptation_eval(h: np.ndarray, d: np.ndarray, P: np.ndarray, S: np.ndarray, 
                 far += list(dual_z(raw_similarity(E9[oi], t9), raw_similarity(E17[oi], t17), prm) >= prm["tau"])
         out[policy] = {**{f"frr_{b}": round(float(np.mean(v)), 4) for b, v in frr.items()}, "far": round(float(np.mean(far)), 4)}
     return out
+
+
+# ---------------------------------------------------------------------------------------
+# Length-aware calibration: the dual z grows with password length, so a single tau fitted on
+# 6-10 character strings is too lenient for 12+ characters (impostors pass at the same rate while
+# only the owner's rejections fall). tau / mu / sigma are fitted per length and interpolated.
+# ---------------------------------------------------------------------------------------
+CALIB_LENGTHS = (8, 10, 12, 14, 16, 20)
+
+
+def strings_of_length(tabs, people: Sequence[str], length: int, n: int, rng, exclude=(), min_share: float = 0.7) -> List[str]:
+    """Random letter strings of an exact length built from digraphs most people typed in both sessions."""
+    pair_ok = {a + b: sum(covered(tabs[(p, s)], a + b) for p in people for s in (1, 2)) >= 0.85 * 2 * len(people)
+               for a in LETTERS for b in LETTERS}
+    out, tries = [], 0
+    while len(out) < n and tries < 200000:
+        tries += 1
+        w = LETTERS[rng.integers(26)]
+        while len(w) < length:
+            nxt = [b for b in LETTERS if pair_ok[w[-1] + b] and b != w[-1]]
+            if not nxt:
+                break
+            w += nxt[rng.integers(len(nxt))]
+        if len(w) != length or w in out or w in exclude:
+            continue
+        if sum(all(covered(tabs[(p, s)], w) for s in (1, 2)) for p in people) >= max(6, int(min_share * len(people))):
+            out.append(w)
+    return out
+
+
+def calibrate_by_length(rows_by_len: Dict[int, List[Dict]], frr_target: float = 0.10) -> List[Dict]:
+    table = []
+    for L in sorted(rows_by_len):
+        c = calibrate_dual(rows_by_len[L], frr_target)
+        table.append({"length": int(L), "keyboard": c["kb"], "touch": c["touch"]})
+    return table
+
+
+def params_for_length(table: List[Dict], length: int, mode: str) -> Dict[str, float]:
+    """Linear interpolation between calibrated lengths (clamped). Mirrors features.js dualParamsForLength."""
+    key = "touch" if mode == "touch" else "keyboard"
+    rows = sorted(table, key=lambda r: r["length"])
+    if length <= rows[0]["length"]:
+        return dict(rows[0][key])
+    if length >= rows[-1]["length"]:
+        return dict(rows[-1][key])
+    for lo, hi in zip(rows, rows[1:]):
+        if lo["length"] <= length <= hi["length"]:
+            f = (length - lo["length"]) / (hi["length"] - lo["length"])
+            return {k: lo[key][k] + f * (hi[key][k] - lo[key][k]) for k in lo[key]}
+    return dict(rows[-1][key])
+
+
+def evaluate_lengths(rows_by_len: Dict[int, List[Dict]], fixed: Dict, table: List[Dict]) -> Dict:
+    """Test people: fixed (6-10 char) calibration vs length-aware calibration, per length and mode."""
+    out = {}
+    for L, rows in sorted(rows_by_len.items()):
+        out[str(L)] = {}
+        for mode in ("kb", "touch"):
+            r = [x for x in rows if x["mode"] == mode]
+            y = np.array([x["label"] for x in r])
+            r9, r17 = [x["raw9"] for x in r], [x["raw17"] for x in r]
+            res = {"num_genuine": int(y.sum()), "num_impostor": int((y == 0).sum())}
+            for name, prm in (("fixed_6_10", fixed[mode]), ("length_aware", params_for_length(table, L, mode))):
+                z = dual_z(r9, r17, prm)
+                acc = z >= prm["tau"]
+                res[name] = {"far": round(float(acc[y == 0].mean()), 4), "frr": round(float((~acc[y == 1]).mean()), 4)}
+            z = dual_z(r9, r17, params_for_length(table, L, mode))
+            res["roc_auc"] = round(float(roc_auc_score(y, z)), 4)
+            res["eer"] = round(_eer(y, z), 4)
+            out[str(L)][mode] = res
+    return out
+
+
+# ---------------------------------------------------------------------------------------
+# Capital letters: Shift vs CapsLock habit. In KeyRecs ~31% of capitals are typed with CapsLock and
+# 99% of people keep the same habit across days, while Shift lead/release timing of a single capital
+# is too noisy to help. The habit enters the password score as a predictive log-likelihood ratio.
+# ---------------------------------------------------------------------------------------
+def capital_method_rates(raw_sessions, min_capitals: int = 5) -> Dict[Tuple[str, int], float]:
+    """{(person, session): share of capitals typed with CapsLock (vs Shift)}."""
+    counts = defaultdict(lambda: [0, 0])
+    for key, ev in raw_sessions.items():
+        caps_on = False
+        for i in range(len(ev) - 1):
+            label = ev[i][0]
+            if label == "CapsLock":
+                caps_on = not caps_on
+            nxt = ev[i + 1][0]
+            if len(nxt) == 1 and nxt.isalpha() and nxt.isupper():
+                if label == "Shift":
+                    counts[key][1] += 1
+                elif caps_on:
+                    counts[key][0] += 1
+    return {k: v[0] / sum(v) for k, v in counts.items() if sum(v) >= min_capitals}
+
+
+def capital_llr(q_caps: bool, n_caps: int, n_total: int, caps_share: float, alpha: float = 2.0) -> float:
+    """log P(method | this person's enrolment, Beta-smoothed) - log P(method | population)."""
+    r = (n_caps + alpha * caps_share) / (n_total + alpha)
+    return float(np.log((r if q_caps else 1 - r) / (caps_share if q_caps else 1 - caps_share)))
+
+
+def capital_trials(tabs, rates, people, length: int, n_words: int, embed9, embed17, bounds, mean, std, touch_hold,
+                   prm: Dict[str, float], rng, k_enroll: int = 4) -> List[Tuple[int, float, bool, int]]:
+    """Keyboard passwords of `length` letters whose first letter is a capital; each attempt's method is
+    drawn from that person's own CapsLock rate in that session. Rows: (label, z, query_caps, enrol_caps)."""
+    people = [p for p in people if (p, 1) in tabs and (p, 2) in tabs and (p, 1) in rates and (p, 2) in rates]
+    words = strings_of_length(tabs, people, length, n_words, rng)
+    rows = []
+    for w in words:
+        ppl = [p for p in people if all(covered(tabs[(p, s)], w) for s in (1, 2))]
+        att = lambda p, s: (synth(tabs[(p, s)], w, rng), bool(rng.random() < rates[(p, s)]))  # noqa: E731
+        typ = {p: {"e": [att(p, 1) for _ in range(k_enroll)], "g": [att(p, s) for s in (1, 1, 2, 2)], "i": [att(p, 2) for _ in range(2)]}
+               for p in ppl}
+        keys = [(p, k, i) for p in ppl for k in ("e", "g", "i") for i in range(len(typ[p][k]))]
+        T = typing_tensors(w, [typ[p][k][i][0] for p, k, i in keys], bounds, mean, std, False, touch_hold)
+        E9, E17 = embed9(T).astype(np.float64), embed17(T).astype(np.float64)
+        ix = defaultdict(list)
+        for j, kk in enumerate(keys):
+            ix[kk[:2]].append(j)
+        for p in ppl:
+            t9, t17 = make_template(E9[ix[(p, "e")]]), make_template(E17[ix[(p, "e")]])
+            n_caps = sum(c for _, c in typ[p]["e"])
+            for q in ppl:
+                tag = "g" if q == p else "i"
+                J = ix[(q, tag)]
+                z = dual_z(raw_similarity(E9[J], t9), raw_similarity(E17[J], t17), prm)
+                for zz, (_, c) in zip(z, typ[q][tag]):
+                    rows.append((int(q == p), float(zz), bool(c), int(n_caps)))
+    return rows
+
+
+def capital_fusion(val_rows, test_rows, caps_share: float, k_enroll: int = 4, frr_target: float = 0.10,
+                   grid: Sequence[float] = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0)) -> Dict:
+    """Weight w of z + w*LLR chosen on Validation (lowest FAR at the target FRR) and the tau offset that
+    keeps the FRR there; Test FAR/FRR with and without the cue."""
+    def arr(rows, w):
+        y = np.array([r[0] for r in rows])
+        s = np.array([r[1] + w * capital_llr(r[2], r[3], k_enroll, caps_share) for r in rows])
+        return y, s
+
+    def at(rows, w, thr):
+        y, s = arr(rows, w)
+        return float(np.mean(s[y == 0] >= thr)), float(np.mean(s[y == 1] < thr))
+
+    thr = {}
+    for w in grid:
+        y, s = arr(val_rows, w)
+        thr[w] = float(np.quantile(s[y == 1], frr_target))
+    best = min(grid, key=lambda w: at(val_rows, w, thr[w])[0])
+    far0, frr0 = at(test_rows, 0.0, thr[0.0])
+    far1, frr1 = at(test_rows, best, thr[best])
+    return {"weight": best, "tau_offset": round(thr[best] - thr[0.0], 4), "caps_share": round(caps_share, 4),
+            "validation_far_by_weight": {str(w): round(at(val_rows, w, thr[w])[0], 4) for w in grid},
+            "test_without": {"far": round(far0, 4), "frr": round(frr0, 4)},
+            "test_with": {"far": round(far1, 4), "frr": round(frr1, 4)},
+            "num_test_genuine": int(sum(r[0] for r in test_rows)), "num_test_impostor": int(sum(1 - r[0] for r in test_rows))}

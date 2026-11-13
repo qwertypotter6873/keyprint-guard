@@ -1,5 +1,5 @@
 {
-  "elapsed_seconds": 67.98,
+  "elapsed_seconds": 66.82,
   "device": "mps (mps)",
   "preprocessing": {
     "before_mean_skewness": 8.9625,
@@ -1535,6 +1535,437 @@
             "frr_s2_reps_1_10": 0.05,
             "frr_s2_reps_91_100": 0.0343,
             "far": 0.3
+          }
+        }
+      }
+    },
+    "password_capital_method": {
+      "weight": 3.0,
+      "tau_offset": 0.9873,
+      "caps_share": 0.3095,
+      "validation_far_by_weight": {
+        "0.0": 0.2425,
+        "0.5": 0.2153,
+        "1.0": 0.1725,
+        "1.5": 0.158,
+        "2.0": 0.1418,
+        "3.0": 0.1354
+      },
+      "test_without": {
+        "far": 0.1739,
+        "frr": 0.0709
+      },
+      "test_with": {
+        "far": 0.119,
+        "frr": 0.081
+      },
+      "num_test_genuine": 988,
+      "num_test_impostor": 7688,
+      "habit_same_across_days": 0.9895,
+      "people_mostly_capslock": 25,
+      "people_with_capitals": 95
+    },
+    "password_length_calibration": {
+      "min_length": 12,
+      "table": [
+        {
+          "length": 8,
+          "keyboard": {
+            "mu9": 0.2107,
+            "sd9": 0.20485,
+            "mu17": 0.31202,
+            "sd17": 0.21761,
+            "tau": 0.4821
+          },
+          "touch": {
+            "mu9": 0.51397,
+            "sd9": 0.22262,
+            "mu17": 0.43677,
+            "sd17": 0.24133,
+            "tau": -0.3853
+          }
+        },
+        {
+          "length": 10,
+          "keyboard": {
+            "mu9": 0.18806,
+            "sd9": 0.1929,
+            "mu17": 0.30923,
+            "sd17": 0.20372,
+            "tau": 1.0107
+          },
+          "touch": {
+            "mu9": 0.55609,
+            "sd9": 0.18295,
+            "mu17": 0.44093,
+            "sd17": 0.20988,
+            "tau": -0.3362
+          }
+        },
+        {
+          "length": 12,
+          "keyboard": {
+            "mu9": 0.18688,
+            "sd9": 0.19241,
+            "mu17": 0.3024,
+            "sd17": 0.20496,
+            "tau": 1.5105
+          },
+          "touch": {
+            "mu9": 0.55287,
+            "sd9": 0.17018,
+            "mu17": 0.44013,
+            "sd17": 0.21453,
+            "tau": 0.1875
+          }
+        },
+        {
+          "length": 14,
+          "keyboard": {
+            "mu9": 0.22725,
+            "sd9": 0.20616,
+            "mu17": 0.35929,
+            "sd17": 0.20787,
+            "tau": 1.7764
+          },
+          "touch": {
+            "mu9": 0.63856,
+            "sd9": 0.15965,
+            "mu17": 0.51765,
+            "sd17": 0.20269,
+            "tau": 0.2967
+          }
+        },
+        {
+          "length": 16,
+          "keyboard": {
+            "mu9": 0.23972,
+            "sd9": 0.21854,
+            "mu17": 0.36975,
+            "sd17": 0.21829,
+            "tau": 1.9681
+          },
+          "touch": {
+            "mu9": 0.68707,
+            "sd9": 0.13581,
+            "mu17": 0.55223,
+            "sd17": 0.19779,
+            "tau": 0.3088
+          }
+        },
+        {
+          "length": 20,
+          "keyboard": {
+            "mu9": 0.26546,
+            "sd9": 0.23436,
+            "mu17": 0.41098,
+            "sd17": 0.21134,
+            "tau": 2.4118
+          },
+          "touch": {
+            "mu9": 0.71738,
+            "sd9": 0.13887,
+            "mu17": 0.60271,
+            "sd17": 0.17182,
+            "tau": 0.8614
+          }
+        }
+      ],
+      "strings": {
+        "val": {
+          "8": [
+            "vechopli",
+            "plyerotr",
+            "crshifow",
+            "kirtaliz",
+            "urwhetsn",
+            "icavitaw",
+            "ovepakil",
+            "shaseoun",
+            "bulerwha",
+            "veldalow",
+            "mutinisa",
+            "yofepavi",
+            "playopan",
+            "arkiedoc",
+            "rornsout"
+          ],
+          "10": [
+            "dspazernys",
+            "uneabeleak",
+            "pentortugo",
+            "lspengeyta",
+            "burshrmaze",
+            "zepaterirm",
+            "lyevizepay",
+            "siomontcai",
+            "nolytizely",
+            "atshrlytor",
+            "crorldetev",
+            "zeaveopeve",
+            "wosplsemim",
+            "zeyopepeca",
+            "bloshaitin"
+          ],
+          "12": [
+            "zevitrieotig",
+            "beveviedoveo",
+            "keototsuteca",
+            "unigeparthow",
+            "ugedonepeons",
+            "gacrkecleoug",
+            "uncrsturmuce",
+            "heolstrosiel",
+            "fleopemotirk",
+            "irsngaburmor",
+            "rmaunsthazey",
+            "bldostiostic",
+            "veytrlowhery",
+            "ulutaurnetiv",
+            "teyocakeawnc"
+          ],
+          "14": [
+            "bluclosadendso",
+            "whtoureolabedi",
+            "seperndimilyto",
+            "agedeysuniover",
+            "ucethidosunlin",
+            "luthreyocreteo",
+            "zetawnthyowori",
+            "reyoveopazeduc",
+            "dawnsnentasnda",
+            "irlyovielofepe",
+            "ourotisontonen",
+            "vilfalitalstol",
+            "oviemotevikepe",
+            "anyowitusplaiz",
+            "shecranepeleyo"
+          ],
+          "16": [
+            "gadisormusivivil",
+            "socricoplazerabl",
+            "ndeagespakeyoune",
+            "yspecernsakedulo",
+            "akemoncrowngotel",
+            "aucrkevemonirnen",
+            "bulechiedusomare",
+            "zeplosngantirwht",
+            "ovicazenovistrsu",
+            "becoldietheplsot",
+            "suleveveaughtine",
+            "ausurnotatcldiev",
+            "inolyshadshetsak",
+            "yesiosesngazepak",
+            "ucazeclosabeyseo"
+          ],
+          "20": [
+            "undsoseartathtovigor",
+            "womelizevinyosizeort",
+            "veonyemunolusemicedi",
+            "rmucasowotiomonlflom",
+            "whrnyeonolentcororem",
+            "keyofrlysanitoleagea",
+            "ghyosalifolyenlfldes",
+            "takirindarmournetsnc",
+            "utchelepenofeleshtch",
+            "zepamolendieseazeldo",
+            "motachytrandsulatral",
+            "ulfofropeasthysoshtu",
+            "nemowongolstarepeyen",
+            "whrythotopeazeseceyt",
+            "ytredonentaurnerownc"
+          ]
+        },
+        "test": {
+          "8": [
+            "oletsifo",
+            "pertcepe",
+            "ikispeas",
+            "youthago",
+            "rteldawo",
+            "olofaver",
+            "nowhryts",
+            "lawovecr",
+            "honimash",
+            "hesosock",
+            "rlsnilda",
+            "owosughe",
+            "wondasas",
+            "nsakitaw",
+            "turkeytu"
+          ],
+          "12": [
+            "ugowngighaul",
+            "veowiluchyen",
+            "copladutsige",
+            "iensaveracla",
+            "bugaveolomov",
+            "zedeyotoflab",
+            "aysackitrnta",
+            "mitulutaceou",
+            "nounitheplys",
+            "hteonienizen",
+            "tugaysaredov",
+            "makimunirife",
+            "sospatidayof",
+            "heosivepelun",
+            "kiluseryetsp"
+          ],
+          "16": [
+            "nloveraluckizeon",
+            "ldosersugasawndi",
+            "kerwnitsndsocldi",
+            "zepetagazesulden",
+            "wnsonsabulystesh",
+            "ontulosaiduradse",
+            "gouchrkithizemed",
+            "keysosavelyonopl",
+            "plulawnocaspespl",
+            "enosepabepenetsp",
+            "ldiedutemickivig",
+            "kishotigaucadeti",
+            "nikinifeldernlda",
+            "nyosnthifloplyso",
+            "gioncldaifoureds"
+          ],
+          "20": [
+            "rwaspldolughedaghiri",
+            "ugeyomutsugivenikeye",
+            "ensugofanowosofeowiz",
+            "blyelecrmoveopawonyt",
+            "spausabluteysulovize",
+            "ngacoviousivizemoung",
+            "insopakioungaviosotr",
+            "zetrtckisoseostoplik",
+            "cevesplowigetotckize",
+            "veveldotavepanorocrt",
+            "chedsawhretshythrkey",
+            "zeluledontazenlsotab",
+            "dstcabucabuleviferte",
+            "akeyeavengiclaysnsim",
+            "izevirazeyesorifrspl"
+          ]
+        }
+      },
+      "test": {
+        "8": {
+          "kb": {
+            "num_genuine": 1536,
+            "num_impostor": 8268,
+            "fixed_6_10": {
+              "far": 0.3264,
+              "frr": 0.0794
+            },
+            "length_aware": {
+              "far": 0.3205,
+              "frr": 0.0833
+            },
+            "roc_auc": 0.9141,
+            "eer": 0.1744
+          },
+          "touch": {
+            "num_genuine": 1536,
+            "num_impostor": 8268,
+            "fixed_6_10": {
+              "far": 0.5246,
+              "frr": 0.0788
+            },
+            "length_aware": {
+              "far": 0.5539,
+              "frr": 0.0697
+            },
+            "roc_auc": 0.8436,
+            "eer": 0.239
+          }
+        },
+        "12": {
+          "kb": {
+            "num_genuine": 1488,
+            "num_impostor": 7736,
+            "fixed_6_10": {
+              "far": 0.3441,
+              "frr": 0.0282
+            },
+            "length_aware": {
+              "far": 0.207,
+              "frr": 0.08
+            },
+            "roc_auc": 0.9514,
+            "eer": 0.1275
+          },
+          "touch": {
+            "num_genuine": 1488,
+            "num_impostor": 7736,
+            "fixed_6_10": {
+              "far": 0.6503,
+              "frr": 0.0249
+            },
+            "length_aware": {
+              "far": 0.522,
+              "frr": 0.0524
+            },
+            "roc_auc": 0.8771,
+            "eer": 0.2105
+          }
+        },
+        "16": {
+          "kb": {
+            "num_genuine": 1416,
+            "num_impostor": 7024,
+            "fixed_6_10": {
+              "far": 0.3993,
+              "frr": 0.0071
+            },
+            "length_aware": {
+              "far": 0.12,
+              "frr": 0.1059
+            },
+            "roc_auc": 0.9622,
+            "eer": 0.1131
+          },
+          "touch": {
+            "num_genuine": 1416,
+            "num_impostor": 7024,
+            "fixed_6_10": {
+              "far": 0.744,
+              "frr": 0.0035
+            },
+            "length_aware": {
+              "far": 0.3761,
+              "frr": 0.0685
+            },
+            "roc_auc": 0.9093,
+            "eer": 0.1766
+          }
+        },
+        "20": {
+          "kb": {
+            "num_genuine": 1320,
+            "num_impostor": 6104,
+            "fixed_6_10": {
+              "far": 0.4531,
+              "frr": 0.003
+            },
+            "length_aware": {
+              "far": 0.0693,
+              "frr": 0.1348
+            },
+            "roc_auc": 0.9703,
+            "eer": 0.0972
+          },
+          "touch": {
+            "num_genuine": 1320,
+            "num_impostor": 6104,
+            "fixed_6_10": {
+              "far": 0.7675,
+              "frr": 0.0008
+            },
+            "length_aware": {
+              "far": 0.2561,
+              "frr": 0.1045
+            },
+            "roc_auc": 0.92,
+            "eer": 0.1719
           }
         }
       }

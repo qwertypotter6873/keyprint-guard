@@ -779,7 +779,7 @@ async function handleGuardEnrollSubmit() {
   }
 
   const capture = guardEnrollRecorder.extractCleanStroke();
-  const check = validatePasswordCapture(capture, targetPw);
+  const check = validatePasswordCapture(capture, targetPw, { minLength: engine.config?.password_min_length ?? 12 });
   if (!check.ok) {
     setFeedback($('guard-enroll-feedback'), check.message, 'error');
     $('guard-enroll-input').value = '';
@@ -792,6 +792,7 @@ async function handleGuardEnrollSubmit() {
   state.pwEnrollBuffer.items.push({
     embedding: both.password,
     embedding17: both.sentence,
+    capitalMethods: capture.capitalMethods,
     cpm: capture.cpm,
     holdMs: capture.holdMs,
     rolloverPct: capture.rolloverPct,
@@ -859,7 +860,7 @@ async function handleGuardVerifySubmit() {
   const expectedPw = targetAcc.password.target;
 
   const capture = guardVerifyRecorder.extractCleanStroke();
-  const check = validatePasswordCapture(capture, expectedPw);
+  const check = validatePasswordCapture(capture, expectedPw, { minLength: 1 });
 
   $('guard-verify-input').value = '';
   guardVerifyRecorder.reset();
@@ -892,6 +893,7 @@ async function handleGuardVerifySubmit() {
     behavior: capture.behavior,
     inputMode: capture.inputMode,
     embedding17,
+    capitalMethods: capture.capitalMethods,
   };
   const res = engine.scoreTemplate(embedding, targetAcc.password, scoreOpts);
   const threshold = res.threshold;
@@ -909,6 +911,7 @@ async function handleGuardVerifySubmit() {
       rolloverPct: capture.rolloverPct,
       behavior: capture.behavior,
       inputMode: capture.inputMode,
+      capitalMethods: capture.capitalMethods,
     });
     roomSync.upsertProfile({ ...targetAcc, password: { ...merged, target: targetAcc.password.target } });
     adapted = true;

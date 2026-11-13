@@ -354,6 +354,46 @@ export function dualPasswordScore(emb9, emb17, tmpl9, tmpl17, prm, slope = 1.0) 
   return { z, raw9: r9.raw, raw17: r17.raw, centroidSim: r9.centroidSim, similarity: 1 / (1 + Math.exp(-slope * (z - prm.tau))) };
 }
 
+/**
+ * Dual-score parameters for a password of `length` characters: linear interpolation between the
+ * lengths calibrated by the pipeline (z grows with length, so one tau would be too lenient for long
+ * passwords). Mirrors password_synth.params_for_length.
+ */
+export function dualParamsForLength(dualCfg, inputMode, length) {
+  const key = inputMode === 'touch' ? 'touch' : 'keyboard';
+  const rows = Array.isArray(dualCfg?.by_length) ? [...dualCfg.by_length].sort((a, b) => a.length - b.length) : [];
+  if (!rows.length || !Number.isFinite(length)) return dualCfg[key];
+  if (length <= rows[0].length) return { ...rows[0][key] };
+  if (length >= rows[rows.length - 1].length) return { ...rows[rows.length - 1][key] };
+  for (let i = 0; i < rows.length - 1; i++) {
+    const lo = rows[i];
+    const hi = rows[i + 1];
+    if (lo.length <= length && length <= hi.length) {
+      const f = (length - lo.length) / (hi.length - lo.length);
+      const out = {};
+      for (const k of Object.keys(lo[key])) out[k] = lo[key][k] + f * (hi[key][k] - lo[key][k]);
+      return out;
+    }
+  }
+  return { ...rows[rows.length - 1][key] };
+}
+
+/**
+ * Capital letters typed with CapsLock vs Shift: log P(method | enrolment, Beta-smoothed toward the
+ * population share) − log P(method | population). Mirrors password_synth.capital_llr.
+ */
+export function capitalMethodLlr(queryIsCaps, nCaps, nTotal, capsShare, alpha = 2.0) {
+  const r = (nCaps + alpha * capsShare) / (nTotal + alpha);
+  return Math.log((queryIsCaps ? r : 1 - r) / (queryIsCaps ? capsShare : 1 - capsShare));
+}
+
+/** Majority capital method of one attempt ('caps' | 'shift'), or null when it had no capitals. */
+export function attemptCapitalMethod(methods) {
+  if (!Array.isArray(methods) || methods.length === 0) return null;
+  const caps = methods.filter((m) => m === 'caps').length;
+  return caps * 2 > methods.length ? 'caps' : caps * 2 < methods.length ? 'shift' : methods[methods.length - 1];
+}
+
 /** Several captures typed in a row scored as one query: mean embedding, re-normalised. */
 export function combineEmbeddings(list) {
   const dim = list[0].length;
