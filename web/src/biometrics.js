@@ -190,6 +190,13 @@ export class KeyPrintEngine {
     return base;
   }
 
+  /** Extra practice on an existing profile: one sentence must verify 1:1 above this (README §5.6). */
+  arenaAddThreshold(inputMode = 'keyboard') {
+    const base = this.config?.arena_add_threshold ?? this.arenaThreshold('keyboard');
+    if (inputMode === 'touch') return this.config?.arena_add_threshold_touch ?? base;
+    return base;
+  }
+
   /** Typing practice: the winner must also lead the runner-up by this margin (README §5.6). */
   arenaMargin(inputMode = 'keyboard') {
     const base = this.config?.arena_margin ?? 0;

@@ -584,3 +584,29 @@ def tune_open_set_rule(mat: Dict, gallery: int, target_correct_accept: float,
     if best is None:
         return {"threshold": 0.5, "margin": 0.0}
     return {"threshold": best[1], "margin": best[2]}
+
+
+def sentence_add_check(val_bank, test_bank, emb_key: str, cohort: np.ndarray, behavior_model: Optional[BehaviorModel],
+                       beta: float, k_enroll: int, frr_target: float = 0.10) -> Dict:
+    """Extra practice on an existing profile: one sentence is added only if it verifies 1:1 against that
+    profile. Threshold = Validation genuine quantile at `frr_target`; Test FAR = other people's single
+    sentences that would slip into someone else's profile."""
+    def scores(bank):
+        m = open_set_matrix(bank, emb_key, cohort, behavior_model, beta, k_enroll, 1)
+        S, P = m["S"], m["person"]
+        rows = np.arange(len(P))
+        gen = S[rows, P]
+        mask = np.ones_like(S, dtype=bool)
+        mask[rows, P] = False
+        return gen, S[mask]
+
+    gv, iv = scores(val_bank)
+    gt, it = scores(test_bank)
+    thr = float(np.quantile(gv, frr_target))
+    return {
+        "threshold": round(thr, 4),
+        "frr_target": frr_target,
+        "validation": {"frr": round(float(np.mean(gv < thr)), 4), "far": round(float(np.mean(iv >= thr)), 4)},
+        "test": {"frr": round(float(np.mean(gt < thr)), 4), "far": round(float(np.mean(it >= thr)), 4),
+                 "num_genuine": int(len(gt)), "num_impostor": int(len(it))},
+    }

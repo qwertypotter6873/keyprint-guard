@@ -1,5 +1,5 @@
 {
-  "elapsed_seconds": 66.82,
+  "elapsed_seconds": 63.88,
   "device": "mps (mps)",
   "preprocessing": {
     "before_mean_skewness": 8.9625,
@@ -2057,6 +2057,36 @@
             "misidentified": 0.0157,
             "outsider_accepted": 0.061
           }
+        }
+      }
+    },
+    "arena_add_check": {
+      "keyboard": {
+        "threshold": 0.7159,
+        "frr_target": 0.1,
+        "validation": {
+          "frr": 0.1008,
+          "far": 0.0353
+        },
+        "test": {
+          "frr": 0.2171,
+          "far": 0.0249,
+          "num_genuine": 1170,
+          "num_impostor": 19890
+        }
+      },
+      "touch": {
+        "threshold": 0.481,
+        "frr_target": 0.1,
+        "validation": {
+          "frr": 0.1008,
+          "far": 0.16
+        },
+        "test": {
+          "frr": 0.2239,
+          "far": 0.0951,
+          "num_genuine": 1170,
+          "num_impostor": 19890
         }
       }
     }
