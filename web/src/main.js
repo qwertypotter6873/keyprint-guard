@@ -517,7 +517,7 @@ function renderModalProfiles() {
 
       return `<li class="profile-row">
         <div class="profile-row-left">
-          <span class="chip-avatar" style="background:${col};width:26px;height:26px;font-size:0.78rem">${initial}</span>
+          <span class="chip-avatar" style="background:${col}">${initial}</span>
           <div>
             <div><strong>${escapeHtml(safeName)}</strong> <span class="chip-count">${escapeHtml(
               badges.join(' · ')

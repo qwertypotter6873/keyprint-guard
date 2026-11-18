@@ -467,8 +467,10 @@ body {
 }
 
 .chip-avatar {
-  width: 18px;
-  height: 18px;
+  --avatar-size: 18px;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  flex: none;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
@@ -527,7 +529,7 @@ body {
   text-align: left;
 }
 
-.arena-roster :is(.chip-avatar, .chip-count) {
+.arena-roster .chip-count {
   flex: none;
 }
 
@@ -1233,6 +1235,12 @@ body {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.profile-row-left .chip-avatar {
+  --avatar-size: 26px;
+  font-size: 0.78rem;
 }
 
 .profile-meta-line {

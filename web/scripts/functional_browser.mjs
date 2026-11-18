@@ -236,13 +236,25 @@ try {
     assert.ok(sentence.overflow <= 1 && password.overflow <= 1, `Encoder text fits at ${width}px`);
     assert.ok(width <= 680 ? sentence.bottom < password.top : sentence.right < password.left, `Encoder blocks fit at ${width}px`);
     await page.click('#nav-arena-btn');
+    await page.click('#arena-manage-link');
+    const dialog = page.locator('#room-dialog[open]');
+    assert.equal(await dialog.count(), 1);
+    const profileRows = await dialog.locator('.profile-row').evaluateAll(rows => rows.map(row => {
+      const avatar = row.querySelector('.chip-avatar').getBoundingClientRect();
+      const details = row.querySelector('.profile-row-left');
+      return { width: avatar.width, height: avatar.height, overflow: details.scrollWidth - details.clientWidth };
+    }));
+    assert.equal(profileRows.length, 5);
+    for (const avatar of profileRows) {
+      assert.ok(avatar.width > 0 && Math.abs(avatar.width - avatar.height) <= 0.25,
+        `Profile avatar stays circular at ${width}px (got ${avatar.width} × ${avatar.height}px)`);
+      assert.ok(avatar.overflow <= 1, `Profile details fit at ${width}px`);
+    }
+    await page.click('#close-room-btn');
   }
   await page.setViewportSize({ ...viewport, width: 320 });
   await page.click('#lang-ko-btn');
   assert.equal(await page.getAttribute('#arena-korean-study-link', 'href'), './korean-study.html');
-  await page.click('#arena-manage-link');
-  assert.equal(await page.locator('#room-dialog[open]').count(), 1);
-  await page.click('#close-room-btn');
   await page.evaluate(() => window.__keyprintTestApi.roomSync.deleteProfile('responsive_korean_fixture'));
   await page.setViewportSize(viewport);
 
