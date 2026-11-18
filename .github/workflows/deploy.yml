@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('preview-check-{0}', github.event.pull_request.number) || 'pages' }}
+  group: ${{ github.ref == 'refs/heads/main' && 'pages' || format('web-check-{0}', github.ref) }}
   cancel-in-progress: true
 
 jobs:
@@ -42,13 +42,13 @@ jobs:
         run: node scripts/write_build_info.mjs
 
       - name: Upload Pages artifact
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./web/dist
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     permissions:
       pages: write
       id-token: write
