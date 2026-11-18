@@ -168,6 +168,7 @@ def collect_archive_sources(root: Path, pdf_override: Path | None = None) -> dic
     for name in MANDATORY_ARCHIVE_FILES:
         if name.startswith("research/korean-typing/"):
             add_file(root / name)
+    add_tree(root / "research" / "cross-device-and-calibration", suffixes=(".md", ".py", ".mjs", ".json"))
 
     # 4. Executed Jupyter notebook
     add_file(root / "notebooks" / "keyprint_training_pipeline.ipynb")

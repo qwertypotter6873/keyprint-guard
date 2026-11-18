@@ -1772,3 +1772,242 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 input[readonly] { opacity: .7; }
 
 .danger-sm-btn { flex-shrink: 0; white-space: nowrap; }
+
+/* ================= EVALUATION & CROSS-DEVICE FIELD LOGGER ================= */
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.eval-pill.is-recording {
+  border-color: rgba(5, 150, 105, 0.45);
+  background: var(--emerald-bg);
+  color: #065f46;
+}
+
+.eval-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--ink-primary);
+  color: #ffffff;
+  font-size: 0.71rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.eval-study-card {
+  margin-bottom: 18px;
+  padding: 20px 24px;
+  border: 1px solid var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.eval-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.eval-study-title {
+  margin: 2px 0 0;
+  font-size: 1.08rem;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+}
+
+.eval-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.eval-enable-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.eval-order-banner {
+  padding: 9px 13px;
+  border-radius: var(--radius-md);
+  background: var(--accent-blue-soft);
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  color: #1e3a8a;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.eval-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+}
+
+.eval-fieldset {
+  margin: 0;
+  padding: 13px 15px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.eval-legend {
+  padding: 0 6px;
+  font-size: 0.79rem;
+  font-weight: 700;
+  color: var(--ink-secondary);
+}
+
+.eval-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.eval-callout {
+  margin: 0;
+  padding: 8px 11px;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  color: var(--ink-secondary);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.eval-callout.is-warn {
+  background: var(--amber-bg);
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.eval-checks-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eval-check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.81rem;
+  color: var(--ink-secondary);
+  line-height: 1.45;
+}
+
+.eval-check-row input[type="checkbox"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.eval-sensor-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.eval-calib-mode-field {
+  flex: 1 1 300px;
+}
+
+.eval-motion-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.eval-sensor-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--ink-secondary);
+  font-size: 0.76rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.eval-sensor-pill.is-active {
+  background: var(--emerald-bg);
+  color: #065f46;
+}
+
+.eval-env-meta {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--ink-secondary);
+  font-family: var(--font-mono);
+}
+
+.eval-summary-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-hairline);
+}
+
+.eval-live-stats {
+  font-size: 0.81rem;
+  font-weight: 600;
+  color: var(--ink-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.eval-export-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.eval-import-label {
+  cursor: pointer;
+  margin: 0;
+}
+
+.eval-preset-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@media (max-width: 820px) {
+  .eval-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .eval-grid {
+    grid-template-columns: 1fr;
+  }
+}

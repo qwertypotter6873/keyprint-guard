@@ -1,0 +1,404 @@
+"""Unit & end-to-end regression tests for string cohort calibration, hold calibration, and field-study JSONL analysis."""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from analyze_field_study import analyze_jsonl_files, format_korean_summary  # noqa: E402
+from string_calibration import (  # noqa: E402
+    PUBLIC_EXPERIMENT_STRINGS,
+    STRING_FEATURE_NAMES,
+    apply_hold_calibration,
+    build_calibration_parity_cases,
+    extract_string_features,
+    predict_string_dual_params,
+)
+
+
+class CalibrationAndFieldStudyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.model_config = json.loads(
+            (REPO_ROOT / "web" / "public" / "models" / "model_config.json").read_text(encoding="utf-8")
+        )
+        cls.calib_bundle = json.loads(
+            (REPO_ROOT / "web" / "public" / "models" / "string_cohort_calibration.json").read_text(encoding="utf-8")
+        )
+        cls.parity_fixture = json.loads(
+            (REPO_ROOT / "web" / "scripts" / "fixtures" / "calibration_parity.json").read_text(encoding="utf-8")
+        )
+
+    def test_public_experiment_strings_stratification(self) -> None:
+        self.assertEqual(len(PUBLIC_EXPERIMENT_STRINGS), 24)
+        for length in (12, 16, 20):
+            sub = [s for s in PUBLIC_EXPERIMENT_STRINGS if s["length"] == length]
+            self.assertEqual(len(sub), 8)
+            self.assertEqual(sum(1 for s in sub if s["tier"] == "core"), 2)
+            for s in sub:
+                self.assertEqual(len(str(s["text"])), length)
+
+        rep_fx = extract_string_features("BookkeeperRoom77", self.calib_bundle["digraph_table"])
+        alt_fx = extract_string_features("formalsignalwork", self.calib_bundle["digraph_table"])
+        self.assertGreater(rep_fx["features"][0], 0.15)  # repeat_frac
+        self.assertEqual(alt_fx["features"][0], 0.0)
+        self.assertGreater(alt_fx["features"][2], rep_fx["features"][2])  # alt_hand_frac
+
+    def test_parity_fixture_matches_live_python(self) -> None:
+        live = build_calibration_parity_cases(self.model_config, self.calib_bundle)
+        self.assertEqual(live, self.parity_fixture)
+
+    def test_shrinkage_falls_back_to_length_baseline_on_unseen_transitions(self) -> None:
+        by_len = self.model_config["password_dual"]["by_length"]
+        empty_bundle = {
+            **self.calib_bundle,
+            "digraph_table": {},
+            "tau_offset": {"keyboard": 0.0, "touch": 0.0},
+        }
+        prm = predict_string_dual_params("CoffeeTree88", "touch", by_len, empty_bundle)
+        self.assertEqual(prm["support"], 0.0)
+        self.assertEqual(prm["shrink_weight"], 0.0)
+
+        supported = predict_string_dual_params("CoffeeTree88", "touch", by_len, self.calib_bundle)
+        self.assertGreater(supported["support"], 0.5)
+        self.assertGreater(supported["shrink_weight"], 0.5)
+        # Repeat-heavy touch passwords have higher impostor baseline mu17 and tighter sd17
+        self.assertGreater(supported["mu17"], prm["mu17"])
+        self.assertLess(supported["sd17"], prm["sd17"])
+
+    def test_physics_consistent_hold_calibration_preserves_ud_and_touch_nulls(self) -> None:
+        stroke = {
+            "holds": [0.120, None, 0.100],
+            "holdValid": [True, False, True],
+            "hCurr": [0.120, None],
+            "hNext": [None, 0.100],
+            "hvCurr": [True, False],
+            "hvNext": [False, True],
+            "dds": [0.200, 0.230],
+            "uds": [0.080, None],
+            "stitchFlags": [False, False],
+            "pairKeys": [["KeyA", "KeyB"], ["KeyB", "KeyC"]],
+        }
+        cal = apply_hold_calibration(stroke, delta_sec=0.030, recompute_ud=True)
+        self.assertAlmostEqual(cal["holds"][0], 0.090, places=7)
+        self.assertIsNone(cal["holds"][1])
+        self.assertAlmostEqual(cal["holds"][2], 0.070, places=7)
+        # UD[0] = DD[0] (0.200) - new_hCurr[0] (0.090) = 0.110
+        self.assertAlmostEqual(cal["uds"][0], 0.110, places=7)
+        self.assertIsNone(cal["uds"][1])
+
+        naive = apply_hold_calibration(stroke, delta_sec=0.030, recompute_ud=False)
+        self.assertAlmostEqual(naive["uds"][0], 0.080, places=7)  # broken UD != DD - H_curr
+
+    def test_analyze_field_study_end_to_end_multi_device_merge_and_rescore(self) -> None:
+        # Build realistic multi-device JSONL files (Device A: mechanical_linear, Device B: pantograph_external, Device C: touch_phone)
+        unit0 = [1.0] + [0.0] * 63
+        unit1 = [0.0, 1.0] + [0.0] * 62
+
+        raw_stroke_mech = {
+            "cpm": 320,
+            "holdMs": 82,
+            "rolloverPct": 22,
+            "backspaceCount": 0,
+            "cleanDigraphCount": 8,
+            "inputMode": "keyboard",
+            "capitalMethods": ["shift"],
+            "behavior": {"bs_rate": [0.0, 9]},
+            "holds": [0.082] * 9,
+            "holdValid": [True] * 9,
+            "hCurr": [0.082] * 8,
+            "hNext": [0.082] * 8,
+            "hvCurr": [True] * 8,
+            "hvNext": [True] * 8,
+            "dds": [0.175, 0.160, 0.190, 0.155, 0.180, 0.170, 0.165, 0.185],
+            "uds": [d - 0.082 for d in [0.175, 0.160, 0.190, 0.155, 0.180, 0.170, 0.165, 0.185]],
+            "stitchFlags": [False] * 8,
+            "pairKeys": [
+                ["KeyG", "KeyA"], ["KeyA", "KeyC"], ["KeyC", "KeyH"], ["KeyH", "KeyO"],
+                ["KeyO", "KeyN"], ["KeyN", "Digit2"], ["Digit2", "Digit0"], ["Digit0", "Digit2"],
+            ],
+            "pairKeysRedacted": False,
+        }
+        # Pantograph shifted by +28ms hold on identical DD rhythm
+        raw_stroke_panto = {
+            **raw_stroke_mech,
+            "holdMs": 110,
+            "holds": [0.110] * 9,
+            "hCurr": [0.110] * 8,
+            "hNext": [0.110] * 8,
+            "uds": [d - 0.110 for d in raw_stroke_mech["dds"]],
+        }
+
+        enr_mech = {
+            "schema": "kp-eval-log-v1",
+            "recordId": "ev_enr_mech_1",
+            "eventType": "enroll",
+            "recordedAt": "2026-11-19T01:00:00Z",
+            "domain": "arena",
+            "lang": "en",
+            "roomCode": "STUDY1",
+            "profileId": "u_p01",
+            "profileName": "참가자1",
+            "shotCount": 5,
+            "env": {
+                "participantId": "P01",
+                "os": "macOS",
+                "browser": "Chrome",
+                "timerResolutionUs": 5,
+                "keyboardType": "mechanical_linear",
+                "hangulLayout": "pc_2beolsik",
+                "layoutMismatch2Beolsik": False,
+                "posture": "desk_keyboard",
+                "sessionSlot": "day1_slot1",
+                "detectedInputMode": "keyboard",
+            },
+            "templateSummary": {
+                "count": 5,
+                "holdMs": 82,
+                "inputMode": "keyboard",
+                "centroid": unit0,
+                "exemplars": [unit0],
+                "behavior": {"bs_rate": [0.02, 50]},
+            },
+            "rawCaptures": [raw_stroke_mech],
+        }
+        enr_panto = {
+            **enr_mech,
+            "recordId": "ev_enr_panto_2",
+            "recordedAt": "2026-11-19T01:05:00Z",
+            "profileId": "u_p02",
+            "profileName": "참가자2",
+            "env": {**enr_mech["env"], "keyboardType": "pantograph_external", "sessionSlot": "day1_slot2"},
+            "templateSummary": {
+                "count": 5,
+                "holdMs": 110,
+                "inputMode": "keyboard",
+                "centroid": unit1,
+                "exemplars": [unit1],
+                "behavior": {"bs_rate": [0.08, 50]},
+            },
+            "rawCaptures": [raw_stroke_panto],
+        }
+        q_cross = {
+            "schema": "kp-eval-log-v1",
+            "recordId": "ev_q_cross_1",
+            "eventType": "query",
+            "domain": "arena",
+            "lang": "en",
+            "roomCode": "STUDY1",
+            "recordedAt": "2026-11-19T01:10:00Z",
+            "queryEnv": {
+                **enr_mech["env"],
+                "keyboardType": "pantograph_external",
+                "sessionSlot": "day1_slot2",
+            },
+            "groundTruth": {"role": "enrolled", "profileId": "u_p01", "profileName": "참가자1", "enrollEnv": None},
+            "crossDevice": True,
+            "candidateCount": 2,
+            "verdict": {
+                "winnerId": "u_p01",
+                "top1Score": 0.61,
+                "leadGap": 0.14,
+                "openSetThreshold": 0.42,
+                "marginThreshold": 0.03,
+                "accepted": True,
+                "rejectedByMargin": False,
+                "top1Correct": True,
+                "decisionCorrect": True,
+            },
+            "rankings": [
+                {"id": "u_p01", "name": "참가자1", "rank": 1, "similarity": 0.61, "embeddingSimilarity": 0.61, "behaviorLlr": 0.4},
+                {"id": "u_p02", "name": "참가자2", "rank": 2, "similarity": 0.47, "embeddingSimilarity": 0.47, "behaviorLlr": -0.3},
+            ],
+            "optInDiagnostics": {"rawCaptures": [raw_stroke_panto]},
+        }
+
+        # Touch enrollment + touch query with DeviceMotion + private custom password record
+        enr_touch = {
+            "schema": "kp-eval-log-v1",
+            "recordId": "ev_enr_touch_1",
+            "eventType": "enroll",
+            "recordedAt": "2026-11-19T02:00:00Z",
+            "domain": "arena",
+            "lang": "ko",
+            "roomCode": "STUDY1",
+            "profileId": "u_p01",
+            "profileName": "참가자1",
+            "shotCount": 5,
+            "env": {
+                "participantId": "P01",
+                "os": "iOS",
+                "browser": "Safari",
+                "timerResolutionUs": 100,
+                "keyboardType": "touch_phone",
+                "hangulLayout": "mobile_qwerty_2beolsik",
+                "layoutMismatch2Beolsik": False,
+                "posture": "hand_two_thumbs",
+                "sessionSlot": "day1_slot3",
+                "detectedInputMode": "touch",
+            },
+            "templateSummary": {"count": 5, "holdMs": 0, "inputMode": "touch", "centroid": unit0, "exemplars": [unit0]},
+            "deviceMotion": {
+                "available": True,
+                "effectiveHz": 60.0,
+                "medianIntervalMs": 16.67,
+                "tapImpulseMean": 0.62,
+                "linearAccelRms": 0.31,
+                "gyroRms": 5.4,
+                "pitchDeg": 34.0,
+                "inferredPosture": "in_hand",
+            },
+        }
+        q_touch = {
+            "schema": "kp-eval-log-v1",
+            "recordId": "ev_q_touch_1",
+            "eventType": "query",
+            "domain": "arena",
+            "lang": "ko",
+            "roomCode": "STUDY1",
+            "recordedAt": "2026-11-19T02:05:00Z",
+            "queryEnv": enr_touch["env"],
+            "groundTruth": {"role": "enrolled", "profileId": "u_p01", "profileName": "참가자1"},
+            "verdict": {
+                "winnerId": "u_p01",
+                "top1Score": 0.52,
+                "leadGap": 0.08,
+                "openSetThreshold": 0.45,
+                "marginThreshold": 0.03,
+                "accepted": True,
+                "rejectedByMargin": False,
+                "top1Correct": True,
+                "decisionCorrect": True,
+            },
+            "rankings": [
+                {"id": "u_p01", "name": "참가자1", "rank": 1, "similarity": 0.52, "embeddingSimilarity": 0.43, "behaviorLlr": 1.8},
+                {"id": "u_p02", "name": "참가자2", "rank": 2, "similarity": 0.44, "embeddingSimilarity": 0.44, "behaviorLlr": 0.0},
+            ],
+            "deviceMotion": {
+                "available": True,
+                "effectiveHz": 59.8,
+                "medianIntervalMs": 16.72,
+                "tapImpulseMean": 0.65,
+                "linearAccelRms": 0.33,
+                "gyroRms": 5.1,
+                "pitchDeg": 33.2,
+                "inferredPosture": "in_hand",
+            },
+        }
+        q_pw_private_gen = {
+            "schema": "kp-eval-log-v1",
+            "recordId": "ev_q_pw_1",
+            "eventType": "query",
+            "domain": "password",
+            "roomCode": "STUDY1",
+            "recordedAt": "2026-11-19T02:10:00Z",
+            "queryEnv": enr_touch["env"],
+            "targetAccount": {"id": "u_p01", "name": "참가자1"},
+            "groundTruth": {"role": "genuine", "isGenuine": True},
+            "passwordMeta": {
+                "length": 12,
+                "publicExperimentId": None,
+                "publicText": None,
+                "passwordHash12": "a1b2c3d4e5f6",
+                "isPublicAllowlist": False,
+            },
+            "verdict": {
+                "accepted": True,
+                "adaptedAfterVerdict": False,
+                "z": 1.45,
+                "lengthBaseline": {"z": 1.10, "similarity": 0.48, "accepted": False},
+                "stringCalibrated": {"z": 1.45, "similarity": 0.57, "accepted": True, "latencyMs": 0.04},
+            },
+            "optInDiagnostics": {
+                "rawCapture": {
+                    **raw_stroke_mech,
+                    "pairKeys": None,
+                    "pairKeysRedacted": True,
+                    "capitalMethods": [],
+                }
+            },
+        }
+        q_pw_pub_imp = {
+            **q_pw_private_gen,
+            "recordId": "ev_q_pw_2",
+            "recordedAt": "2026-11-19T02:12:00Z",
+            "groundTruth": {"role": "impostor", "isGenuine": False},
+            "passwordMeta": {
+                "length": 12,
+                "publicExperimentId": "EXP12_REP_A",
+                "publicCategory": "repeat_heavy",
+                "publicText": "CoffeeTree88",
+                "passwordHash12": "112233445566",
+                "isPublicAllowlist": True,
+            },
+            "verdict": {
+                "accepted": False,
+                "adaptedAfterVerdict": False,
+                "z": -0.40,
+                "lengthBaseline": {"z": 0.35, "similarity": 0.51, "accepted": True},
+                "stringCalibrated": {"z": -0.40, "similarity": 0.39, "accepted": False, "latencyMs": 0.03},
+            },
+            "optInDiagnostics": {"rawCapture": raw_stroke_mech},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f_pc = Path(tmpdir) / "pc.jsonl"
+            f_phone = Path(tmpdir) / "phone.jsonl"
+            # Include a duplicate record across files to verify deduplication
+            f_pc.write_text(
+                "\n".join(json.dumps(r, ensure_ascii=False) for r in [enr_mech, enr_panto, q_cross]) + "\n",
+                encoding="utf-8",
+            )
+            f_phone.write_text(
+                "\n".join(json.dumps(r, ensure_ascii=False) for r in [enr_mech, enr_touch, q_touch, q_pw_private_gen, q_pw_pub_imp]) + "\n",
+                encoding="utf-8",
+            )
+
+            report = analyze_jsonl_files([f_pc, f_phone], repo_root=REPO_ROOT)
+
+        self.assertEqual(report["meta"]["total_records"], 7)
+        self.assertEqual(report["meta"]["duplicates_skipped"], 1)
+        integ = report["environment_and_errors"]["protocol_integrity"]
+        self.assertTrue(integ["custom_password_redaction_ok"])
+        self.assertTrue(integ["template_lock_ok"])
+
+        # Within-subject delta: pantograph (110ms) - mechanical (82ms) = +28.0ms
+        deltas = report["hold_calibration"]["within_subject_switch_deltas_ms"]
+        self.assertAlmostEqual(deltas["pantograph_external - mechanical_linear"]["mean_delta_ms"], 28.0, places=2)
+        self.assertTrue(report["hold_calibration"]["rescoring"]["available"])
+        self.assertEqual(
+            report["hold_calibration"]["rescoring"]["arena_cross_switch"]["physics_switch_plus_shrink"]["n_cross_switch_queries"],
+            1,
+        )
+
+        # Touch beta=0 fails to accept (embeddingSimilarity 0.43 < 0.45), whereas beta=0.20 fuses LLR +1.8 and accepts!
+        bs = report["touch_and_motion"]["beta_sweep"]
+        self.assertEqual(bs["0.00"]["genuine_accept_rate"], 0.0)
+        self.assertEqual(bs["0.20"]["genuine_accept_rate"], 1.0)
+        self.assertEqual(report["touch_and_motion"]["device_motion_audit"]["posture_inference_agreement"], 1.0)
+        self.assertEqual(
+            report["touch_and_motion"]["sensor_fusion_ab"]["in_hand"]["keystroke_plus_motion"]["n_sensor_paired_queries"],
+            1,
+        )
+
+        # Password string calibration beats length baseline on the paired trials
+        pw_cmp = report["password_string_calibration"]["overall"]
+        self.assertEqual(pw_cmp["string_calibrated"]["genuine_accept_rate"], 1.0)
+        self.assertEqual(pw_cmp["string_calibrated"]["impostor_far"], 0.0)
+        self.assertEqual(pw_cmp["length_baseline"]["impostor_far"], 1.0)
+
+        summary_txt = format_korean_summary(report)
+        self.assertIn("비공개 암호 마스킹=정상", summary_txt)
+        self.assertIn("물리 스위치 홀드 편차", summary_txt)
+
+
+if __name__ == "__main__":
+    unittest.main()

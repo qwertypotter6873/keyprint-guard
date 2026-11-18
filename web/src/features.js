@@ -76,6 +76,78 @@ export function keyPairFeatures(codeA, codeB, layout) {
   return [ra / layout.row_scale, ca / layout.col_scale, rb / layout.row_scale, cb / layout.col_scale, dist, sameHand, sameFinger];
 }
 
+/** Map text (expanded into 2-beolsik keystrokes) to canonical physical key codes. */
+export function stringToCodes(text, layout) {
+  const map = layout?.char_to_code || {};
+  return textToKeystrokes(text).map((ch) => {
+    if (ch === ' ') return 'Space';
+    return map[ch] ?? map[ch.toLowerCase()] ?? null;
+  });
+}
+
+/**
+ * Physics-consistent cross-switch Hold calibration (mirrors src/string_calibration.py::apply_hold_calibration).
+ * Adjusts observed physical holds while recomputing `UD = DD - H_curr` so flight/rollover channels remain valid.
+ * Unknown/touch holds (`holdValid === false` or `null`) stay `null`.
+ */
+export function applyHoldCalibration(
+  stroke,
+  {
+    deltaSec = 0.0,
+    scaleLambda = 0.0,
+    targetMeanHoldSec = null,
+    recomputeUd = true,
+    minHoldSec = 0.008,
+    maxHoldSec = 1.2,
+  } = {}
+) {
+  if (!stroke) return stroke;
+  const uHolds = Array.isArray(stroke.holds) ? [...stroke.holds] : [];
+  const uHv = Array.isArray(stroke.holdValid)
+    ? stroke.holdValid.map(Boolean)
+    : uHolds.map((h) => h !== null && h !== undefined);
+  const dds = Array.isArray(stroke.dds) ? [...stroke.dds] : [];
+  const m = dds.length;
+  const hCurr = Array.isArray(stroke.hCurr) ? [...stroke.hCurr] : uHolds.slice(0, m);
+  const hNext = Array.isArray(stroke.hNext) ? [...stroke.hNext] : uHolds.slice(1, m + 1);
+  const hvCurr = Array.isArray(stroke.hvCurr) ? stroke.hvCurr.map(Boolean) : uHv.slice(0, m);
+  const hvNext = Array.isArray(stroke.hvNext) ? stroke.hvNext.map(Boolean) : uHv.slice(1, m + 1);
+  const uds = Array.isArray(stroke.uds) ? [...stroke.uds] : [];
+
+  const validVals = uHolds.filter((h, i) => uHv[i] && h !== null && h !== undefined).map(Number);
+  if (validVals.length === 0) return { ...stroke };
+
+  const qMean = validVals.reduce((a, b) => a + b, 0) / validVals.length;
+  let shift = -Number(deltaSec || 0);
+  if (scaleLambda && targetMeanHoldSec !== null && targetMeanHoldSec > 0) {
+    shift += Number(scaleLambda) * (Number(targetMeanHoldSec) - (qMean + shift));
+  }
+
+  const adj = (val, ok) => {
+    if (!ok || val === null || val === undefined) return null;
+    return Math.min(maxHoldSec, Math.max(minHoldSec, Number(val) + shift));
+  };
+
+  const newUHolds = uHolds.map((h, i) => adj(h, uHv[i]));
+  const newHCurr = hCurr.map((h, i) => adj(h, hvCurr[i]));
+  const newHNext = hNext.map((h, i) => adj(h, hvNext[i]));
+  const newUds = recomputeUd
+    ? dds.map((dd, t) =>
+        hvCurr[t] && newHCurr[t] !== null && uds[t] !== null && uds[t] !== undefined
+          ? Number(dd) - Number(newHCurr[t])
+          : uds[t]
+      )
+    : uds;
+
+  return {
+    ...stroke,
+    holds: newUHolds,
+    hCurr: newHCurr,
+    hNext: newHNext,
+    uds: newUds,
+  };
+}
+
 /**
  * Stroke -> scaled [C, M] tensor (9 timing + 7 key identity + Hold_Valid).
  * Unknown holds (touch keyboards) are imputed with the Train median and flagged.
@@ -419,6 +491,136 @@ export function dualPasswordScore(emb9, emb17, tmpl9, tmpl17, prm, slope = 1.0) 
   const r17 = rawTemplateSimilarity(emb17, tmpl17);
   const z = (r9.raw - prm.mu9) / prm.sd9 + (r17.raw - prm.mu17) / prm.sd17;
   return { z, raw9: r9.raw, raw17: r17.raw, centroidSim: r9.centroidSim, similarity: 1 / (1 + Math.exp(-slope * (z - prm.tau))) };
+}
+
+/**
+ * Extract 7-D length-orthogonal string features & transition support weight
+ * (exact JS counterpart of src/string_calibration.py::extract_string_features).
+ */
+export function extractStringCalibrationFeatures(text, layout, digraphTable = {}, supportKappa = 40.0) {
+  const codes = stringToCodes(text, layout);
+  const k = codes.length;
+  const m = Math.max(1, k - 1);
+  if (k < 2) {
+    return {
+      features: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.15],
+      support: 0.0,
+      knownPairFrac: 0.0,
+      numTransitions: 0,
+    };
+  }
+
+  let repeats = 0.0;
+  let sameFinger = 0.0;
+  let altHand = 0.0;
+  let distSum = 0.0;
+  const seenPairs = new Set();
+  let logCountSum = 0.0;
+  let bWeightedSum = 0.0;
+  let bWeightTotal = 0.0;
+  let supportSum = 0.0;
+  let knownPairs = 0;
+
+  for (let t = 0; t < m; t++) {
+    const ca = codes[t];
+    const cb = codes[t + 1];
+    const isKnown = ca !== null && cb !== null;
+    if (isKnown) knownPairs += 1;
+    if (isKnown && ca === cb) repeats += 1.0;
+    const kp = keyPairFeatures(ca, cb, layout);
+    const dist = kp[4];
+    const sh = kp[5];
+    const sf = kp[6];
+    sameFinger += sf;
+    if (sh === 0.0) altHand += 1.0;
+    distSum += dist;
+    const pairKey = `${ca || '?'}>${cb || '?'}`;
+    seenPairs.add(pairKey);
+
+    const entry = isKnown && digraphTable ? digraphTable[pairKey] : null;
+    const cnt = entry ? Number(entry[0]) : 0.0;
+    const bStd = entry ? Number(entry[3]) : 0.15;
+    logCountSum += Math.log1p(cnt) / 8.0;
+    const sup = isKnown && cnt > 0 ? cnt / (cnt + supportKappa) : 0.0;
+    supportSum += sup;
+    const w = 0.2 + sup;
+    bWeightedSum += bStd * w;
+    bWeightTotal += w;
+  }
+
+  const meanBStd = bWeightedSum / (bWeightTotal || 1.0);
+  return {
+    features: [
+      repeats / m,
+      sameFinger / m,
+      altHand / m,
+      distSum / m,
+      1.0 - seenPairs.size / m,
+      logCountSum / m,
+      meanBStd,
+    ],
+    support: supportSum / m,
+    knownPairFrac: knownPairs / m,
+    numTransitions: m,
+  };
+}
+
+/**
+ * Predict string-specific `(mu9, sd9, mu17, sd17, tau)` with support-based shrinkage toward length baseline.
+ * Mirrors src/string_calibration.py::predict_string_dual_params.
+ */
+export function stringCalibratedDualParams(
+  text,
+  inputMode,
+  dualCfg,
+  layout,
+  stringCalibCfg,
+  { minShrinkScale = 0.0 } = {}
+) {
+  const modeKey = inputMode === 'touch' ? 'touch' : 'keyboard';
+  const codes = layout ? stringToCodes(text, layout) : [];
+  const length = codes.length > 0 ? codes.length : [...String(text || '')].length;
+  const base = { ...dualParamsForLength(dualCfg, inputMode, length) };
+  const tauOffset = Number(stringCalibCfg?.tau_offset?.[modeKey] ?? 0.0);
+  const tauBase = base.tau + tauOffset;
+
+  const mCfg = stringCalibCfg?.models?.[modeKey];
+  if (!mCfg || !layout || !stringCalibCfg?.digraph_table) {
+    return { ...base, tau: tauBase, shrinkWeight: 0.0, support: 0.0 };
+  }
+
+  const kappa = Number(stringCalibCfg.support_kappa ?? 40.0);
+  const shrinkScale = Math.max(Number(minShrinkScale || 0.0), Number(stringCalibCfg.shrink_scale?.[modeKey] ?? 1.0));
+  const fx = extractStringCalibrationFeatures(text, layout, stringCalibCfg.digraph_table, kappa);
+  const feats = fx.features;
+  const fMean = mCfg.feature_mean;
+  const fStd = mCfg.feature_std;
+  const zFeat = feats.map((v, i) => (v - fMean[i]) / fStd[i]);
+
+  const W = mCfg.weights;
+  const b = mCfg.bias;
+  const deltas = [0, 1, 2, 3].map((o) => {
+    let acc = b[o];
+    for (let i = 0; i < zFeat.length; i++) acc += W[o][i] * zFeat[i];
+    return acc;
+  });
+
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const dMu9 = clamp(deltas[0], -0.22, 0.22);
+  const dLsd9 = clamp(deltas[1], -0.45, 0.45);
+  const dMu17 = clamp(deltas[2], -0.25, 0.25);
+  const dLsd17 = clamp(deltas[3], -0.45, 0.45);
+
+  const w = clamp(shrinkScale * fx.support, 0.0, 1.0);
+  return {
+    mu9: base.mu9 + w * dMu9,
+    sd9: Math.max(0.05, base.sd9 * Math.exp(w * dLsd9)),
+    mu17: base.mu17 + w * dMu17,
+    sd17: Math.max(0.05, base.sd17 * Math.exp(w * dLsd17)),
+    tau: tauBase,
+    shrinkWeight: w,
+    support: fx.support,
+  };
 }
 
 /**

@@ -1,0 +1,2088 @@
+{
+  "schema": "kp-calibration-parity-v1",
+  "string_cases": [
+    {
+      "text": "Gachon2026pw",
+      "codes": [
+        "KeyG",
+        "KeyA",
+        "KeyC",
+        "KeyH",
+        "KeyO",
+        "KeyN",
+        "Digit2",
+        "Digit0",
+        "Digit2",
+        "Digit6",
+        "KeyP",
+        "KeyW"
+      ],
+      "features": [
+        0.0,
+        0.0,
+        0.54545455,
+        4.90710945,
+        0.0,
+        0.37650002,
+        0.26336017
+      ],
+      "support": 0.4341381,
+      "known_pair_frac": 1.0,
+      "num_transitions": 11,
+      "dual_kb": {
+        "mu9": 0.25744,
+        "sd9": 0.19705,
+        "mu17": 0.30716,
+        "sd17": 0.20983,
+        "tau": 1.1461,
+        "shrink_weight": 0.0,
+        "support": 0.4341381
+      },
+      "dual_touch": {
+        "mu9": 0.36410662,
+        "sd9": 0.21615995,
+        "mu17": 0.43540226,
+        "sd17": 0.21786899,
+        "tau": -0.2558,
+        "shrink_weight": 0.30389667,
+        "support": 0.4341381
+      }
+    },
+    {
+      "text": "CoffeeTree88",
+      "codes": [
+        "KeyC",
+        "KeyO",
+        "KeyF",
+        "KeyF",
+        "KeyE",
+        "KeyE",
+        "KeyT",
+        "KeyR",
+        "KeyE",
+        "KeyE",
+        "Digit8",
+        "Digit8"
+      ],
+      "features": [
+        0.36363636,
+        0.09090909,
+        0.27272727,
+        1.88024786,
+        0.09090909,
+        0.65934005,
+        0.2502892
+      ],
+      "support": 0.73788657,
+      "known_pair_frac": 1.0,
+      "num_transitions": 11,
+      "dual_kb": {
+        "mu9": 0.25744,
+        "sd9": 0.19705,
+        "mu17": 0.30716,
+        "sd17": 0.20983,
+        "tau": 1.1461,
+        "shrink_weight": 0.0,
+        "support": 0.73788657
+      },
+      "dual_touch": {
+        "mu9": 0.39976276,
+        "sd9": 0.21923563,
+        "mu17": 0.52993239,
+        "sd17": 0.19396133,
+        "tau": -0.2558,
+        "shrink_weight": 0.5165206,
+        "support": 0.73788657
+      }
+    },
+    {
+      "text": "planetworkbd",
+      "codes": [
+        "KeyP",
+        "KeyL",
+        "KeyA",
+        "KeyN",
+        "KeyE",
+        "KeyT",
+        "KeyW",
+        "KeyO",
+        "KeyR",
+        "KeyK",
+        "KeyB",
+        "KeyD"
+      ],
+      "features": [
+        0.0,
+        0.0,
+        0.63636364,
+        4.16739973,
+        0.0,
+        0.64588443,
+        0.2413361
+      ],
+      "support": 0.71420975,
+      "known_pair_frac": 1.0,
+      "num_transitions": 11,
+      "dual_kb": {
+        "mu9": 0.25744,
+        "sd9": 0.19705,
+        "mu17": 0.30716,
+        "sd17": 0.20983,
+        "tau": 1.1461,
+        "shrink_weight": 0.0,
+        "support": 0.71420975
+      },
+      "dual_touch": {
+        "mu9": 0.36456455,
+        "sd9": 0.21831725,
+        "mu17": 0.44147899,
+        "sd17": 0.21607683,
+        "tau": -0.2558,
+        "shrink_weight": 0.49994683,
+        "support": 0.71420975
+      }
+    },
+    {
+      "text": "summerbreeze",
+      "codes": [
+        "KeyS",
+        "KeyU",
+        "KeyM",
+        "KeyM",
+        "KeyE",
+        "KeyR",
+        "KeyB",
+        "KeyR",
+        "KeyE",
+        "KeyE",
+        "KeyZ",
+        "KeyE"
+      ],
+      "features": [
+        0.18181818,
+        0.27272727,
+        0.18181818,
+        2.1978244,
+        0.0,
+        0.69809395,
+        0.35501578
+      ],
+      "support": 0.79993203,
+      "known_pair_frac": 1.0,
+      "num_transitions": 11,
+      "dual_kb": {
+        "mu9": 0.25744,
+        "sd9": 0.19705,
+        "mu17": 0.30716,
+        "sd17": 0.20983,
+        "tau": 1.1461,
+        "shrink_weight": 0.0,
+        "support": 0.79993203
+      },
+      "dual_touch": {
+        "mu9": 0.38377195,
+        "sd9": 0.21584718,
+        "mu17": 0.50405865,
+        "sd17": 0.1999249,
+        "tau": -0.2558,
+        "shrink_weight": 0.55995242,
+        "support": 0.79993203
+      }
+    },
+    {
+      "text": "stewardesses",
+      "codes": [
+        "KeyS",
+        "KeyT",
+        "KeyE",
+        "KeyW",
+        "KeyA",
+        "KeyR",
+        "KeyD",
+        "KeyE",
+        "KeyS",
+        "KeyS",
+        "KeyE",
+        "KeyS"
+      ],
+      "features": [
+        0.09090909,
+        0.09090909,
+        0.0,
+        1.46664785,
+        0.09090909,
+        0.85985398,
+        0.29993009
+      ],
+      "support": 0.9581776,
+      "known_pair_frac": 1.0,
+      "num_transitions": 11,
+      "dual_kb": {
+        "mu9": 0.25744,
+        "sd9": 0.19705,
+        "mu17": 0.30716,
+        "sd17": 0.20983,
+        "tau": 1.1461,
+        "shrink_weight": 0.0,
+        "support": 0.9581776
+      },
+      "dual_touch": {
+        "mu9": 0.36972263,
+        "sd9": 0.22528839,
+        "mu17": 0.52653998,
+        "sd17": 0.20402412,
+        "tau": -0.2558,
+        "shrink_weight": 0.67072432,
+        "support": 0.9581776
+      }
+    },
+    {
+      "text": "hilopolimion",
+      "codes": [
+        "KeyH",
+        "KeyI",
+        "KeyL",
+        "KeyO",
+        "KeyP",
+        "KeyO",
+        "KeyL",
+        "KeyI",
+        "KeyM",
+        "KeyI",
+        "KeyO",
+        "KeyN"
+      ],
+      "features": [
+        0.0,
+        0.18181818,
+        0.0,
+        1.57456426,
+        0.0,
+        0.85764952,
+        0.25996061
+      ],
+      "support": 0.9695795,
+      "known_pair_frac": 1.0,
+      "num_transitions": 11,
+      "dual_kb": {
+        "mu9": 0.25744,
+        "sd9": 0.19705,
+        "mu17": 0.30716,
+        "sd17": 0.20983,
+        "tau": 1.1461,
+        "shrink_weight": 0.0,
+        "support": 0.9695795
+      },
+      "dual_touch": {
+        "mu9": 0.36968281,
+        "sd9": 0.22013394,
+        "mu17": 0.51301438,
+        "sd17": 0.20880659,
+        "tau": -0.2558,
+        "shrink_weight": 0.67870565,
+        "support": 0.9695795
+      }
+    },
+    {
+      "text": "SilverKey402",
+      "codes": [
+        "KeyS",
+        "KeyI",
+        "KeyL",
+        "KeyV",
+        "KeyE",
+        "KeyR",
+        "KeyK",
+        "KeyE",
+        "KeyY",
+        "Digit4",
+        "Digit0",
+        "Digit2"
+      ],
+      "features": [
+        0.0,
+        0.0,
+        0.72727273,
+        4.10067571,
+        0.0,
+        0.59590982,
+        0.38931457
+      ],
+      "support": 0.67720094,
+      "known_pair_frac": 1.0,
+      "num_transitions": 11,
+      "dual_kb": {
+        "mu9": 0.25744,
+        "sd9": 0.19705,
+        "mu17": 0.30716,
+        "sd17": 0.20983,
+        "tau": 1.1461,
+        "shrink_weight": 0.0,
+        "support": 0.67720094
+      },
+      "dual_touch": {
+        "mu9": 0.35501701,
+        "sd9": 0.21857892,
+        "mu17": 0.42289048,
+        "sd17": 0.21608184,
+        "tau": -0.2558,
+        "shrink_weight": 0.47404066,
+        "support": 0.67720094
+      }
+    },
+    {
+      "text": "Harbor97Gate",
+      "codes": [
+        "KeyH",
+        "KeyA",
+        "KeyR",
+        "KeyB",
+        "KeyO",
+        "KeyR",
+        "Digit9",
+        "Digit7",
+        "KeyG",
+        "KeyA",
+        "KeyT",
+        "KeyE"
+      ],
+      "features": [
+        0.0,
+        0.09090909,
+        0.45454545,
+        3.47719155,
+        0.0,
+        0.58777726,
+        0.24987616
+      ],
+      "support": 0.63943028,
+      "known_pair_frac": 1.0,
+      "num_transitions": 11,
+      "dual_kb": {
+        "mu9": 0.25744,
+        "sd9": 0.19705,
+        "mu17": 0.30716,
+        "sd17": 0.20983,
+        "tau": 1.1461,
+        "shrink_weight": 0.0,
+        "support": 0.63943028
+      },
+      "dual_touch": {
+        "mu9": 0.36699516,
+        "sd9": 0.21756766,
+        "mu17": 0.44964749,
+        "sd17": 0.21562596,
+        "tau": -0.2558,
+        "shrink_weight": 0.4476012,
+        "support": 0.63943028
+      }
+    },
+    {
+      "text": "KeyPrint2026Safe",
+      "codes": [
+        "KeyK",
+        "KeyE",
+        "KeyY",
+        "KeyP",
+        "KeyR",
+        "KeyI",
+        "KeyN",
+        "KeyT",
+        "Digit2",
+        "Digit0",
+        "Digit2",
+        "Digit6",
+        "KeyS",
+        "KeyA",
+        "KeyF",
+        "KeyE"
+      ],
+      "features": [
+        0.0,
+        0.0,
+        0.6,
+        4.02782278,
+        0.0,
+        0.49295317,
+        0.32950705
+      ],
+      "support": 0.56208556,
+      "known_pair_frac": 1.0,
+      "num_transitions": 15,
+      "dual_kb": {
+        "mu9": 0.27827,
+        "sd9": 0.22906,
+        "mu17": 0.31558,
+        "sd17": 0.20683,
+        "tau": 1.9691,
+        "shrink_weight": 0.0,
+        "support": 0.56208556
+      },
+      "dual_touch": {
+        "mu9": 0.46795487,
+        "sd9": 0.1794327,
+        "mu17": 0.46365074,
+        "sd17": 0.21798075,
+        "tau": 0.5688,
+        "shrink_weight": 0.39345989,
+        "support": 0.56208556
+      }
+    },
+    {
+      "text": "BookkeeperRoom77",
+      "codes": [
+        "KeyB",
+        "KeyO",
+        "KeyO",
+        "KeyK",
+        "KeyK",
+        "KeyE",
+        "KeyE",
+        "KeyP",
+        "KeyE",
+        "KeyR",
+        "KeyR",
+        "KeyO",
+        "KeyO",
+        "KeyM",
+        "Digit7",
+        "Digit7"
+      ],
+      "features": [
+        0.4,
+        0.06666667,
+        0.33333333,
+        2.40126462,
+        0.06666667,
+        0.64768561,
+        0.24636918
+      ],
+      "support": 0.7467098,
+      "known_pair_frac": 1.0,
+      "num_transitions": 15,
+      "dual_kb": {
+        "mu9": 0.27827,
+        "sd9": 0.22906,
+        "mu17": 0.31558,
+        "sd17": 0.20683,
+        "tau": 1.9691,
+        "shrink_weight": 0.0,
+        "support": 0.7467098
+      },
+      "dual_touch": {
+        "mu9": 0.51088238,
+        "sd9": 0.17946639,
+        "mu17": 0.56309879,
+        "sd17": 0.19276209,
+        "tau": 0.5688,
+        "shrink_weight": 0.52269686,
+        "support": 0.7467098
+      }
+    },
+    {
+      "text": "formalsignalwork",
+      "codes": [
+        "KeyF",
+        "KeyO",
+        "KeyR",
+        "KeyM",
+        "KeyA",
+        "KeyL",
+        "KeyS",
+        "KeyI",
+        "KeyG",
+        "KeyN",
+        "KeyA",
+        "KeyL",
+        "KeyW",
+        "KeyO",
+        "KeyR",
+        "KeyK"
+      ],
+      "features": [
+        0.0,
+        0.0,
+        1.0,
+        5.56804849,
+        0.13333333,
+        0.76834796,
+        0.30436398
+      ],
+      "support": 0.89036719,
+      "known_pair_frac": 1.0,
+      "num_transitions": 15,
+      "dual_kb": {
+        "mu9": 0.27827,
+        "sd9": 0.22906,
+        "mu17": 0.31558,
+        "sd17": 0.20683,
+        "tau": 1.9691,
+        "shrink_weight": 0.0,
+        "support": 0.89036719
+      },
+      "dual_touch": {
+        "mu9": 0.46613629,
+        "sd9": 0.1855721,
+        "mu17": 0.45819554,
+        "sd17": 0.21963714,
+        "tau": 0.5688,
+        "shrink_weight": 0.62325703,
+        "support": 0.89036719
+      }
+    },
+    {
+      "text": "greenapplecoffee",
+      "codes": [
+        "KeyG",
+        "KeyR",
+        "KeyE",
+        "KeyE",
+        "KeyN",
+        "KeyA",
+        "KeyP",
+        "KeyP",
+        "KeyL",
+        "KeyE",
+        "KeyC",
+        "KeyO",
+        "KeyF",
+        "KeyF",
+        "KeyE",
+        "KeyE"
+      ],
+      "features": [
+        0.26666667,
+        0.13333333,
+        0.4,
+        2.86909054,
+        0.06666667,
+        0.74361208,
+        0.32546042
+      ],
+      "support": 0.8484291,
+      "known_pair_frac": 1.0,
+      "num_transitions": 15,
+      "dual_kb": {
+        "mu9": 0.27827,
+        "sd9": 0.22906,
+        "mu17": 0.31558,
+        "sd17": 0.20683,
+        "tau": 1.9691,
+        "shrink_weight": 0.0,
+        "support": 0.8484291
+      },
+      "dual_touch": {
+        "mu9": 0.49843608,
+        "sd9": 0.18044815,
+        "mu17": 0.54791479,
+        "sd17": 0.19677978,
+        "tau": 0.5688,
+        "shrink_weight": 0.59390037,
+        "support": 0.8484291
+      }
+    },
+    {
+      "text": "sweaterdressedat",
+      "codes": [
+        "KeyS",
+        "KeyW",
+        "KeyE",
+        "KeyA",
+        "KeyT",
+        "KeyE",
+        "KeyR",
+        "KeyD",
+        "KeyR",
+        "KeyE",
+        "KeyS",
+        "KeyS",
+        "KeyE",
+        "KeyD",
+        "KeyA",
+        "KeyT"
+      ],
+      "features": [
+        0.06666667,
+        0.13333333,
+        0.0,
+        1.58928031,
+        0.06666667,
+        0.8362997,
+        0.28608981
+      ],
+      "support": 0.9125108,
+      "known_pair_frac": 1.0,
+      "num_transitions": 15,
+      "dual_kb": {
+        "mu9": 0.27827,
+        "sd9": 0.22906,
+        "mu17": 0.31558,
+        "sd17": 0.20683,
+        "tau": 1.9691,
+        "shrink_weight": 0.0,
+        "support": 0.9125108
+      },
+      "dual_touch": {
+        "mu9": 0.47887692,
+        "sd9": 0.18387678,
+        "mu17": 0.55125473,
+        "sd17": 0.20707644,
+        "tau": 0.5688,
+        "shrink_weight": 0.63875756,
+        "support": 0.9125108
+      }
+    },
+    {
+      "text": "minimumopinionlk",
+      "codes": [
+        "KeyM",
+        "KeyI",
+        "KeyN",
+        "KeyI",
+        "KeyM",
+        "KeyU",
+        "KeyM",
+        "KeyO",
+        "KeyP",
+        "KeyI",
+        "KeyN",
+        "KeyI",
+        "KeyO",
+        "KeyN",
+        "KeyL",
+        "KeyK"
+      ],
+      "features": [
+        0.0,
+        0.13333333,
+        0.0,
+        2.05323921,
+        0.13333333,
+        0.77229778,
+        0.34072762
+      ],
+      "support": 0.90167987,
+      "known_pair_frac": 1.0,
+      "num_transitions": 15,
+      "dual_kb": {
+        "mu9": 0.27827,
+        "sd9": 0.22906,
+        "mu17": 0.31558,
+        "sd17": 0.20683,
+        "tau": 1.9691,
+        "shrink_weight": 0.0,
+        "support": 0.90167987
+      },
+      "dual_touch": {
+        "mu9": 0.46202109,
+        "sd9": 0.18750669,
+        "mu17": 0.52122554,
+        "sd17": 0.21400531,
+        "tau": 0.5688,
+        "shrink_weight": 0.63117591,
+        "support": 0.90167987
+      }
+    },
+    {
+      "text": "AutumnBridge2048",
+      "codes": [
+        "KeyA",
+        "KeyU",
+        "KeyT",
+        "KeyU",
+        "KeyM",
+        "KeyN",
+        "KeyB",
+        "KeyR",
+        "KeyI",
+        "KeyD",
+        "KeyG",
+        "KeyE",
+        "Digit2",
+        "Digit0",
+        "Digit4",
+        "Digit8"
+      ],
+      "features": [
+        0.0,
+        0.2,
+        0.6,
+        3.31659721,
+        0.0,
+        0.43043267,
+        0.26997939
+      ],
+      "support": 0.51555177,
+      "known_pair_frac": 1.0,
+      "num_transitions": 15,
+      "dual_kb": {
+        "mu9": 0.27827,
+        "sd9": 0.22906,
+        "mu17": 0.31558,
+        "sd17": 0.20683,
+        "tau": 1.9691,
+        "shrink_weight": 0.0,
+        "support": 0.51555177
+      },
+      "dual_touch": {
+        "mu9": 0.47904732,
+        "sd9": 0.17822629,
+        "mu17": 0.47360209,
+        "sd17": 0.2177645,
+        "tau": 0.5688,
+        "shrink_weight": 0.36088624,
+        "support": 0.51555177
+      }
+    },
+    {
+      "text": "QuantumShield519",
+      "codes": [
+        "KeyQ",
+        "KeyU",
+        "KeyA",
+        "KeyN",
+        "KeyT",
+        "KeyU",
+        "KeyM",
+        "KeyS",
+        "KeyH",
+        "KeyI",
+        "KeyE",
+        "KeyL",
+        "KeyD",
+        "Digit5",
+        "Digit1",
+        "Digit9"
+      ],
+      "features": [
+        0.0,
+        0.06666667,
+        0.73333333,
+        4.50091601,
+        0.0,
+        0.57389689,
+        0.30792316
+      ],
+      "support": 0.67242056,
+      "known_pair_frac": 1.0,
+      "num_transitions": 15,
+      "dual_kb": {
+        "mu9": 0.27827,
+        "sd9": 0.22906,
+        "mu17": 0.31558,
+        "sd17": 0.20683,
+        "tau": 1.9691,
+        "shrink_weight": 0.0,
+        "support": 0.67242056
+      },
+      "dual_touch": {
+        "mu9": 0.47084033,
+        "sd9": 0.17927313,
+        "mu17": 0.46155121,
+        "sd17": 0.21754925,
+        "tau": 0.5688,
+        "shrink_weight": 0.4706944,
+        "support": 0.67242056
+      }
+    },
+    {
+      "text": "Gachon Rhythm2026Key",
+      "codes": [
+        "KeyG",
+        "KeyA",
+        "KeyC",
+        "KeyH",
+        "KeyO",
+        "KeyN",
+        "Space",
+        "KeyR",
+        "KeyH",
+        "KeyY",
+        "KeyT",
+        "KeyH",
+        "KeyM",
+        "Digit2",
+        "Digit0",
+        "Digit2",
+        "Digit6",
+        "KeyK",
+        "KeyE",
+        "KeyY"
+      ],
+      "features": [
+        0.0,
+        0.10526316,
+        0.52631579,
+        3.51845466,
+        0.0,
+        0.45584464,
+        0.30517752
+      ],
+      "support": 0.52015803,
+      "known_pair_frac": 1.0,
+      "num_transitions": 19,
+      "dual_kb": {
+        "mu9": 0.28618,
+        "sd9": 0.25208,
+        "mu17": 0.35311,
+        "sd17": 0.21277,
+        "tau": 2.031,
+        "shrink_weight": 0.0,
+        "support": 0.52015803
+      },
+      "dual_touch": {
+        "mu9": 0.53843152,
+        "sd9": 0.18347511,
+        "mu17": 0.53408722,
+        "sd17": 0.19858715,
+        "tau": 0.5013,
+        "shrink_weight": 0.36411062,
+        "support": 0.52015803
+      }
+    },
+    {
+      "text": "SweetCoffeeBalloon99",
+      "codes": [
+        "KeyS",
+        "KeyW",
+        "KeyE",
+        "KeyE",
+        "KeyT",
+        "KeyC",
+        "KeyO",
+        "KeyF",
+        "KeyF",
+        "KeyE",
+        "KeyE",
+        "KeyB",
+        "KeyA",
+        "KeyL",
+        "KeyL",
+        "KeyO",
+        "KeyO",
+        "KeyN",
+        "Digit9",
+        "Digit9"
+      ],
+      "features": [
+        0.31578947,
+        0.10526316,
+        0.15789474,
+        2.20982378,
+        0.05263158,
+        0.6943867,
+        0.30712509
+      ],
+      "support": 0.79620293,
+      "known_pair_frac": 1.0,
+      "num_transitions": 19,
+      "dual_kb": {
+        "mu9": 0.28618,
+        "sd9": 0.25208,
+        "mu17": 0.35311,
+        "sd17": 0.21277,
+        "tau": 2.031,
+        "shrink_weight": 0.0,
+        "support": 0.79620293
+      },
+      "dual_touch": {
+        "mu9": 0.56493191,
+        "sd9": 0.1846979,
+        "mu17": 0.62272071,
+        "sd17": 0.1775379,
+        "tau": 0.5013,
+        "shrink_weight": 0.55734205,
+        "support": 0.79620293
+      }
+    },
+    {
+      "text": "modernvisualworkland",
+      "codes": [
+        "KeyM",
+        "KeyO",
+        "KeyD",
+        "KeyE",
+        "KeyR",
+        "KeyN",
+        "KeyV",
+        "KeyI",
+        "KeyS",
+        "KeyU",
+        "KeyA",
+        "KeyL",
+        "KeyW",
+        "KeyO",
+        "KeyR",
+        "KeyK",
+        "KeyL",
+        "KeyA",
+        "KeyN",
+        "KeyD"
+      ],
+      "features": [
+        0.0,
+        0.05263158,
+        0.78947368,
+        4.52019472,
+        0.0,
+        0.74537576,
+        0.27980536
+      ],
+      "support": 0.83560225,
+      "known_pair_frac": 1.0,
+      "num_transitions": 19,
+      "dual_kb": {
+        "mu9": 0.28618,
+        "sd9": 0.25208,
+        "mu17": 0.35311,
+        "sd17": 0.21277,
+        "tau": 2.031,
+        "shrink_weight": 0.0,
+        "support": 0.83560225
+      },
+      "dual_touch": {
+        "mu9": 0.53852123,
+        "sd9": 0.18460333,
+        "mu17": 0.53527571,
+        "sd17": 0.19708031,
+        "tau": 0.5013,
+        "shrink_weight": 0.58492158,
+        "support": 0.83560225
+      }
+    },
+    {
+      "text": "sleeplesswoodlandsee",
+      "codes": [
+        "KeyS",
+        "KeyL",
+        "KeyE",
+        "KeyE",
+        "KeyP",
+        "KeyL",
+        "KeyE",
+        "KeyS",
+        "KeyS",
+        "KeyW",
+        "KeyO",
+        "KeyO",
+        "KeyD",
+        "KeyL",
+        "KeyA",
+        "KeyN",
+        "KeyD",
+        "KeyS",
+        "KeyE",
+        "KeyE"
+      ],
+      "features": [
+        0.21052632,
+        0.05263158,
+        0.52631579,
+        3.60559468,
+        0.10526316,
+        0.80574169,
+        0.26242708
+      ],
+      "support": 0.91636516,
+      "known_pair_frac": 1.0,
+      "num_transitions": 19,
+      "dual_kb": {
+        "mu9": 0.28618,
+        "sd9": 0.25208,
+        "mu17": 0.35311,
+        "sd17": 0.21277,
+        "tau": 2.031,
+        "shrink_weight": 0.0,
+        "support": 0.91636516
+      },
+      "dual_touch": {
+        "mu9": 0.56044708,
+        "sd9": 0.18790821,
+        "mu17": 0.6056303,
+        "sd17": 0.18302056,
+        "tau": 0.5013,
+        "shrink_weight": 0.64145561,
+        "support": 0.91636516
+      }
+    },
+    {
+      "text": "afterwardsdressedvet",
+      "codes": [
+        "KeyA",
+        "KeyF",
+        "KeyT",
+        "KeyE",
+        "KeyR",
+        "KeyW",
+        "KeyA",
+        "KeyR",
+        "KeyD",
+        "KeyS",
+        "KeyD",
+        "KeyR",
+        "KeyE",
+        "KeyS",
+        "KeyS",
+        "KeyE",
+        "KeyD",
+        "KeyV",
+        "KeyE",
+        "KeyT"
+      ],
+      "features": [
+        0.05263158,
+        0.10526316,
+        0.0,
+        1.52196124,
+        0.0,
+        0.71797818,
+        0.33932692
+      ],
+      "support": 0.79477981,
+      "known_pair_frac": 1.0,
+      "num_transitions": 19,
+      "dual_kb": {
+        "mu9": 0.28618,
+        "sd9": 0.25208,
+        "mu17": 0.35311,
+        "sd17": 0.21277,
+        "tau": 2.031,
+        "shrink_weight": 0.0,
+        "support": 0.79477981
+      },
+      "dual_touch": {
+        "mu9": 0.53645765,
+        "sd9": 0.18587124,
+        "mu17": 0.58267123,
+        "sd17": 0.19078809,
+        "tau": 0.5013,
+        "shrink_weight": 0.55634587,
+        "support": 0.79477981
+      }
+    },
+    {
+      "text": "millionopinionhookup",
+      "codes": [
+        "KeyM",
+        "KeyI",
+        "KeyL",
+        "KeyL",
+        "KeyI",
+        "KeyO",
+        "KeyN",
+        "KeyO",
+        "KeyP",
+        "KeyI",
+        "KeyN",
+        "KeyI",
+        "KeyO",
+        "KeyN",
+        "KeyH",
+        "KeyO",
+        "KeyO",
+        "KeyK",
+        "KeyU",
+        "KeyP"
+      ],
+      "features": [
+        0.10526316,
+        0.05263158,
+        0.0,
+        1.78212121,
+        0.10526316,
+        0.77426564,
+        0.30182273
+      ],
+      "support": 0.87544396,
+      "known_pair_frac": 1.0,
+      "num_transitions": 19,
+      "dual_kb": {
+        "mu9": 0.28618,
+        "sd9": 0.25208,
+        "mu17": 0.35311,
+        "sd17": 0.21277,
+        "tau": 2.031,
+        "shrink_weight": 0.0,
+        "support": 0.87544396
+      },
+      "dual_touch": {
+        "mu9": 0.53995303,
+        "sd9": 0.19054534,
+        "mu17": 0.60526463,
+        "sd17": 0.18843087,
+        "tau": 0.5013,
+        "shrink_weight": 0.61281078,
+        "support": 0.87544396
+      }
+    },
+    {
+      "text": "Morninglantern735Box",
+      "codes": [
+        "KeyM",
+        "KeyO",
+        "KeyR",
+        "KeyN",
+        "KeyI",
+        "KeyN",
+        "KeyG",
+        "KeyL",
+        "KeyA",
+        "KeyN",
+        "KeyT",
+        "KeyE",
+        "KeyR",
+        "KeyN",
+        "Digit7",
+        "Digit3",
+        "Digit5",
+        "KeyB",
+        "KeyO",
+        "KeyX"
+      ],
+      "features": [
+        0.0,
+        0.10526316,
+        0.57894737,
+        3.5034415,
+        0.05263158,
+        0.60718404,
+        0.24466593
+      ],
+      "support": 0.66366205,
+      "known_pair_frac": 1.0,
+      "num_transitions": 19,
+      "dual_kb": {
+        "mu9": 0.28618,
+        "sd9": 0.25208,
+        "mu17": 0.35311,
+        "sd17": 0.21277,
+        "tau": 2.031,
+        "shrink_weight": 0.0,
+        "support": 0.66366205
+      },
+      "dual_touch": {
+        "mu9": 0.541658,
+        "sd9": 0.18575154,
+        "mu17": 0.54414886,
+        "sd17": 0.19842136,
+        "tau": 0.5013,
+        "shrink_weight": 0.46456344,
+        "support": 0.66366205
+      }
+    },
+    {
+      "text": "CrystalHorizon842Map",
+      "codes": [
+        "KeyC",
+        "KeyR",
+        "KeyY",
+        "KeyS",
+        "KeyT",
+        "KeyA",
+        "KeyL",
+        "KeyH",
+        "KeyO",
+        "KeyR",
+        "KeyI",
+        "KeyZ",
+        "KeyO",
+        "KeyN",
+        "Digit8",
+        "Digit4",
+        "Digit2",
+        "KeyM",
+        "KeyA",
+        "KeyP"
+      ],
+      "features": [
+        0.0,
+        0.0,
+        0.57894737,
+        4.53325681,
+        0.0,
+        0.59328397,
+        0.4052604
+      ],
+      "support": 0.68787579,
+      "known_pair_frac": 1.0,
+      "num_transitions": 19,
+      "dual_kb": {
+        "mu9": 0.28618,
+        "sd9": 0.25208,
+        "mu17": 0.35311,
+        "sd17": 0.21277,
+        "tau": 2.031,
+        "shrink_weight": 0.0,
+        "support": 0.68787579
+      },
+      "dual_touch": {
+        "mu9": 0.52401883,
+        "sd9": 0.18485049,
+        "mu17": 0.51925788,
+        "sd17": 0.19782038,
+        "tau": 0.5013,
+        "shrink_weight": 0.48151305,
+        "support": 0.68787579
+      }
+    },
+    {
+      "text": "가천값2026!Key",
+      "codes": [
+        "KeyR",
+        "KeyK",
+        "KeyC",
+        "KeyJ",
+        "KeyS",
+        "KeyR",
+        "KeyK",
+        "KeyQ",
+        "KeyT",
+        "Digit2",
+        "Digit0",
+        "Digit2",
+        "Digit6",
+        "Digit1",
+        "KeyK",
+        "KeyE",
+        "KeyY"
+      ],
+      "features": [
+        0.0,
+        0.0,
+        0.8125,
+        5.01903166,
+        0.0625,
+        0.22601695,
+        0.3779788
+      ],
+      "support": 0.27846065,
+      "known_pair_frac": 1.0,
+      "num_transitions": 16,
+      "dual_kb": {
+        "mu9": 0.2802475,
+        "sd9": 0.234815,
+        "mu17": 0.3249625,
+        "sd17": 0.208315,
+        "tau": 1.984575,
+        "shrink_weight": 0.0,
+        "support": 0.27846065
+      },
+      "dual_touch": {
+        "mu9": 0.48991779,
+        "sd9": 0.17922865,
+        "mu17": 0.48526043,
+        "sd17": 0.2148449,
+        "tau": 0.551925,
+        "shrink_weight": 0.19492245,
+        "support": 0.27846065
+      }
+    },
+    {
+      "text": "안녕 세상아 1234",
+      "codes": [
+        "KeyD",
+        "KeyK",
+        "KeyS",
+        "KeyS",
+        "KeyU",
+        "KeyD",
+        "Space",
+        "KeyT",
+        "KeyP",
+        "KeyT",
+        "KeyK",
+        "KeyD",
+        "KeyD",
+        "KeyK",
+        "Space",
+        "Digit1",
+        "Digit2",
+        "Digit3",
+        "Digit4"
+      ],
+      "features": [
+        0.11111111,
+        0.0,
+        0.5,
+        3.44393361,
+        0.05555556,
+        0.22657477,
+        0.26645481
+      ],
+      "support": 0.28704609,
+      "known_pair_frac": 1.0,
+      "num_transitions": 18,
+      "dual_kb": {
+        "mu9": 0.2842025,
+        "sd9": 0.246325,
+        "mu17": 0.3437275,
+        "sd17": 0.211285,
+        "tau": 2.015525,
+        "shrink_weight": 0.0,
+        "support": 0.28704609
+      },
+      "dual_touch": {
+        "mu9": 0.52906749,
+        "sd9": 0.18148941,
+        "mu17": 0.53301666,
+        "sd17": 0.20237059,
+        "tau": 0.518175,
+        "shrink_weight": 0.20093226,
+        "support": 0.28704609
+      }
+    },
+    {
+      "text": "aaaaBBBBcccc12",
+      "codes": [
+        "KeyA",
+        "KeyA",
+        "KeyA",
+        "KeyA",
+        "KeyB",
+        "KeyB",
+        "KeyB",
+        "KeyB",
+        "KeyC",
+        "KeyC",
+        "KeyC",
+        "KeyC",
+        "Digit1",
+        "Digit2"
+      ],
+      "features": [
+        0.69230769,
+        0.0,
+        0.0,
+        0.92559413,
+        0.46153846,
+        0.35390679,
+        0.24368025
+      ],
+      "support": 0.42010304,
+      "known_pair_frac": 1.0,
+      "num_transitions": 13,
+      "dual_kb": {
+        "mu9": 0.25895,
+        "sd9": 0.20425,
+        "mu17": 0.30329,
+        "sd17": 0.20933,
+        "tau": 1.4979,
+        "shrink_weight": 0.0,
+        "support": 0.42010304
+      },
+      "dual_touch": {
+        "mu9": 0.45669089,
+        "sd9": 0.197046,
+        "mu17": 0.55095974,
+        "sd17": 0.19731821,
+        "tau": 0.0029,
+        "shrink_weight": 0.29407213,
+        "support": 0.42010304
+      }
+    },
+    {
+      "text": "z",
+      "codes": [
+        "KeyZ"
+      ],
+      "features": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.15
+      ],
+      "support": 0.0,
+      "known_pair_frac": 0.0,
+      "num_transitions": 0,
+      "dual_kb": {
+        "mu9": 0.25473,
+        "sd9": 0.20451,
+        "mu17": 0.29284,
+        "sd17": 0.21273,
+        "tau": 0.0994,
+        "shrink_weight": 0.0,
+        "support": 0.0
+      },
+      "dual_touch": {
+        "mu9": 0.3918,
+        "sd9": 0.24694,
+        "mu17": 0.46061,
+        "sd17": 0.25287,
+        "tau": -1.1115,
+        "shrink_weight": 0.0,
+        "support": 0.0
+      }
+    }
+  ],
+  "hold_cases": [
+    {
+      "spec": {
+        "name": "physics_plus25ms",
+        "delta_sec": 0.025,
+        "scale_lambda": 0.0,
+        "target_mean_hold_sec": null,
+        "recompute_ud": true
+      },
+      "input_stroke": {
+        "holds": [
+          0.115,
+          0.095,
+          null,
+          0.13
+        ],
+        "hold_valid": [
+          true,
+          true,
+          false,
+          true
+        ],
+        "h_curr": [
+          0.115,
+          0.095,
+          null
+        ],
+        "h_next": [
+          0.095,
+          null,
+          0.13
+        ],
+        "hv_curr": [
+          true,
+          true,
+          false
+        ],
+        "hv_next": [
+          true,
+          false,
+          true
+        ],
+        "dds": [
+          0.18,
+          0.21,
+          0.24
+        ],
+        "uds": [
+          0.065,
+          0.115,
+          null
+        ],
+        "stitch_flags": [
+          false,
+          false,
+          true
+        ],
+        "pair_keys": [
+          [
+            "KeyG",
+            "KeyA"
+          ],
+          [
+            "KeyA",
+            "KeyC"
+          ],
+          [
+            "KeyC",
+            "KeyH"
+          ]
+        ]
+      },
+      "calibrated_stroke": {
+        "holds": [
+          0.09,
+          0.07,
+          null,
+          0.10500000000000001
+        ],
+        "hold_valid": [
+          true,
+          true,
+          false,
+          true
+        ],
+        "h_curr": [
+          0.09,
+          0.07,
+          null
+        ],
+        "h_next": [
+          0.07,
+          null,
+          0.10500000000000001
+        ],
+        "hv_curr": [
+          true,
+          true,
+          false
+        ],
+        "hv_next": [
+          true,
+          false,
+          true
+        ],
+        "dds": [
+          0.18,
+          0.21,
+          0.24
+        ],
+        "uds": [
+          0.09,
+          0.13999999999999999,
+          null
+        ],
+        "stitch_flags": [
+          false,
+          false,
+          true
+        ],
+        "pair_keys": [
+          [
+            "KeyG",
+            "KeyA"
+          ],
+          [
+            "KeyA",
+            "KeyC"
+          ],
+          [
+            "KeyC",
+            "KeyH"
+          ]
+        ]
+      },
+      "tensor": [
+        [
+          -0.10079599916934967,
+          -0.7426030039787292,
+          -0.16497699916362762
+        ],
+        [
+          -0.7374110221862793,
+          -0.1585949957370758,
+          0.3880639970302582
+        ],
+        [
+          -0.32117098569869995,
+          -0.16985100507736206,
+          -0.018532000482082367
+        ],
+        [
+          -0.29780301451683044,
+          -0.05142800137400627,
+          0.007701999973505735
+        ],
+        [
+          0.08050200343132019,
+          -0.8735359907150269,
+          -0.014902000315487385
+        ],
+        [
+          -0.21970300376415253,
+          0.0,
+          0.21970300376415253
+        ],
+        [
+          -0.1963990032672882,
+          -0.5874239802360535,
+          -0.5092189908027649
+        ],
+        [
+          -0.30169999599456787,
+          -0.30169999599456787,
+          -0.30169999599456787
+        ],
+        [
+          -0.0069690002128481865,
+          0.11777099967002869,
+          -0.0069690002128481865
+        ],
+        [
+          0.15125200152397156,
+          0.15125200152397156,
+          1.0657169818878174
+        ],
+        [
+          -0.18721400201320648,
+          -1.7570209503173828,
+          -0.7758920192718506
+        ],
+        [
+          0.1934570074081421,
+          1.1293350458145142,
+          0.1934570074081421
+        ],
+        [
+          -1.6507350206375122,
+          -0.7508040070533752,
+          0.14912700653076172
+        ],
+        [
+          0.20662400126457214,
+          -0.5295429825782776,
+          -0.5295429825782776
+        ],
+        [
+          1.2532180547714233,
+          1.2532180547714233,
+          -1.022902011871338
+        ],
+        [
+          -0.255731999874115,
+          -0.255731999874115,
+          -0.255731999874115
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ]
+      ]
+    },
+    {
+      "spec": {
+        "name": "naive_plus25ms_no_ud",
+        "delta_sec": 0.025,
+        "scale_lambda": 0.0,
+        "target_mean_hold_sec": null,
+        "recompute_ud": false
+      },
+      "input_stroke": {
+        "holds": [
+          0.115,
+          0.095,
+          null,
+          0.13
+        ],
+        "hold_valid": [
+          true,
+          true,
+          false,
+          true
+        ],
+        "h_curr": [
+          0.115,
+          0.095,
+          null
+        ],
+        "h_next": [
+          0.095,
+          null,
+          0.13
+        ],
+        "hv_curr": [
+          true,
+          true,
+          false
+        ],
+        "hv_next": [
+          true,
+          false,
+          true
+        ],
+        "dds": [
+          0.18,
+          0.21,
+          0.24
+        ],
+        "uds": [
+          0.065,
+          0.115,
+          null
+        ],
+        "stitch_flags": [
+          false,
+          false,
+          true
+        ],
+        "pair_keys": [
+          [
+            "KeyG",
+            "KeyA"
+          ],
+          [
+            "KeyA",
+            "KeyC"
+          ],
+          [
+            "KeyC",
+            "KeyH"
+          ]
+        ]
+      },
+      "calibrated_stroke": {
+        "holds": [
+          0.09,
+          0.07,
+          null,
+          0.10500000000000001
+        ],
+        "hold_valid": [
+          true,
+          true,
+          false,
+          true
+        ],
+        "h_curr": [
+          0.09,
+          0.07,
+          null
+        ],
+        "h_next": [
+          0.07,
+          null,
+          0.10500000000000001
+        ],
+        "hv_curr": [
+          true,
+          true,
+          false
+        ],
+        "hv_next": [
+          true,
+          false,
+          true
+        ],
+        "dds": [
+          0.18,
+          0.21,
+          0.24
+        ],
+        "uds": [
+          0.065,
+          0.115,
+          null
+        ],
+        "stitch_flags": [
+          false,
+          false,
+          true
+        ],
+        "pair_keys": [
+          [
+            "KeyG",
+            "KeyA"
+          ],
+          [
+            "KeyA",
+            "KeyC"
+          ],
+          [
+            "KeyC",
+            "KeyH"
+          ]
+        ]
+      },
+      "tensor": [
+        [
+          -0.10079599916934967,
+          -0.7426030039787292,
+          -0.16497699916362762
+        ],
+        [
+          -0.7374110221862793,
+          -0.1585949957370758,
+          0.3880639970302582
+        ],
+        [
+          -0.32117098569869995,
+          -0.16985100507736206,
+          -0.018532000482082367
+        ],
+        [
+          -0.420989990234375,
+          -0.1746159940958023,
+          0.007701999973505735
+        ],
+        [
+          0.08050200343132019,
+          -0.8735359907150269,
+          -0.014902000315487385
+        ],
+        [
+          -0.21970300376415253,
+          0.0,
+          0.21970300376415253
+        ],
+        [
+          -0.1963990032672882,
+          -0.5874239802360535,
+          -0.5092189908027649
+        ],
+        [
+          -0.30169999599456787,
+          -0.30169999599456787,
+          -0.30169999599456787
+        ],
+        [
+          -0.0069690002128481865,
+          0.11777099967002869,
+          -0.0069690002128481865
+        ],
+        [
+          0.15125200152397156,
+          0.15125200152397156,
+          1.0657169818878174
+        ],
+        [
+          -0.18721400201320648,
+          -1.7570209503173828,
+          -0.7758920192718506
+        ],
+        [
+          0.1934570074081421,
+          1.1293350458145142,
+          0.1934570074081421
+        ],
+        [
+          -1.6507350206375122,
+          -0.7508040070533752,
+          0.14912700653076172
+        ],
+        [
+          0.20662400126457214,
+          -0.5295429825782776,
+          -0.5295429825782776
+        ],
+        [
+          1.2532180547714233,
+          1.2532180547714233,
+          -1.022902011871338
+        ],
+        [
+          -0.255731999874115,
+          -0.255731999874115,
+          -0.255731999874115
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ]
+      ]
+    },
+    {
+      "spec": {
+        "name": "physics_shrink_to_85ms",
+        "delta_sec": 0.02,
+        "scale_lambda": 0.5,
+        "target_mean_hold_sec": 0.085,
+        "recompute_ud": true
+      },
+      "input_stroke": {
+        "holds": [
+          0.115,
+          0.095,
+          null,
+          0.13
+        ],
+        "hold_valid": [
+          true,
+          true,
+          false,
+          true
+        ],
+        "h_curr": [
+          0.115,
+          0.095,
+          null
+        ],
+        "h_next": [
+          0.095,
+          null,
+          0.13
+        ],
+        "hv_curr": [
+          true,
+          true,
+          false
+        ],
+        "hv_next": [
+          true,
+          false,
+          true
+        ],
+        "dds": [
+          0.18,
+          0.21,
+          0.24
+        ],
+        "uds": [
+          0.065,
+          0.115,
+          null
+        ],
+        "stitch_flags": [
+          false,
+          false,
+          true
+        ],
+        "pair_keys": [
+          [
+            "KeyG",
+            "KeyA"
+          ],
+          [
+            "KeyA",
+            "KeyC"
+          ],
+          [
+            "KeyC",
+            "KeyH"
+          ]
+        ]
+      },
+      "calibrated_stroke": {
+        "holds": [
+          0.09083333333333334,
+          0.07083333333333333,
+          null,
+          0.10583333333333333
+        ],
+        "hold_valid": [
+          true,
+          true,
+          false,
+          true
+        ],
+        "h_curr": [
+          0.09083333333333334,
+          0.07083333333333333,
+          null
+        ],
+        "h_next": [
+          0.07083333333333333,
+          null,
+          0.10583333333333333
+        ],
+        "hv_curr": [
+          true,
+          true,
+          false
+        ],
+        "hv_next": [
+          true,
+          false,
+          true
+        ],
+        "dds": [
+          0.18,
+          0.21,
+          0.24
+        ],
+        "uds": [
+          0.08916666666666666,
+          0.13916666666666666,
+          null
+        ],
+        "stitch_flags": [
+          false,
+          false,
+          true
+        ],
+        "pair_keys": [
+          [
+            "KeyG",
+            "KeyA"
+          ],
+          [
+            "KeyA",
+            "KeyC"
+          ],
+          [
+            "KeyC",
+            "KeyH"
+          ]
+        ]
+      },
+      "tensor": [
+        [
+          -0.07405400276184082,
+          -0.7158610224723816,
+          -0.16497699916362762
+        ],
+        [
+          -0.710614025592804,
+          -0.1585949957370758,
+          0.4148609936237335
+        ],
+        [
+          -0.32117098569869995,
+          -0.16985100507736206,
+          -0.018532000482082367
+        ],
+        [
+          -0.3019089996814728,
+          -0.0555340014398098,
+          0.007701999973505735
+        ],
+        [
+          0.08978299796581268,
+          -0.8575459718704224,
+          -0.044422000646591187
+        ],
+        [
+          -0.21970300376415253,
+          0.0,
+          0.21970300376415253
+        ],
+        [
+          -0.18553699553012848,
+          -0.5781139731407166,
+          -0.5092189908027649
+        ],
+        [
+          -0.30169999599456787,
+          -0.30169999599456787,
+          -0.30169999599456787
+        ],
+        [
+          -0.0069690002128481865,
+          0.11777099967002869,
+          -0.0069690002128481865
+        ],
+        [
+          0.15125200152397156,
+          0.15125200152397156,
+          1.0657169818878174
+        ],
+        [
+          -0.18721400201320648,
+          -1.7570209503173828,
+          -0.7758920192718506
+        ],
+        [
+          0.1934570074081421,
+          1.1293350458145142,
+          0.1934570074081421
+        ],
+        [
+          -1.6507350206375122,
+          -0.7508040070533752,
+          0.14912700653076172
+        ],
+        [
+          0.20662400126457214,
+          -0.5295429825782776,
+          -0.5295429825782776
+        ],
+        [
+          1.2532180547714233,
+          1.2532180547714233,
+          -1.022902011871338
+        ],
+        [
+          -0.255731999874115,
+          -0.255731999874115,
+          -0.255731999874115
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ]
+      ]
+    }
+  ]
+}

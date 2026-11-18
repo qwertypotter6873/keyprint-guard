@@ -20,24 +20,36 @@ import { fileURLToPath } from 'node:url';
 
 import { SmartKeystrokeRecorder } from '../src/recorder.js';
 import {
+  applyHoldCalibration,
   behaviorLlr,
   buildInputTensor,
   capitalMethodLlr,
   combineEmbeddings,
   dualParamsForLength,
   dualPasswordScore,
+  extractStringCalibrationFeatures,
   fuseScore,
   openSetAccept,
+  stringCalibratedDualParams,
+  stringToCodes,
   textToKeystrokes,
 } from '../src/features.js';
 import { DEFAULT_PREPROCESS_VERSION, KeyPrintEngine, SCHEMA_VERSION, sha256Hex, sha256HexPureJs } from '../src/biometrics.js';
+import {
+  DeviceMotionCollector,
+  EvalStudyManager,
+  isNon2BeolsikLayout,
+  recommendDeviceOrder,
+} from '../src/evalStudy.js';
 import { normalizeProfileName, validateProfileSchema } from '../src/roomSync.js';
 import { composingTailIndex, computeLiveAccuracy, validateSentenceCapture } from '../src/validation.js';
 import { analyzeProfileConvergence, createPresetCapture } from '../src/visualizer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = JSON.parse(readFileSync(join(here, 'fixtures', 'feature_parity.json'), 'utf8'));
+const calibFixture = JSON.parse(readFileSync(join(here, 'fixtures', 'calibration_parity.json'), 'utf8'));
 const config = JSON.parse(readFileSync(join(here, '..', 'public', 'models', 'model_config.json'), 'utf8'));
+const stringCalib = JSON.parse(readFileSync(join(here, '..', 'public', 'models', 'string_cohort_calibration.json'), 'utf8'));
 
 let failures = 0;
 let checks = 0;
@@ -857,6 +869,226 @@ unit('v4 Contract (6): validateProfileSchema & SHA-256 pure-JS parity', () => {
   check(({}).polluted === undefined, 'Object.prototype not polluted');
   check(normalizeProfileName(null) === '' && normalizeProfileName('  홍길동\x00 ') === '홍길동', 'normalizeProfileName safe');
 });
+
+// ---- Cross-Device Hold Calibration, String Cohort Calibration & EvalStudy Parity -------------
+unit('String-specific password cohort calibration: exact Python <-> JS parity (28 strings)', () => {
+  check(calibFixture.string_cases.length === 28, `expected 28 string cases, got ${calibFixture.string_cases.length}`);
+  const kappa = Number(stringCalib.support_kappa ?? 40.0);
+  for (const sc of calibFixture.string_cases) {
+    const codesJs = stringToCodes(sc.text, config.keyboard_layout);
+    check(JSON.stringify(codesJs) === JSON.stringify(sc.codes), `stringToCodes("${sc.text}")`);
+
+    const fx = extractStringCalibrationFeatures(sc.text, config.keyboard_layout, stringCalib.digraph_table, kappa);
+    check(fx.numTransitions === sc.num_transitions, `numTransitions("${sc.text}")`);
+    check(close(fx.support, sc.support, 1e-6), `support("${sc.text}") JS=${fx.support} PY=${sc.support}`);
+    check(close(fx.knownPairFrac, sc.known_pair_frac, 1e-6), `knownPairFrac("${sc.text}")`);
+    for (let i = 0; i < sc.features.length; i++) {
+      check(close(fx.features[i], sc.features[i], 1e-6), `feature[${i}]("${sc.text}") JS=${fx.features[i]} PY=${sc.features[i]}`);
+    }
+
+    const kbPrm = stringCalibratedDualParams(sc.text, 'keyboard', config.password_dual, config.keyboard_layout, stringCalib);
+    const tcPrm = stringCalibratedDualParams(sc.text, 'touch', config.password_dual, config.keyboard_layout, stringCalib);
+    for (const k of ['mu9', 'sd9', 'mu17', 'sd17', 'tau']) {
+      check(close(kbPrm[k], sc.dual_kb[k], 1e-6), `dual_kb.${k}("${sc.text}") JS=${kbPrm[k]} PY=${sc.dual_kb[k]}`);
+      check(close(tcPrm[k], sc.dual_touch[k], 1e-6), `dual_touch.${k}("${sc.text}") JS=${tcPrm[k]} PY=${sc.dual_touch[k]}`);
+    }
+    check(close(kbPrm.shrinkWeight, sc.dual_kb.shrink_weight, 1e-6), `dual_kb.shrinkWeight("${sc.text}")`);
+    check(close(tcPrm.shrinkWeight, sc.dual_touch.shrink_weight, 1e-6), `dual_touch.shrinkWeight("${sc.text}")`);
+  }
+});
+
+unit('Physics-consistent Hold calibration: exact Python <-> JS stroke & 17ch tensor parity', () => {
+  check(calibFixture.hold_cases.length === 3, '3 hold calibration parity cases');
+  for (const hc of calibFixture.hold_cases) {
+    const inp = {
+      holds: hc.input_stroke.holds,
+      holdValid: hc.input_stroke.hold_valid,
+      hCurr: hc.input_stroke.h_curr,
+      hNext: hc.input_stroke.h_next,
+      hvCurr: hc.input_stroke.hv_curr,
+      hvNext: hc.input_stroke.hv_next,
+      dds: hc.input_stroke.dds,
+      uds: hc.input_stroke.uds,
+      stitchFlags: hc.input_stroke.stitch_flags,
+      pairKeys: hc.input_stroke.pair_keys,
+    };
+    const sp = hc.spec;
+    const calJs = applyHoldCalibration(inp, {
+      deltaSec: sp.delta_sec,
+      scaleLambda: sp.scale_lambda,
+      targetMeanHoldSec: sp.target_mean_hold_sec,
+      recomputeUd: sp.recompute_ud,
+    });
+    const exp = hc.calibrated_stroke;
+    for (let i = 0; i < exp.holds.length; i++) {
+      check(close(calJs.holds[i], exp.holds[i], 1e-9), `${sp.name}: holds[${i}] JS=${calJs.holds[i]} PY=${exp.holds[i]}`);
+    }
+    for (let i = 0; i < exp.dds.length; i++) {
+      check(close(calJs.hCurr[i], exp.h_curr[i], 1e-9), `${sp.name}: hCurr[${i}]`);
+      check(close(calJs.hNext[i], exp.h_next[i], 1e-9), `${sp.name}: hNext[${i}]`);
+      check(close(calJs.uds[i], exp.uds[i], 1e-9), `${sp.name}: uds[${i}] JS=${calJs.uds[i]} PY=${exp.uds[i]}`);
+    }
+    const { tensorData, dims } = buildInputTensor(calJs, config);
+    const [, nCh, m] = dims;
+    let maxErr = 0;
+    for (let c = 0; c < nCh; c++) {
+      for (let t = 0; t < m; t++) {
+        maxErr = Math.max(maxErr, Math.abs(tensorData[c * m + t] - hc.tensor[c][t]));
+      }
+    }
+    check(maxErr < 2e-5, `${sp.name}: tensor max |Δ| = ${maxErr.toExponential(2)}`);
+  }
+});
+
+unit('Counterbalanced 4-device Williams Latin Square, 2-beolsik mismatch & DeviceMotion sensor summary', () => {
+  const rows = ['P01', 'P02', 'P03', 'P04'].map((id) => recommendDeviceOrder(id).order);
+  const firstDevices = new Set(rows.map((r) => r[0]));
+  check(firstDevices.size === 4, `Williams 4x4 starts with 4 distinct devices: ${[...firstDevices].join(', ')}`);
+  for (let col = 0; col < 4; col++) {
+    check(new Set(rows.map((r) => r[col])).size === 4, `column ${col} balanced across all 4 devices`);
+  }
+  check(isNon2BeolsikLayout('pc_2beolsik') === false && isNon2BeolsikLayout('mobile_qwerty_2beolsik') === false, '2-beolsik compatible');
+  check(isNon2BeolsikLayout('mobile_cheonjiin') === true && isNon2BeolsikLayout('pc_3beolsik') === true, 'non-2-beolsik flagged');
+
+  // DeviceMotionCollector: desk flat vs in-hand + keystroke tap impulse
+  const deskMotion = new DeviceMotionCollector();
+  for (let i = 0; i < 20; i++) {
+    const tMs = 1000 + i * 16.67; // ~60 Hz
+    const tap = i === 6 || i === 12 ? 0.55 : 0.02;
+    deskMotion.ingestSample({ tMs, ax: 0.01, ay: 0.01, az: tap, agx: 0.05, agy: 0.1, agz: -9.8, rAlpha: 0.2, rBeta: 0.2, rGamma: 0.1 });
+  }
+  const deskSum = deskMotion.summarizeWindow(1050, 1280, [1000 + 6 * 16.67, 1000 + 12 * 16.67]);
+  check(deskSum.available === true && close(deskSum.effectiveHz, 60.0, 1.0), `desk Hz=${deskSum.effectiveHz}`);
+  check(deskSum.inferredPosture === 'on_desk_flat', `desk posture=${deskSum.inferredPosture}`);
+  check(deskSum.tapImpulseMean > 0.4, `tapImpulseMean=${deskSum.tapImpulseMean}`);
+
+  const handMotion = new DeviceMotionCollector();
+  for (let i = 0; i < 20; i++) {
+    const tMs = 2000 + i * 20;
+    const jitter = (i % 2 === 0 ? 1 : -1) * 0.35;
+    handMotion.ingestSample({ tMs, ax: 0.3, ay: 0.2, az: 0.9, agx: jitter, agy: 6.2 + jitter, agz: -7.4, rAlpha: 8.0, rBeta: 5.0, rGamma: 3.0 });
+  }
+  const handSum = handMotion.summarizeWindow(2020, 2360, [2100, 2220]);
+  check(handSum.available === true && handSum.inferredPosture === 'in_hand', `hand posture=${handSum.inferredPosture}`);
+});
+
+// Verify EvalStudyManager privacy redaction, lockAdaptation, and JSONL merge round-trip
+{
+  const study = new EvalStudyManager();
+  study.updateSettings({
+    enabled: true,
+    participantId: 'P02',
+    groundTruthRole: 'enrolled:u_test',
+    keyboardType: 'mechanical_tactile',
+    hangulLayout: 'mobile_cheonjiin',
+    rawConsent: true,
+    lockAdaptation: true,
+  });
+
+  const dummyEngine = new KeyPrintEngine();
+  dummyEngine.config = config;
+  dummyEngine.calibrationStudy = stringCalib;
+  dummyEngine.modelHash = config.model_hash;
+  dummyEngine.preprocessVersion = config.preprocess_version;
+
+  const unit64 = Array.from({ length: 64 }, (_, i) => (i === 0 ? 1 : 0));
+  const tmplPw = {
+    target: 'MySecretPrivatePw99!',
+    centroid: unit64,
+    exemplars: [unit64],
+    enc17: { centroid: unit64, exemplars: [unit64] },
+    count: 4,
+    inputMode: 'keyboard',
+    holdMs: 92,
+  };
+  // lockAdaptation=true must force adapt=false even on a perfect self-match!
+  const unlockedRes = dummyEngine.scoreTemplate(unit64, tmplPw, {
+    domain: 'password',
+    inputMode: 'keyboard',
+    embedding17: unit64,
+    lockAdaptation: false,
+  });
+  const lockedRes = dummyEngine.scoreTemplate(unit64, tmplPw, {
+    domain: 'password',
+    inputMode: 'keyboard',
+    embedding17: unit64,
+    lockAdaptation: true,
+  });
+  check(unlockedRes.accepted === true && unlockedRes.adapt === true, 'unlocked perfect match adapts');
+  check(lockedRes.accepted === true && lockedRes.adapt === false, 'lockAdaptation=true prevents template drift');
+  check(Boolean(lockedRes.lengthBaseline && lockedRes.stringCalibrated), 'scoreTemplate returns side-by-side lengthBaseline & stringCalibrated');
+
+  const fakeCapture = {
+    cpm: 310,
+    holdMs: 92,
+    rolloverPct: 18,
+    backspaceCount: 0,
+    cleanDigraphCount: 2,
+    inputMode: 'keyboard',
+    capitalMethods: ['shift'],
+    behavior: { bs_rate: [0, 3] },
+    stroke: {
+      holds: [0.09, 0.08, 0.10],
+      holdValid: [true, true, true],
+      hCurr: [0.09, 0.08],
+      hNext: [0.08, 0.10],
+      hvCurr: [true, true],
+      hvNext: [true, true],
+      dds: [0.16, 0.18],
+      uds: [0.07, 0.10],
+      stitchFlags: [false, false],
+      pairKeys: [['KeyM', 'KeyY'], ['KeyY', 'KeyS']],
+    },
+  };
+
+  // 1) Custom private password -> plaintext & pairKeys MUST be redacted even with rawConsent=true
+  const privRec = await study.recordGuardQuery({
+    roomCode: 'RM01',
+    targetAccount: { id: 'u_test', name: '테스터', password: tmplPw },
+    passwordText: 'MySecretPrivatePw99!',
+    capture: fakeCapture,
+    bothEmbeddings: { password: unit64, passwordAux: unit64 },
+    res: lockedRes,
+    thresholdOffset: 0,
+    adapted: false,
+    latencyMs: 1.2,
+    recorder: null,
+    engine: dummyEngine,
+  });
+  check(privRec.passwordMeta.isPublicAllowlist === false && privRec.passwordMeta.publicText === null, 'custom password plaintext redacted');
+  check(
+    privRec.optInDiagnostics.rawCapture.pairKeys === null &&
+      privRec.optInDiagnostics.rawCapture.pairKeysRedacted === true &&
+      privRec.optInDiagnostics.rawCapture.capitalMethods.length === 0,
+    'custom password pairKeys & capitalMethods redacted',
+  );
+  check(!JSON.stringify(privRec).includes('MySecretPrivatePw99!'), 'custom password never appears anywhere in JSON record');
+
+  // 2) Public allowlist experiment password -> publicExperimentId & pairKeys preserved for biomechanical analysis
+  const pubRec = await study.recordGuardQuery({
+    roomCode: 'RM01',
+    targetAccount: { id: 'u_test', name: '테스터', password: { ...tmplPw, target: 'CoffeeTree88' } },
+    passwordText: 'CoffeeTree88',
+    capture: fakeCapture,
+    bothEmbeddings: { password: unit64, passwordAux: unit64 },
+    res: lockedRes,
+    thresholdOffset: 0,
+    adapted: false,
+    latencyMs: 1.1,
+    recorder: null,
+    engine: dummyEngine,
+  });
+  check(pubRec.passwordMeta.isPublicAllowlist === true && pubRec.passwordMeta.publicExperimentId === 'EXP12_REP_A', 'public allowlist tagged');
+  check(Array.isArray(pubRec.optInDiagnostics.rawCapture.pairKeys) && pubRec.optInDiagnostics.rawCapture.pairKeys.length === 2, 'public allowlist pairKeys preserved');
+
+  // 3) JSONL export + deduplicated merge
+  const jsonl = study.toJsonl();
+  const study2 = new EvalStudyManager();
+  const m1 = await study2.importJsonlText(jsonl);
+  const m2 = await study2.importJsonlText(jsonl);
+  check(m1.added === 2 && m1.skipped === 0 && m2.added === 0 && m2.skipped === 2, `JSONL merge dedup: ${JSON.stringify([m1, m2])}`);
+  console.log('  ✓ EvalStudyManager privacy redaction, lockAdaptation & JSONL merge');
+}
 
 // Verify async sha256Hex matches Node crypto too
 const asyncDigest = await sha256Hex(new TextEncoder().encode('keyprint-guard-v4'));
