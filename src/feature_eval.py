@@ -15,6 +15,7 @@ import torch
 from sklearn.metrics import f1_score, roc_auc_score
 
 from behavior_profile import BehaviorModel, Event, merge, summarize
+from evaluation_protocol import balanced_impostor_indices, paired_person_auc_ci
 from capture_sim import (
     as_norm_similarity,
     build_input_tensor,
@@ -366,21 +367,6 @@ def _verification_metrics(y: np.ndarray, s: np.ndarray, threshold: float) -> Dic
     }
 
 
-def _paired_auc_diff_ci(y: np.ndarray, s_a: np.ndarray, s_b: np.ndarray, n_boot: int = 1000, seed: int = 0) -> Dict[str, float]:
-    rng = np.random.default_rng(seed)
-    diffs = []
-    for _ in range(n_boot):
-        i = rng.integers(0, len(y), len(y))
-        if y[i].min() == y[i].max():
-            continue
-        diffs.append(roc_auc_score(y[i], s_a[i]) - roc_auc_score(y[i], s_b[i]))
-    return {
-        "mean": round(float(np.mean(diffs)), 4),
-        "ci95_low": round(float(np.percentile(diffs, 2.5)), 4),
-        "ci95_high": round(float(np.percentile(diffs, 97.5)), 4),
-    }
-
-
 def eval_password_transfer(
     fixed_csv,
     raw_sessions: Dict[Tuple[str, int], Sequence],
@@ -403,7 +389,7 @@ def eval_password_transfer(
     * repeated_words_unseen — words (>= min_word_len letters) an unseen person typed cleanly
       >= 4 times in free text: a fixed string never trained as a password, like a user's own
       password. Enroll = first 3 session-1 occurrences, genuine = session-2 (else later) ones,
-      impostors = up to 12 occurrences of the same word by other people.
+      impostors = an equal quota (up to 2) from every eligible other person.
     """
     import pandas as pd
 
@@ -424,17 +410,20 @@ def eval_password_transfer(
         model, in_ch, _, _ = encoders[name]
         return encode_variable(model, list(seq), device, in_ch)
 
-    def _score_groups(seq, groups: List[Tuple[List[int], List[int], List[int]]]) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    def _score_groups(seq, groups, sample_people):
         embs = {n: _enc(n, seq) for n in names}
         y, scores = [], {n: [] for n in names}
+        targets, queries = [], []
         for enroll, gen, imp in groups:
             tmpls = {n: make_template(embs[n][enroll]) for n in names}
             for idxs, lab in ((gen, 1), (imp, 0)):
                 for i in idxs:
                     y.append(lab)
+                    targets.append(sample_people[enroll[0]])
+                    queries.append(sample_people[i])
                     for n in names:
                         scores[n].append(as_norm_similarity(embs[n][i], tmpls[n], encoders[n][2], 12))
-        return np.asarray(y), {n: np.asarray(v) for n, v in scores.items()}
+        return np.asarray(y), {n: np.asarray(v) for n, v in scores.items()}, targets, queries
 
     out: Dict[str, Dict] = {}
 
@@ -463,10 +452,10 @@ def eval_password_transfer(
                 cand = np.where((P == q) & (S == 2))[0]
                 imp.extend(rng.choice(cand, size=min(10, len(cand)), replace=False).tolist())
         groups.append((enroll, gen, imp))
-    y, sc = _score_groups(seq, groups)
+    y, sc, targets, queries = _score_groups(seq, groups, P)
     out["keyrecs_fixed_cross_session"] = {n: _verification_metrics(y, sc[n], encoders[n][3]) for n in names}
     if len(names) >= 2:
-        out["keyrecs_fixed_cross_session"]["auc_diff_first_minus_second"] = _paired_auc_diff_ci(y, sc[names[0]], sc[names[1]], seed=seed)
+        out["keyrecs_fixed_cross_session"]["auc_diff_first_minus_second"] = paired_person_auc_ci(y, sc[names[0]], sc[names[1]], targets, queries, seed=seed)
 
     # 2) Repeated words of unseen people (content never trained as a fixed password)
     occ: Dict[str, Dict[str, Dict[int, List]]] = defaultdict(lambda: defaultdict(lambda: {1: [], 2: []}))
@@ -489,7 +478,7 @@ def eval_password_transfer(
                     continue
                 else:
                     ok = False
-    seqs, groups, words = [], [], []
+    seqs, groups, words, sample_people = [], [], [], []
     for w, per in occ.items():
         enrolled = [p for p, dd_ in per.items() if len(dd_[1]) >= 3 and len(dd_[1]) + len(dd_[2]) >= 4]
         if len(enrolled) < 3 or len(per) < 4:
@@ -505,23 +494,28 @@ def eval_password_transfer(
                     uu = np.clip(raw_u, *bounds["UD"]).astype(np.float32)
                     seqs.append(apply_channel_scaler(extract_sequences(hh[None], dc[None], uu[None], kb[None]), mean, std)[0])
                     index[(p, s, k)] = len(seqs) - 1
+                    sample_people.append(p)
         used = 0
         for p in enrolled:
             s1 = [index[(p, 1, k)] for k in range(len(per[p][1]))]
             gen = [index[(p, 2, k)] for k in range(len(per[p][2]))] or s1[3:]
             if not gen:
                 continue
-            imp = [i for (q, _, _), i in index.items() if q != p][:12]
+            imp = balanced_impostor_indices(index, p, w, seed=seed)
             groups.append((s1[:3], gen, imp))
             used += 1
         if used:
             words.append({"word": w, "enrolled_people": used})
     if groups:
-        y, sc = _score_groups(seqs, groups)
+        y, sc, targets, queries = _score_groups(seqs, groups, sample_people)
         res = {n: _verification_metrics(y, sc[n], encoders[n][3]) for n in names}
         if len(names) >= 2:
-            res["auc_diff_first_minus_second"] = _paired_auc_diff_ci(y, sc[names[0]], sc[names[1]], seed=seed)
+            res["auc_diff_first_minus_second"] = paired_person_auc_ci(y, sc[names[0]], sc[names[1]], targets, queries, seed=seed)
         res["words"] = words
+        from collections import Counter
+        res["sampling"] = {"rule": "equal_quota_all_eligible_other_people", "seed": seed,
+                           "impostor_trials_by_person": dict(Counter(q for q, label in zip(queries, y) if label == 0)),
+                           "target_word_templates": len(groups)}
         out["repeated_words_unseen"] = res
     return out
 

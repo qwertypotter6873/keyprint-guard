@@ -283,10 +283,13 @@ export function renderPianoRollSvg(capture, { maxEvents = 120 } = {}) {
       metaLabel = `${safeHoldMs}ms · 가속도 0 리셋`;
       metaColor = '#059669';
     }
+    // Long rollover/stitch labels belong to the same row and must stay inside the SVG.
+    const labelWidth = [...metaLabel].reduce((w, ch) => w + (ch.charCodeAt(0) > 255 ? 10 : 6), 0);
+    const labelBefore = x2 + 6 + labelWidth > W - 10;
     rowItems.push(
-      `<text x="${(x2 + 6).toFixed(1)}" y="${(yCenter + 3.5).toFixed(
+      `<text x="${(labelBefore ? x1 - 6 : x2 + 6).toFixed(1)}" y="${(yCenter + 3.5).toFixed(
         1
-      )}" fill="${metaColor}" font-size="10" font-weight="600" font-family="var(--font-mono)">${esc(
+      )}" text-anchor="${labelBefore ? 'end' : 'start'}" fill="${metaColor}" font-size="10" font-weight="600" font-family="var(--font-mono)">${esc(
         metaLabel
       )}</text>`
     );

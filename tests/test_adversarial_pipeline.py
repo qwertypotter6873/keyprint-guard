@@ -10,7 +10,6 @@ import hashlib
 import importlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -53,11 +52,6 @@ from preprocessing import (  # noqa: E402
     touchify_timings,
 )
 from train_and_evaluate import KEYPRINT_DEFAULT_EPOCHS, VANILLA_DEFAULT_EPOCHS  # noqa: E402
-
-
-SCRATCH_VERIFY_DIR = Path(
-    "/Users/bookend/.gemini/antigravity-cli/brain/d27dc495-df96-439d-8c05-28dba720a294/scratch/track_a_verify"
-)
 
 
 class TestLosslessKeyRecsParserAndWindows(unittest.TestCase):
@@ -444,16 +438,16 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
                 os.environ["KEYPRINT_SMOKE_EPOCHS"] = old_smoke
 
     def test_clean_empty_directory_from_scratch_pipeline_and_notebook_execution(self) -> None:
-        if SCRATCH_VERIFY_DIR.exists():
-            shutil.rmtree(SCRATCH_VERIFY_DIR)
-        SCRATCH_VERIFY_DIR.mkdir(parents=True, exist_ok=True)
+        scratch = tempfile.TemporaryDirectory(prefix="keyprint_verify_")
+        self.addCleanup(scratch.cleanup)
+        scratch_root = Path(scratch.name)
         # Guarantee ZERO pre-existing .pt or .onnx files before running
-        self.assertEqual(list(SCRATCH_VERIFY_DIR.rglob("*.pt")), [])
-        self.assertEqual(list(SCRATCH_VERIFY_DIR.rglob("*.onnx")), [])
+        self.assertEqual(list(scratch_root.rglob("*.pt")), [])
+        self.assertEqual(list(scratch_root.rglob("*.onnx")), [])
 
         env = {
             **os.environ,
-            "KEYPRINT_OUTPUT_ROOT": str(SCRATCH_VERIFY_DIR),
+            "KEYPRINT_OUTPUT_ROOT": str(scratch_root),
             "KEYPRINT_REPO_ROOT": str(REPO_ROOT),
             "KEYPRINT_SMOKE_EPOCHS": "1",
         }
@@ -477,17 +471,17 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
             "web/scripts/fixtures/feature_parity.json",
             "models/evaluation_report.json",
         ):
-            self.assertTrue((SCRATCH_VERIFY_DIR / rel).exists(), msg=f"Missing {rel}")
+            self.assertTrue((scratch_root / rel).exists(), msg=f"Missing {rel}")
 
-        report = json.loads((SCRATCH_VERIFY_DIR / "models" / "evaluation_report.json").read_text(encoding="utf-8"))
-        web_cfg = json.loads((SCRATCH_VERIFY_DIR / "web" / "public" / "models" / "model_config.json").read_text(encoding="utf-8"))
-        parity_fx = json.loads((SCRATCH_VERIFY_DIR / "web" / "scripts" / "fixtures" / "feature_parity.json").read_text(encoding="utf-8"))
+        report = json.loads((scratch_root / "models" / "evaluation_report.json").read_text(encoding="utf-8"))
+        web_cfg = json.loads((scratch_root / "web" / "public" / "models" / "model_config.json").read_text(encoding="utf-8"))
+        parity_fx = json.loads((scratch_root / "web" / "scripts" / "fixtures" / "feature_parity.json").read_text(encoding="utf-8"))
 
         # Schema v4 & provenance checks
         self.assertEqual(web_cfg["schema_version"], 4)
         self.assertEqual(web_cfg["preprocess_version"], "kp-preproc-v4")
-        sha17 = hashlib.sha256((SCRATCH_VERIFY_DIR / "web/public/models/keyprint_net.onnx").read_bytes()).hexdigest()
-        sha9 = hashlib.sha256((SCRATCH_VERIFY_DIR / "web/public/models/keyprint_net_password.onnx").read_bytes()).hexdigest()
+        sha17 = hashlib.sha256((scratch_root / "web/public/models/keyprint_net.onnx").read_bytes()).hexdigest()
+        sha9 = hashlib.sha256((scratch_root / "web/public/models/keyprint_net_password.onnx").read_bytes()).hexdigest()
         expected_hash = hashlib.sha256(f"{sha17}:{sha9}".encode("utf-8")).hexdigest()[:16]
         self.assertEqual(web_cfg["onnx_sha256"], {"sentence_17ch": sha17, "password_9ch": sha9})
         self.assertEqual(web_cfg["model_hash"], expected_hash)
@@ -538,46 +532,28 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
         subprocess.run([py, str(REPO_ROOT / "src" / "eval_password_calibration.py")], env=env, check=True)
         subprocess.run([py, str(REPO_ROOT / "src" / "eval_typing_style.py")], env=env, check=True)
 
-        pw_cal = json.loads((SCRATCH_VERIFY_DIR / "models" / "password_calibration.json").read_text(encoding="utf-8"))
+        pw_cal = json.loads((scratch_root / "models" / "password_calibration.json").read_text(encoding="utf-8"))
         self.assertFalse(pw_cal["split_isolation"]["val_test_pooled"])
-        style_rep = json.loads((SCRATCH_VERIFY_DIR / "models" / "typing_style_analysis.json").read_text(encoding="utf-8"))
+        style_rep = json.loads((scratch_root / "models" / "typing_style_analysis.json").read_text(encoding="utf-8"))
         self.assertEqual(style_rep["participant_counts"]["raw_corpus_participants"], 99)
         self.assertEqual(style_rep["participant_counts"]["clean_chunk_participants"], 96)
 
         # 3) Generate & execute canonical non-retraining notebook (`build_notebook.py`)
-        subprocess.run([py, str(REPO_ROOT / "src" / "build_notebook.py")], env=env, check=True)
-        nb_path = SCRATCH_VERIFY_DIR / "notebooks" / "keyprint_training_pipeline.ipynb"
+        subprocess.run([py, str(REPO_ROOT / "src" / "build_notebook.py"), "--execute"], env=env, check=True)
+        nb_path = scratch_root / "notebooks" / "keyprint_training_pipeline.ipynb"
         nb_text = nb_path.read_text(encoding="utf-8")
         self.assertNotIn("train_vanilla_baseline", nb_text)
         self.assertNotIn("train_keyprint_net", nb_text)
 
         nb = nbformat.read(nb_path, as_version=4)
-        code_cells = [c["source"] for c in nb.cells if c.cell_type == "code"]
-        runner = (
-            "import json, matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "import builtins\n"
-            "builtins.display = lambda *a, **k: None\n"
-            "ns = {}\n"
-            f"cells = {json.dumps(code_cells)}\n"
-            "for idx, src in enumerate(cells):\n"
-            "    exec(compile(src, f'<nb_cell_{idx}>', 'exec'), ns)\n"
-            "print('NOTEBOOK_EXEC_OK')\n"
-        )
-        res = subprocess.run(
-            [py, "-c", runner],
-            cwd=str(nb_path.parent),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        self.assertIn("NOTEBOOK_EXEC_OK", res.stdout)
+        from build_notebook import notebook_input_hashes, validate_notebook_outputs
+        self.assertEqual(validate_notebook_outputs(nb), 6)
+        self.assertEqual(dict(nb.metadata["verification_input_sha256"]), notebook_input_hashes(scratch_root))
 
         # 4) Verify `KEYPRINT_REUSE_WEIGHTS=1` preserves histories & exact metrics without retraining
         env_reuse = {**env, "KEYPRINT_REUSE_WEIGHTS": "1"}
         subprocess.run([py, str(REPO_ROOT / "src" / "visualize_and_run.py")], env=env_reuse, check=True)
-        report_reused = json.loads((SCRATCH_VERIFY_DIR / "models" / "evaluation_report.json").read_text(encoding="utf-8"))
+        report_reused = json.loads((scratch_root / "models" / "evaluation_report.json").read_text(encoding="utf-8"))
         for h_k in ("Vanilla1DCNN", "Vanilla1DCNN_Aug", "KeyPrintNet_9ch", "KeyPrintNet"):
             self.assertEqual(len(report_reused["histories"][h_k]), 1)
         self.assertAlmostEqual(

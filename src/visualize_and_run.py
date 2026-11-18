@@ -72,10 +72,12 @@ from feature_eval import (
 )
 from keyboard_layout import CMU_PASSWORD_CODES, export_layout_for_web, pairs_from_codes
 from models import KeyPrintNet, ScaledManhattanDetector, Vanilla1DCNN
+from model_comparison import comparison_with_control
 from password_synth import (
     CALIB_LENGTHS,
     DISPLAY_SLOPE,
     adaptation_eval,
+    select_adaptation_policy,
     calibrate_by_length,
     calibrate_dual,
     capital_fusion,
@@ -106,11 +108,14 @@ from preprocessing import (
     extract_sequences,
     get_feature_columns,
     prepare_full_pipeline,
+    prefix_sequences,
+    CMU_KEY_BLOCK,
     touchify_timings,
 )
 from train_and_evaluate import (
     KEYPRINT_DEFAULT_EPOCHS,
     VANILLA_DEFAULT_EPOCHS,
+    TEST_BOT_SEED,
     build_verification_trials,
     compute_cohort_centroids,
     compute_eer,
@@ -541,6 +546,7 @@ def plot_fig3_roc_det_kshot(
         "ScaledManhattan (통계 베이스라인)": "#64748B",
         "Vanilla1DCNN (딥러닝 베이스라인)": "#F59E0B",
         "KeyPrintNet (제안 모델)": "#2563EB",
+        "Vanilla + Aug + AS-Norm (통제)": "#059669",
     }
 
     ax = axes[0]
@@ -561,7 +567,7 @@ def plot_fig3_roc_det_kshot(
     ax.grid(alpha=0.25, linestyle="--")
 
     ax = axes[1]
-    yt_kp, ys_kp, m_kp = list(roc_data.values())[2]
+    yt_kp, ys_kp, m_kp = roc_data["KeyPrintNet (제안 모델)"]
     fpr, tpr, thresh = roc_curve(yt_kp, ys_kp)
     fnr = 1.0 - tpr
     valid = np.isfinite(thresh)
@@ -587,7 +593,7 @@ def plot_fig3_roc_det_kshot(
     l1 = ax.plot(ks, f1s, "-o", color="#2563EB", lw=2.3, markersize=7, label="Test Macro F1 ↑")
     l2 = ax2.plot(ks, eers, "--s", color="#EF4444", lw=2.1, markersize=6, label="Test EER (%) ↓")
     ax.axvline(5, color="#10B981", linestyle=":", lw=1.6)
-    ax.text(5.15, min(f1s) + 0.005, "웹 기본 채택\n(K=5회 등록)", color="#047857", fontsize=9, fontweight="bold")
+    ax.text(5.15, min(f1s) + 0.005, "벤치마크 기본\n(K=5회 등록)", color="#047857", fontsize=9, fontweight="bold")
     ax.set_xticks(ks)
     ax.set_xlabel("초기 타건 지문 등록 횟수 (K-Shot Enrollment)")
     ax.set_ylabel("Macro F1-Score", color="#2563EB")
@@ -605,8 +611,9 @@ def plot_fig3_roc_det_kshot(
 def plot_fig4_confusion_matrices(
     roc_data: Dict[str, Tuple[np.ndarray, np.ndarray, Dict]], fig_dir: Path
 ) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(15.6, 4.5))
-    cmaps = ["Greys", "Oranges", "Blues"]
+    fig, axes = plt.subplots(2, 2, figsize=(12.0, 9.5))
+    axes = axes.ravel()
+    cmaps = ["Greys", "Oranges", "Blues", "Greens"]
 
     for ax, (name, (yt, ys, m)), cmap in zip(axes, roc_data.items(), cmaps):
         yp = (ys >= m["threshold"]).astype(np.int64)
@@ -928,8 +935,8 @@ def plot_fig8_feature_upgrade(
     _bars(
         axes[0],
         [
-            ("같은 날 다른 문장", [pick(kb["legacy_9ch"], "same_session"), pick(kb["keyprint_17ch"], "same_session"), pick(kb["keyprint_17ch_behavior"], "same_session")]),
-            ("다른 날 다른 글", [pick(kb["legacy_9ch"], "cross_session"), pick(kb["keyprint_17ch"], "cross_session"), pick(kb["keyprint_17ch_behavior"], "cross_session")]),
+            ("동일 세션 다른 문장", [pick(kb["legacy_9ch"], "same_session"), pick(kb["keyprint_17ch"], "same_session"), pick(kb["keyprint_17ch_behavior"], "same_session")]),
+            ("타 세션 다른 글", [pick(kb["legacy_9ch"], "cross_session"), pick(kb["keyprint_17ch"], "cross_session"), pick(kb["keyprint_17ch_behavior"], "cross_session")]),
         ],
         ["기존 9채널", "17채널 (키 위치)", "17채널 + 행동 프로필"],
         f"(a) 키보드 문장 입력 {n_way}인 식별 (웹 캡처 재현, 3문장 등록)",
@@ -938,8 +945,8 @@ def plot_fig8_feature_upgrade(
     _bars(
         axes[1],
         [
-            ("같은 날 다른 문장", [pick(tc["legacy_9ch_imputed_holds"], "same_session"), pick(tc["keyprint_17ch"], "same_session"), pick(tc["keyprint_17ch_behavior"], "same_session")]),
-            ("다른 날 다른 글", [pick(tc["legacy_9ch_imputed_holds"], "cross_session"), pick(tc["keyprint_17ch"], "cross_session"), pick(tc["keyprint_17ch_behavior"], "cross_session")]),
+            ("동일 세션 다른 문장", [pick(tc["legacy_9ch_imputed_holds"], "same_session"), pick(tc["keyprint_17ch"], "same_session"), pick(tc["keyprint_17ch_behavior"], "same_session")]),
+            ("타 세션 다른 글", [pick(tc["legacy_9ch_imputed_holds"], "cross_session"), pick(tc["keyprint_17ch"], "cross_session"), pick(tc["keyprint_17ch_behavior"], "cross_session")]),
         ],
         ["기존 9채널 (누름시간 대체)", "17채널 (터치 학습)", "17채널 + 행동 프로필"],
         f"(b) 터치 키보드 시뮬레이션 {n_way}인 식별 (누름 시간 없음)",
@@ -950,8 +957,8 @@ def plot_fig8_feature_upgrade(
         axes[2],
         [
             ("CMU\n(학습한 암호)", [password_1to1["legacy_9ch"]["roc_auc"] * 100, password_1to1["keyprint_17ch"]["roc_auc"] * 100]),
-            ("KeyRecs 고정문\n(다른 날)", [pt["keyrecs_fixed_cross_session"]["legacy_9ch"]["roc_auc"] * 100, pt["keyrecs_fixed_cross_session"]["keyprint_17ch"]["roc_auc"] * 100]),
-            ("반복 단어\n(미학습 문자열)", [pt["repeated_words_unseen"]["legacy_9ch"]["roc_auc"] * 100, pt["repeated_words_unseen"]["keyprint_17ch"]["roc_auc"] * 100]),
+            ("KeyRecs 고정문\n(타 세션)", [pt["keyrecs_fixed_cross_session"]["legacy_9ch"]["roc_auc"] * 100, pt["keyrecs_fixed_cross_session"]["keyprint_17ch"]["roc_auc"] * 100]),
+            ("반복 단어\n(단어→암호 전이)", [pt["repeated_words_unseen"]["legacy_9ch"]["roc_auc"] * 100, pt["repeated_words_unseen"]["keyprint_17ch"]["roc_auc"] * 100]),
             ("터치\n(CMU 시뮬)", [password_touch["legacy_9ch_imputed_holds"]["roc_auc"] * 100, password_touch["keyprint_17ch"]["roc_auc"] * 100]),
         ],
         ["기존 9채널 (비밀번호 배포 모델)", "17채널"],
@@ -1139,7 +1146,7 @@ def main() -> None:
     t0 = time.time()
     set_all_seeds(SEED)
     chosen_font = configure_korean_matplotlib()
-    device = get_device()
+    device = torch.device(os.environ["KEYPRINT_DEVICE"]) if os.environ.get("KEYPRINT_DEVICE") else get_device()
     gpu_name = torch.cuda.get_device_name(0) if device.type == "cuda" else str(device)
     print(f"=== KeyPrint Guard & Arena Pipeline | Device: {device} ({gpu_name}) | Font: {chosen_font} ===")
 
@@ -1197,7 +1204,24 @@ def main() -> None:
     )
 
     val_trials = build_verification_trials(splits["val"], chan_mean, chan_std, k_shot=5, seed=SEED)
-    test_trials = build_verification_trials(splits["test"], chan_mean, chan_std, k_shot=5, seed=SEED)
+    test_trials = build_verification_trials(splits["test"], chan_mean, chan_std, k_shot=5, seed=SEED, bot_seed=TEST_BOT_SEED)
+
+    val_bot_hashes = {hashlib.sha256(row.tobytes()).hexdigest() for row in val_trials["bot_flat"]}
+    test_bot_hashes = {hashlib.sha256(row.tobytes()).hexdigest() for row in test_trials["bot_flat"]}
+    assert val_bot_hashes.isdisjoint(test_bot_hashes), "Validation/Test bot inputs overlap"
+    bot_split_audit = {"validation_seed": SEED, "test_seed": TEST_BOT_SEED,
+                       "shared_raw_bot_inputs": len(val_bot_hashes & test_bot_hashes),
+                       "validation_preserved": True, "human_trial_rng_seed": SEED}
+
+    def _prefix(split, length):
+        kb = split.key_blocks if isinstance(split, SentenceSplitData) else split.key_block
+        return prefix_sequences(split.raw_holds, split.raw_dds, split.raw_uds, kb,
+                                length, bounds, chan_mean, chan_std)
+
+    def _bot_prefix(trials, length):
+        h, d = flat_to_hdu(trials["bot_flat"])
+        u = np.stack([trials["bot_flat"][:, 3*k+2] for k in range(d.shape[1])], axis=1)
+        return prefix_sequences(h, d, u, CMU_KEY_BLOCK, length, bounds, chan_mean, chan_std)
 
     # 1. Baseline 1: Statistical Scaled Manhattan Detector
     manhattan = ScaledManhattanDetector(shrinkage=0.35).fit_prior(
@@ -1595,9 +1619,9 @@ def main() -> None:
         print(f"[Result 1:N English Sentence 18-Way Identification] {sent_id_summary}")
 
         for sub_l in [8, 12, 18, 24]:
-            tr_l = encode_sequences(keyprint_model, sent_train.seq_scaled[:, :, :sub_l], device)
+            tr_l = encode_sequences(keyprint_model, _prefix(sent_train, sub_l), device)
             coh_l = compute_cohort_centroids(tr_l, sent_train.subject_ids)
-            te_l = encode_sequences(keyprint_model, sent_test.seq_scaled[:, :, :sub_l], device)
+            te_l = encode_sequences(keyprint_model, _prefix(sent_test, sub_l), device)
             m_same, _ = evaluate_1toN_identification_embeddings(
                 te_l,
                 sent_test.subject_ids,
@@ -1639,7 +1663,7 @@ def main() -> None:
         splits["val"], chan_mean, chan_std, k_shot=5, seed=SEED, session1_only_enroll=True
     )
     drift_test_trials = build_verification_trials(
-        splits["test"], chan_mean, chan_std, k_shot=5, seed=SEED, session1_only_enroll=True
+        splits["test"], chan_mean, chan_std, k_shot=5, seed=SEED, session1_only_enroll=True, bot_seed=TEST_BOT_SEED
     )
 
     yvm_d, svm_d = score_manhattan_trials(manhattan, splits["val"], drift_val_trials)
@@ -1677,7 +1701,7 @@ def main() -> None:
     kshot_results = []
     for k_s in [1, 3, 5, 10]:
         kt_val = build_verification_trials(splits["val"], chan_mean, chan_std, k_shot=k_s, seed=SEED)
-        kt_test = build_verification_trials(splits["test"], chan_mean, chan_std, k_shot=k_s, seed=SEED)
+        kt_test = build_verification_trials(splits["test"], chan_mean, chan_std, k_shot=k_s, seed=SEED, bot_seed=TEST_BOT_SEED)
         yv_ks, sv_ks, _ = score_embedding_trials(val_emb_k, val_bot_k, kt_val, cohort=cohort_k)
         t_ks = find_optimal_val_threshold(yv_ks, sv_ks)
         yt_ks, st_ks, _ = score_embedding_trials(test_emb_k, test_bot_k, kt_test, cohort=cohort_k)
@@ -1686,15 +1710,15 @@ def main() -> None:
 
     varlen_results = {}
     for seq_l in [6, 8, 10]:
-        tr_l = encode_sequences(keyprint_model, splits["train"].seq_scaled[:, :, :seq_l], device)
+        tr_l = encode_sequences(keyprint_model, _prefix(splits["train"], seq_l), device)
         coh_l = compute_cohort_centroids(tr_l, splits["train"].subject_ids)
-        ve_l = encode_sequences(keyprint_model, splits["val"].seq_scaled[:, :, :seq_l], device)
-        vb_l = encode_sequences(keyprint_model, val_trials["bot_seq"][:, :, :seq_l], device)
+        ve_l = encode_sequences(keyprint_model, _prefix(splits["val"], seq_l), device)
+        vb_l = encode_sequences(keyprint_model, _bot_prefix(val_trials, seq_l), device)
         yv_l, sv_l, _ = score_embedding_trials(ve_l, vb_l, val_trials, cohort=coh_l)
         t_l = find_optimal_val_threshold(yv_l, sv_l)
 
-        te_l = encode_sequences(keyprint_model, splits["test"].seq_scaled[:, :, :seq_l], device)
-        tb_l = encode_sequences(keyprint_model, test_trials["bot_seq"][:, :, :seq_l], device)
+        te_l = encode_sequences(keyprint_model, _prefix(splits["test"], seq_l), device)
+        tb_l = encode_sequences(keyprint_model, _bot_prefix(test_trials, seq_l), device)
         yt_l, st_l, _ = score_embedding_trials(te_l, tb_l, test_trials, cohort=coh_l)
         varlen_results[f"digraphs_{seq_l}"] = summarize_metrics(yt_l, st_l, t_l)
 
@@ -1950,12 +1974,10 @@ def main() -> None:
             for mode in ("kb", "touch")
         }
 
-    def _adapt_cost(r):
-        frr = np.mean([v for k, v in r.items() if k.startswith("frr_")])
-        return 0.5 * (frr + r["far"])
-
-    adapt_margin = min(adapt_margins, key=lambda mg: sum(_adapt_cost(pw_adapt["val"][md][f"dual_adapt_margin_{mg:g}"]) for md in ("kb", "touch")))
-    print(f"[Password adaptation] margin chosen on Validation = {adapt_margin} | test {pw_adapt['test']}")
+    adapt_policy, adapt_costs = select_adaptation_policy(pw_adapt["val"], adapt_margins)
+    adapt_enabled = adapt_policy != "dual_no_adapt"
+    adapt_margin = float(adapt_policy.rsplit("_", 1)[1]) if adapt_enabled else 1.5
+    print(f"[Password adaptation] Validation policy={adapt_policy}, costs={adapt_costs} | test {pw_adapt['test']}")
 
     # (c) Typing practice: 5 enrolment sentences, 2 query sentences, threshold + top1-top2 margin
     arena_protocol = {}
@@ -2188,7 +2210,8 @@ def main() -> None:
         "password_transfer_val": password_transfer_val,
         "password_transfer_other_content": password_transfer,
         "password_encoder_selection": password_encoder_selection,
-        "password_encoder_deployed": PASSWORD_ENCODER,
+        "single_encoder_comparison_choice": PASSWORD_ENCODER,
+        "password_encoder_deployed": "dual_9ch_17ch",
         "cmu_10way": {"legacy_9ch": id_cmu_l, "keyprint_17ch": id_cmu_k},
         "keyrecs_clean_chunks_18way": {
             "legacy_9ch": sent_id_l,
@@ -2207,7 +2230,9 @@ def main() -> None:
             "dual_calibration": pw_dual,
             "test": pw_string_eval,
         },
-        "password_adaptation": {"margins": list(adapt_margins), "chosen_margin": adapt_margin, **pw_adapt},
+        "password_adaptation": {"margins": list(adapt_margins), "chosen_margin": adapt_margin,
+                                "enabled": adapt_enabled, "chosen_policy": adapt_policy,
+                                "validation_policy_costs": adapt_costs, "selection_split": "val_only", **pw_adapt},
         "password_capital_method": pw_capital,
         "password_length_calibration": {
             "min_length": PASSWORD_MIN_LENGTH,
@@ -2272,6 +2297,7 @@ def main() -> None:
                 "touch": pw_dual["touch"],
                 "slope": DISPLAY_SLOPE,
                 "adapt_margin": adapt_margin,
+                "adapt_enabled": adapt_enabled,
                 "adapt_keep": 12,
                 "frr_target": PASSWORD_FRR_TARGET,
                 "touch_reference_only": True,
@@ -2292,7 +2318,8 @@ def main() -> None:
                 "password_1to1_touch": password_touch,
                 "password_transfer_val": password_transfer_val,
                 "password_transfer_other_content": password_transfer,
-                "password_encoder_deployed": PASSWORD_ENCODER,
+                "single_encoder_comparison_choice": PASSWORD_ENCODER,
+                "password_encoder_deployed": "dual_9ch_17ch",
             },
         },
     )
@@ -2302,6 +2329,7 @@ def main() -> None:
         "ScaledManhattan (통계 베이스라인)": (yt_m, st_m, metrics_manhattan),
         "Vanilla1DCNN (딥러닝 베이스라인)": (yt_v, st_v, metrics_vanilla),
         "KeyPrintNet (제안 모델)": (yt_k, st_k, metrics_keyprint),
+        "Vanilla + Aug + AS-Norm (통제)": (yt_va_as, st_va_as, metrics_vanilla_aug_as),
     }
     plot_fig1_preprocessing(raw_df, splits, meta, sil_raw4, sil_bio9, fig_dir)
     plot_fig2_learning_curves(hist_vanilla, hist_keyprint, fig_dir, hist_keyprint_9ch=hist_keyprint_9ch)
@@ -2339,12 +2367,19 @@ def main() -> None:
             "keyprint_net_17ch": KEYPRINT_EPOCHS,
         },
         "reuse_weights": REUSE_WEIGHTS,
+        "evaluation_protocol_version": "kp-eval-v5",
+        "source_manifest_scope": "evaluation/training and auxiliary analysis scripts; notebook/packaging tools are tracked by the submission build",
+        "source_sha256": {str(p.relative_to(root)): _file_sha256(p) for p in sorted((root / "src").glob("*.py"))
+                          if p.name not in {"build_notebook.py", "package_submission.py"}},
+        "training_provenance": ((prev_report or {}).get("provenance", {}).get("training_provenance")
+                                or (prev_report or {}).get("provenance")) if REUSE_WEIGHTS else None,
         "schema_version": SCHEMA_VERSION,
         "preprocess_version": PREPROCESS_VERSION,
         "model_hash": model_hash,
         "disclosure": (
-            "Selection rules strictly use Validation; test split was previously evaluated in earlier iterations "
-            "(re-evaluated after leakage/preprocessing fixes); 9ch and 17ch checkpoints are newly trained from scratch."
+            "Selection rules use Validation. Previously observed Test split is re-evaluated. "
+            "v5 changes evaluation and postprocessing only; reused checkpoint training and Validation bot pool are unchanged."
+            if REUSE_WEIGHTS else "Models trained from scratch; selection rules use Validation; Test was observed in prior development."
         ),
         "artifact_sha256": {
             "models/vanilla_1dcnn.pt": _file_sha256(vanilla_pt),
@@ -2363,6 +2398,8 @@ def main() -> None:
     elapsed = round(time.time() - t0, 2)
     report = {
         "elapsed_seconds": elapsed,
+        "bot_split_audit": bot_split_audit,
+        "proposed_vs_augmented_control": comparison_with_control(test_trials, yt_k, st_k, st_va_as, thresh_k, thresh_va_as, SEED),
         "device": f"{device} ({gpu_name})",
         "provenance": provenance,
         "preprocessing": {

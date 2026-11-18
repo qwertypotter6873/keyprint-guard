@@ -223,6 +223,7 @@ export class KeyPrintEngine {
     this.preprocessVersion = DEFAULT_PREPROCESS_VERSION;
     this.modelHash = null;
     this.computedModelHash = null;
+    this.inferenceQueue = Promise.resolve();
   }
 
   async init(modelUrl = './models/keyprint_net.onnx', configUrl = './models/model_config.json') {
@@ -289,7 +290,10 @@ export class KeyPrintEngine {
 
   async _run(session, tensorData, nCh, m) {
     const inputTensor = new ort.Tensor('float32', tensorData, [1, nCh, m]);
-    const results = await session.run({ keystroke_seq: inputTensor });
+    // ORT WASM sessions share runtime state. Serialize every run, including live previews.
+    const run = this.inferenceQueue.then(() => session.run({ keystroke_seq: inputTensor }));
+    this.inferenceQueue = run.catch(() => {});
+    const results = await run;
     const rawEmb = Array.from(results.biometric_embedding.data);
     const norm = Math.hypot(...rawEmb) || 1e-8;
     return rawEmb.map((v) => v / norm);
@@ -427,7 +431,7 @@ export class KeyPrintEngine {
         accepted: r.similarity >= thr,
         threshold: thr,
         // template adaptation only on a confident accept (guards against an impostor drifting in)
-        adapt: r.similarity >= thr && r.z >= prm.tau + (dual.adapt_margin ?? 1.0),
+        adapt: dual.adapt_enabled !== false && r.similarity >= thr && r.z >= prm.tau + (dual.adapt_margin ?? 1.0),
       };
     }
 

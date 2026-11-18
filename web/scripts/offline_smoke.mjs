@@ -26,11 +26,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { findChromeExecutable } from './browser_helpers.mjs';
 import { textToKeystrokes } from '../src/features.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, '..', 'dist');
-const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME = findChromeExecutable(chromium);
 const SHOT_DIR = process.env.SMOKE_SHOT_DIR || null;
 
 const MIME = {
@@ -349,6 +350,7 @@ async function openApp(ctx, url) {
 const api = (page, fn, arg) => page.evaluate(fn, arg);
 
 async function enrollArena(page, name, lang, planFor) {
+  await page.click(`#lang-${lang}-btn`);
   await page.fill('#arena-name-input', name);
   const feedbacks = [];
   const n = await api(page, () => window.__keyprintTestApi.engine.arenaProtocol().enroll);
@@ -450,7 +452,7 @@ async function verifyPassword(page, pw, plan) {
 async function run() {
   if (!fs.existsSync(path.join(DIST_DIR, 'index.html'))) throw new Error('web/dist missing — run `npm run build` first');
   const { server, url } = await serve(DIST_DIR);
-  const appUrl = `${url}/?room=OFFLINE${Math.floor(1000 + rand() * 8999)}`;
+  const appUrl = `${url}/`;
   const browser = await chromium.launch({ executablePath: CHROME, headless: true });
   const allBlocked = { http: new Set(), ws: new Set() };
   const allErrors = [];
@@ -466,6 +468,8 @@ async function run() {
         version: window.__keyprintTestApi.engine.config.model_version,
         samples: window.__keyprintTestApi.engine.config.mvp_sample_profiles.map((p) => p.name),
       }));
+      const localBoot = await api(page, () => ({ shared: window.__keyprintTestApi.roomSync.shared, lang: window.__keyprintTestApi.state.lang }));
+      expect(!localBoot.shared && localBoot.lang === 'en' && blocked.ws.length === 0, 'default English workspace is local-only, with no WebSocket connection');
       expect(cfg.inCh === 17, `model config: ${cfg.inCh} channels, ${cfg.version}`);
       expect(cfg.samples.length === 4, `sample profiles in config: ${cfg.samples.join(', ')}`);
 
@@ -503,7 +507,8 @@ async function run() {
       const genuine = await verifyPassword(page, PW, keyboardPlan(PW, FAST));
       expect(genuine.pass && !genuine.reference, `genuine password login → ${genuine.title} ${genuine.score} | ${genuine.meta}`);
       const t1 = await pwTemplate(page, 'Typist A');
-      expect(t1.count === t0.count + 1 && /등록 리듬 갱신/.test(genuine.meta), `confident genuine login adapts the template: ${t0.count} -> ${t1.count}`);
+      const adaptationEnabled = await api(page, () => window.__keyprintTestApi.engine.config.password_dual?.adapt_enabled !== false);
+      expect(adaptationEnabled ? t1.count === t0.count + 1 : t1.count === t0.count, `password adaptation follows configuration (${adaptationEnabled ? 'enabled' : 'disabled'}): ${t0.count} -> ${t1.count}`);
       const impostor = await verifyPassword(page, PW, keyboardPlan(PW, SLOW));
       expect(!impostor.pass, `impostor with leaked password → ${impostor.title} ${impostor.score}`);
       const t2 = await pwTemplate(page, 'Typist A');

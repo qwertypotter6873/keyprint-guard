@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from behavior_profile import kind_of, load_keyrecs_sessions  # noqa: E402
 from capture_sim import make_template, ms_rounded  # noqa: E402
+from evaluation_protocol import balanced_impostor_indices
 from feature_eval import encode_variable, flat_to_hdu  # noqa: E402
 from keyboard_layout import code_for_label, key_channel_matrix, pairs_from_codes  # noqa: E402
 from models import KeyPrintNet  # noqa: E402
@@ -58,7 +59,7 @@ from preprocessing import (  # noqa: E402
     prepare_full_pipeline,
     touchify_timings,
 )
-from train_and_evaluate import build_verification_trials, compute_cohort_centroids, encode_sequences  # noqa: E402
+from train_and_evaluate import TEST_BOT_SEED, build_verification_trials, compute_cohort_centroids, encode_sequences  # noqa: E402
 
 L9 = N_TIMING_CHANNELS
 TOP_M = 12
@@ -117,7 +118,7 @@ def build_scenarios(data_root: Path, out_root: Path, device, which: str = "9") -
 
     # 1) CMU password: the pipeline's trials, first 4 enrollment reps like the web
     for part in ("val", "test"):
-        trials = build_verification_trials(splits[part], mean, std, k_shot=5, seed=SEED)
+        trials = build_verification_trials(splits[part], mean, std, k_shot=5, seed=SEED, bot_seed=TEST_BOT_SEED if part == "test" else None)
         h, d = splits[part].raw_holds, splits[part].raw_dds
         bh, bd = flat_to_hdu(trials["bot_flat"])
         for mode in MODES:
@@ -208,7 +209,7 @@ def build_scenarios(data_root: Path, out_root: Path, device, which: str = "9") -
                 for p in enrolled:
                     s1 = [index[(p, 1, k)] for k in range(len(per[p][1]))]
                     s2 = [index[(p, 2, k)] for k in range(len(per[p][2]))]
-                    imp = [i for (q, _, _), i in index.items() if q != p][:12]
+                    imp = balanced_impostor_indices(index, p, w, seed=SEED)
                     if s1[3:] and imp:
                         same.append((emb[s1[:3]], emb[s1[3:]], emb[imp]))
                     if s2 and imp:

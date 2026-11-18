@@ -1,0 +1,138 @@
+{
+  "fixed_text_column_identity_audit": {
+    "published_labels": {
+      "UD_equals_DD_minus_Hcurr": {
+        "n": 177948,
+        "median_absolute_error_sec": 0.18400000000000002,
+        "max_absolute_error_sec": 1.93,
+        "fraction_within_2ms": 0.0008317036437610987
+      },
+      "DU_equals_DD_plus_Hnext": {
+        "n": 177948,
+        "median_absolute_error_sec": 0.182,
+        "max_absolute_error_sec": 9.146,
+        "fraction_within_2ms": 0.0009384764088385371
+      },
+      "UU_equals_DD_plus_Hnext_minus_Hcurr": {
+        "n": 177948,
+        "median_absolute_error_sec": 0.03399999999999992,
+        "max_absolute_error_sec": 9.046,
+        "fraction_within_2ms": 0.09887720008092252
+      }
+    },
+    "hypothesis_DD_UU_and_DU_UD_labels_swapped": {
+      "UD_equals_DD_minus_Hcurr": {
+        "n": 177948,
+        "median_absolute_error_sec": 0.0,
+        "max_absolute_error_sec": 2155668.85,
+        "fraction_within_2ms": 0.9999943803807854
+      },
+      "DU_equals_DD_plus_Hnext": {
+        "n": 177948,
+        "median_absolute_error_sec": 0.0,
+        "max_absolute_error_sec": 2155668.85,
+        "fraction_within_2ms": 0.9999943803807854
+      },
+      "UU_equals_DD_plus_Hnext_minus_Hcurr": {
+        "n": 177948,
+        "median_absolute_error_sec": 0.0,
+        "max_absolute_error_sec": 2155668.85,
+        "fraction_within_2ms": 0.9999887607615708
+      }
+    },
+    "DD_vs_UU_absolute_difference_sec": {
+      "n": 177948,
+      "median_absolute_error_sec": 0.01699999999999996,
+      "max_absolute_error_sec": 1077834.51,
+      "fraction_within_2ms": 0.12046777710342348
+    }
+  },
+  "free_text_column_identity_audit": {
+    "UD_equals_DD_minus_Hcurr": {
+      "n": 562200,
+      "median_absolute_error_sec": 3.469446951953614e-18,
+      "max_absolute_error_sec": 2.2737367544323206e-13,
+      "fraction_within_2ms": 1.0
+    },
+    "DU_equals_DD_plus_Hnext": {
+      "n": 562200,
+      "median_absolute_error_sec": 0.0,
+      "max_absolute_error_sec": 2.2737367544323206e-13,
+      "fraction_within_2ms": 1.0
+    },
+    "UU_equals_DD_plus_Hnext_minus_Hcurr": {
+      "n": 562200,
+      "median_absolute_error_sec": 0.0,
+      "max_absolute_error_sec": 2.2737367544323206e-13,
+      "fraction_within_2ms": 1.0
+    }
+  },
+  "fixed_text_frozen_model_sensitivity": {
+    "published_DD": {
+      "legacy_9ch": {
+        "roc_auc": 0.7583,
+        "eer": 0.3093,
+        "far_at_deployed_threshold": 0.3075,
+        "frr_at_deployed_threshold": 0.3092,
+        "impostor_mean_score": 0.4223,
+        "genuine_mean_score": 0.6638,
+        "num_genuine": 1795,
+        "num_impostor": 3060
+      },
+      "keyprint_17ch": {
+        "roc_auc": 0.7982,
+        "eer": 0.2746,
+        "far_at_deployed_threshold": 0.3686,
+        "frr_at_deployed_threshold": 0.1755,
+        "impostor_mean_score": 0.4098,
+        "genuine_mean_score": 0.7214,
+        "num_genuine": 1795,
+        "num_impostor": 3060
+      },
+      "auc_diff_first_minus_second": {
+        "point_difference": -0.0399,
+        "mean": -0.0384,
+        "ci95_low": -0.0723,
+        "ci95_high": -0.0026,
+        "method": "paired_participant_bootstrap_target_query_weights",
+        "num_people": 18,
+        "replicates": 1000,
+        "conditional_on": "observed words, sessions and enrollment protocol"
+      }
+    },
+    "hypothesis_use_UU_as_DD": {
+      "legacy_9ch": {
+        "roc_auc": 0.7573,
+        "eer": 0.3112,
+        "far_at_deployed_threshold": 0.3513,
+        "frr_at_deployed_threshold": 0.2802,
+        "impostor_mean_score": 0.4439,
+        "genuine_mean_score": 0.681,
+        "num_genuine": 1795,
+        "num_impostor": 3060
+      },
+      "keyprint_17ch": {
+        "roc_auc": 0.8073,
+        "eer": 0.2647,
+        "far_at_deployed_threshold": 0.3873,
+        "frr_at_deployed_threshold": 0.1571,
+        "impostor_mean_score": 0.4216,
+        "genuine_mean_score": 0.7396,
+        "num_genuine": 1795,
+        "num_impostor": 3060
+      },
+      "auc_diff_first_minus_second": {
+        "point_difference": -0.05,
+        "mean": -0.048,
+        "ci95_low": -0.0795,
+        "ci95_high": -0.0161,
+        "method": "paired_participant_bootstrap_target_query_weights",
+        "num_people": 18,
+        "replicates": 1000,
+        "conditional_on": "observed words, sessions and enrollment protocol"
+      }
+    }
+  },
+  "protocol": "Test-only 18-person KeyRecs fixed text; first 4 Session-1 enrollment, Session-2 genuine; 10 Session-2 queries per other person. Same paired trials, original frozen 9ch/17ch weights, scaler, CMU cohorts and Validation thresholds.",
+  "interpretation": "A DD/UU label swap is an arithmetic hypothesis, not confirmed logger semantics. This input sensitivity is not retraining under the hypothesis. Neither hypothesis nor a model was selected on Test; training/calibration remain unchanged pending source confirmation."
+}

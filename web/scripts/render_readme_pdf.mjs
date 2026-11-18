@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
 import { chromium } from 'playwright-core';
+import { findChromeExecutable } from './browser_helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
@@ -11,8 +12,7 @@ const README_PATH = path.join(ROOT_DIR, 'README.md');
 const DEFAULT_PDF_OUT_PATH = path.join(ROOT_DIR, '포트폴리오_201935607_김대현.pdf');
 const GITHUB_REPO_BASE = 'https://github.com/qwertypotter6873/keyprint-guard';
 const GITHUB_BLOB_BASE = `${GITHUB_REPO_BASE}/blob/main`;
-const CHROME_PATH =
-  process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME_PATH = findChromeExecutable(chromium);
 
 // A4 = 210mm x 297mm; margins = 15mm top/bottom, 14mm left/right -> printable = 182mm x 267mm.
 // At CSS 96 DPI: 182mm = 687.87px, 267mm = 1009.13px. Use 686px for strict overflow checking.
@@ -376,7 +376,7 @@ ${htmlBody}
     const rewrittenHrefs = rawHrefs.map((h) => rewriteRepositoryHref(h));
 
     await page.evaluate(
-      ({ rewritten, repoBase }) => {
+      (rewritten) => {
         const slugCounts = new Map();
         for (const heading of document.querySelectorAll('h1, h2, h3, h4, h5, h6')) {
           if (heading.id) continue;
@@ -392,6 +392,7 @@ ${htmlBody}
         }
 
         const anchors = Array.from(document.querySelectorAll('a[href]'));
+        const destinations = new Map();
         anchors.forEach((a, idx) => {
           const nextHref = rewritten[idx];
           if (nextHref.startsWith('#')) {
@@ -402,20 +403,21 @@ ${htmlBody}
             } catch {
               // ignore
             }
-            const targetEl =
-              document.getElementById(decodedTarget) || document.getElementById(rawTarget);
-            if (!targetEl) {
-              // Unmatched fragment: point to GitHub README anchor rather than local server URL
-              a.setAttribute('href', `${repoBase}${nextHref}`);
-            } else if (targetEl.id !== rawTarget) {
-              a.setAttribute('href', `#${targetEl.id}`);
+            if (!destinations.has(decodedTarget)) {
+              const target = document.getElementById(decodedTarget) || document.getElementById(rawTarget);
+              if (!target) throw new Error(`README link has no matching heading: ${nextHref}`);
+              // Chrome stores fragment identifiers as PDF names. Use compact ASCII
+              // names so percent-encoded headings stay within PDF name limits.
+              target.id = `portfolio-section-${destinations.size + 1}`;
+              destinations.set(decodedTarget, target.id);
             }
+            a.setAttribute('href', `#${destinations.get(decodedTarget)}`);
           } else {
             a.setAttribute('href', nextHref);
           }
         });
       },
-      { rewritten: rewrittenHrefs, repoBase: GITHUB_REPO_BASE }
+      rewrittenHrefs
     );
 
     // Switch to print media at A4 printable width BEFORE running layout/link assertions

@@ -13,6 +13,6 @@
   ],
   "primary_metric": {
     "name": "Macro F1-Score",
-    "value": 0.8491
+    "value": 0.8502
   }
 }

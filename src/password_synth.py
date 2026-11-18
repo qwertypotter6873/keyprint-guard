@@ -264,6 +264,8 @@ def string_trials(
                                     "deployed": float(dep[j]),
                                     "enroll_occ_ids": enr_occ_map[p],
                                     "query_occ_ids": list(q_oids),
+                                    "attempt_id": f"{kind}|{w}|{q}|{tag}|{j}",
+                                    "enroll_attempt_ids": [f"{kind}|{w}|{p}|enroll|{k}" for k in range(k_enroll)],
                                 }
                             )
     return rows
@@ -279,22 +281,37 @@ def synthesis_metadata(
     """Audit metadata for disjoint occ_id password synthesis."""
     active_people = [p for p in people if (p, 1) in tabs and (p, 2) in tabs]
     excluded_pairs = 0
-    generated_attempts = 0
     for wl in strings.values():
         for w in wl:
             ppl = [p for p in active_people if covered_disjoint_s1(tabs, p, w)]
             excluded_pairs += len(active_people) - len(ppl)
-            if len(ppl) >= 2:
-                generated_attempts += len(ppl) * (k_enroll + 3 + 3 + 2)
     same_rows = [r for r in rows if r.get("tag") == "same" and "enroll_occ_ids" in r and "query_occ_ids" in r]
     disjoint_ok = all(set(r["enroll_occ_ids"]).isdisjoint(r["query_occ_ids"]) for r in same_rows)
+    counts = synthetic_input_counts(rows)
     return {
+        **counts,
         "disjoint_occ_enforced": bool(disjoint_ok),
         "same_day_rows_verified": int(len(same_rows)),
         "excluded_person_string_pairs": int(excluded_pairs),
-        "total_generated_attempts": int(generated_attempts),
-        "generated_attempts": int(generated_attempts),
+        "total_generated_attempts": counts["generated_attempts"],
     }
+
+
+def synthetic_input_counts(rows):
+    """Count generated input IDs separately from their many template comparisons.
+
+    Keyboard/touch representations share an input ID and are not new captures.
+    IDs count generation operations, not statistically independent raw events.
+    """
+    enroll = {aid for r in rows for aid in r.get("enroll_attempt_ids", [])}
+    gen = {r["attempt_id"] for r in rows if r["label"] == 1 and "attempt_id" in r}
+    imp = {r["attempt_id"] for r in rows if r["label"] == 0 and "attempt_id" in r}
+    return {"generated_attempts": len(enroll | gen | imp),
+            "generated_enrollment_inputs": len(enroll),
+            "generated_genuine_query_inputs": len(gen),
+            "generated_impostor_query_inputs": len(imp),
+            "comparison_trials": len(rows),
+            "counting_note": "Generation IDs, not independent raw observations; keyboard/touch share IDs."}
 
 
 def calibrate_dual(val_rows: List[Dict], frr_target: float = 0.10) -> Dict[str, Dict[str, float]]:
@@ -336,14 +353,14 @@ def evaluate_strings(rows: List[Dict], calib: Dict, deployed_thr: Dict[str, floa
         z = dual_z([x["raw9"] for x in r], [x["raw17"] for x in r], calib[mode])
         tags = np.array([x["tag"] for x in r])
         kinds = np.array([x["kind"] for x in r])
-        pair_sw = {(x["word"], x["target"]) for x in r}
-        gen_attempts = int(len(pair_sw) * (k_enroll + 3 + 3 + 2))
         res = {
             "num_genuine": int(y.sum()),
             "num_impostor": int((y == 0).sum()),
             "num_strings": len({x["word"] for x in r}),
             "num_people": len({x["target"] for x in r}),
-            "generated_attempts": gen_attempts,
+            **synthetic_input_counts(r),
+            "num_genuine_trials": int(y.sum()),
+            "num_impostor_trials": int((y == 0).sum()),
         }
         for name, s, thr in (("deployed_as_norm", dep, deployed_thr[mode]), ("dual_raw", z, calib[mode]["tau"])):
             acc = s >= thr
@@ -371,6 +388,20 @@ def person_speed(tabs, people) -> Dict[str, float]:
         p: float(np.median([x[1] for s in (1, 2) if (p, s) in tabs for v in tabs[(p, s)].values() for x in v]) * 1000)
         for p in people
     }
+
+
+def select_adaptation_policy(validation_by_mode, margins):
+    """Select off/on using Validation only; ties favor no adaptation."""
+    candidates = ["dual_no_adapt"] + [f"dual_adapt_margin_{m:g}" for m in margins]
+    costs = {}
+    for policy in candidates:
+        costs[policy] = sum(
+            0.5 * (np.mean([v for k, v in values[policy].items() if k.startswith("frr_")])
+                   + values[policy]["far"])
+            for values in validation_by_mode.values()
+        )
+    chosen = min(candidates, key=lambda policy: costs[policy])
+    return chosen, costs
 
 
 def adaptation_eval(
@@ -407,6 +438,14 @@ def adaptation_eval(
         "s2_reps_1_10": (2, 0, 10),
         "s2_reps_91_100": (2, 90, 100),
     }
+    # Fix the attack queries before policy evaluation so every policy sees the
+    # exact same people/attempts. No policy can improve by drawing easier attacks.
+    impostor_indices = {}
+    for p in np.unique(P):
+        others = np.where((P != p) & (S == 2))[0]
+        impostor_indices[p] = rng.choice(others, size=min(40, len(others)), replace=False)
+    import hashlib
+    query_hash = hashlib.sha256(b"".join(impostor_indices[p].tobytes() for p in sorted(impostor_indices))).hexdigest()
     out = {}
     for policy in ["deployed", "dual_no_adapt"] + [f"dual_adapt_margin_{m:g}" for m in margins]:
         frr = {b: [] for b in buckets}
@@ -429,8 +468,7 @@ def adaptation_eval(
                     ex17.append(E17[i])
             for b, (s, lo, hi) in buckets.items():
                 frr[b] += [not dec[i] for i in order if S[i] == s and lo <= R[i] < hi and i in dec]
-            others = np.where((P != p) & (S == 2))[0]
-            oi = rng.choice(others, size=min(40, len(others)), replace=False)
+            oi = impostor_indices[p]
             if policy == "deployed":
                 far += list(as_norm_scores(E9[oi], make_template(E9[enr]), cohorts9[mode]) >= deployed_thr[mode])
             else:
@@ -439,6 +477,9 @@ def adaptation_eval(
         out[policy] = {
             **{f"frr_{b}": round(float(np.mean(v)), 4) for b, v in frr.items()},
             "far": round(float(np.mean(far)), 4),
+            "num_impostor_trials": len(far),
+            "paired_impostor_sha256": query_hash,
+            "limitation": "Only genuine updates precede final impostor probes; not a poisoning-resistance test.",
         }
     return out
 

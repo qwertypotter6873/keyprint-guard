@@ -45,7 +45,8 @@ function sanitizeVec64(v) {
     copy[i] = x;
     sumSq += x * x;
   }
-  if (Math.sqrt(sumSq) <= 1e-6) return null;
+  const norm = Math.sqrt(sumSq);
+  if (!Number.isFinite(norm) || Math.abs(norm - 1) > 0.01) return null;
   return copy;
 }
 
@@ -444,7 +445,9 @@ export class RoomProfileSync {
     this.customBrokers = brokers;
 
     this.clientId = `kp_${Math.random().toString(36).slice(2, 10)}`;
-    this.roomCode = 'GACHON';
+    this.roomCode = 'LOCAL';
+    this.shared = false;
+    this.pendingUpdates = new Set();
     this.profiles = new Map(); // id -> validated profile object
     this.tombstones = new Map(); // id -> deleted timestamp
     this.peers = new Map(); // clientId -> timestamp
@@ -453,7 +456,7 @@ export class RoomProfileSync {
     this.heartbeatTimer = null;
     this.failoverTimer = null;
     this.brokerIdx = 0;
-    this.status = 'connecting'; // 'connecting' | 'online' | 'local'
+    this.status = 'local'; // 'connecting' | 'online' | 'local'
     this.compatSkipCount = 0;
   }
 
@@ -523,13 +526,14 @@ export class RoomProfileSync {
     }
   }
 
-  connect(roomCode) {
+  connect(roomCode, { shared = false } = {}) {
     this.disconnect();
-    this.roomCode = sanitizeRoomCode(roomCode);
+    this.shared = Boolean(shared);
+    this.roomCode = this.shared ? sanitizeRoomCode(roomCode) : 'LOCAL';
     this.compatSkipCount = 0;
 
     try {
-      if (typeof localStorage !== 'undefined') {
+      if (this.shared && typeof localStorage !== 'undefined') {
         localStorage.setItem('keyprint_last_room', this.roomCode);
       }
     } catch {
@@ -539,7 +543,8 @@ export class RoomProfileSync {
     if (typeof window !== 'undefined' && window.location && window.history?.replaceState) {
       try {
         const url = new URL(window.location.href);
-        url.searchParams.set('room', this.roomCode);
+        if (this.shared) url.searchParams.set('room', this.roomCode);
+        else url.searchParams.delete('room');
         window.history.replaceState({}, '', url.toString());
       } catch {
         // Ignore URL update errors
@@ -548,12 +553,14 @@ export class RoomProfileSync {
 
     this.profiles.clear();
     this.tombstones.clear();
+    this.pendingUpdates.clear();
     this.peers.clear();
     this.peers.set(this.clientId, Date.now());
 
     this._loadFromLocalStorage();
     this._setupBroadcastChannel();
-    this._connectMqtt(0);
+    if (this.shared) this._connectMqtt(0);
+    else this._setStatus('local');
     this._emitChange();
   }
 
@@ -587,11 +594,16 @@ export class RoomProfileSync {
   }
 
   _storageKey() {
-    return `keyprint_mvp_v4_room_${this.roomCode}`;
+    return this.shared ? `keyprint_mvp_v4_room_${this.roomCode}` : 'keyprint_mvp_v4_local';
   }
 
   _profileTopic(id = '+') {
     return `${TOPIC_NS}/room/${this.roomCode}/profiles/${id}`;
+  }
+
+  _deletionTopic(id = '+', ts = '+') {
+    // Timestamp in the retained topic prevents an older offline delete from replacing a newer one.
+    return `${TOPIC_NS}/room/${this.roomCode}/deletions/${id}/${ts}`;
   }
 
   _eventTopic() {
@@ -667,6 +679,12 @@ export class RoomProfileSync {
       hadInvalid = true;
     }
 
+    for (const [id, ts] of this.tombstones) {
+      if ((this.profiles.get(id)?.updatedAt ?? Infinity) <= ts) this.profiles.delete(id);
+    }
+    for (const id of Array.isArray(parsed.pendingUpdates) ? parsed.pendingUpdates : []) {
+      if (typeof id === 'string' && this.profiles.has(id)) this.pendingUpdates.add(id);
+    }
     if (hadInvalid) {
       this._saveToLocalStorage();
     }
@@ -680,6 +698,7 @@ export class RoomProfileSync {
         ...this._compatEnvelope(),
         profiles: Array.from(this.profiles.values()),
         tombstones: Object.fromEntries(this.tombstones.entries()),
+        pendingUpdates: [...this.pendingUpdates],
       };
       localStorage.setItem(this._storageKey(), JSON.stringify(payload));
     } catch {
@@ -690,7 +709,7 @@ export class RoomProfileSync {
   _setupBroadcastChannel() {
     if (typeof BroadcastChannel === 'undefined') return;
     try {
-      this.bc = new BroadcastChannel(`keyprint_bc_v4_${this.roomCode}`);
+      this.bc = new BroadcastChannel(this.shared ? `keyprint_bc_v4_${this.roomCode}` : 'keyprint_bc_v4_local');
       this.bc.onmessage = (ev) => {
         const msg = ev?.data;
         if (!isSafePlainObject(msg)) return;
@@ -775,15 +794,14 @@ export class RoomProfileSync {
       this._setStatus('online');
 
       client.subscribe(
-        [this._profileTopic('+'), this._eventTopic(), this._peerTopic('+')],
+        [this._profileTopic('+'), this._deletionTopic(), this._eventTopic(), this._peerTopic('+')],
         { qos: 1 },
         () => {
-          // Re-broadcast any locally created valid non-sample profiles so room stays converged
-          for (const p of this.profiles.values()) {
-            if (!p.isSample && this._isCompatibleEnvelope(p)) {
-              client.publish(this._profileTopic(p.id), JSON.stringify(p), { qos: 1, retain: true });
-            }
-          }
+          if (this.client !== client) return;
+          // Replay only local mutations, never untouched cached profiles. Retained tombstones
+          // are reconciled by timestamp regardless of arrival order, including offline deletes.
+          for (const [id, ts] of this.tombstones) this._publishDeletion(id, ts);
+          for (const id of this.pendingUpdates) this._publishPendingProfile(id);
           this._publishPresence();
         }
       );
@@ -812,6 +830,19 @@ export class RoomProfileSync {
           }
         }
         this._emitStatus();
+        return;
+      }
+
+      if (topic.startsWith(`${TOPIC_NS}/room/${this.roomCode}/deletions/`)) {
+        try {
+          const ev = JSON.parse(text);
+          const pieces = topic.split('/');
+          if (isSafePlainObject(ev) && this._isCompatibleEnvelope(ev) && ev.type === 'delete' &&
+              ev.id === pieces[pieces.length - 2] && String(ev.ts) === pieces[pieces.length - 1] &&
+              typeof ev.ts === 'number' && Number.isFinite(ev.ts) && ev.ts >= 0) {
+            this._applyDelete(ev.id, ev.ts);
+          }
+        } catch { /* Ignore malformed retained deletions. */ }
         return;
       }
 
@@ -890,6 +921,7 @@ export class RoomProfileSync {
     if (this.onStatusChange) {
       this.onStatusChange({
         status: this.status,
+        shared: this.shared,
         roomCode: this.roomCode,
         peerCount: Math.max(1, this.peers.size),
         profileCount: this.profiles.size,
@@ -946,27 +978,53 @@ export class RoomProfileSync {
     if (!mergedCheck.ok) return false;
 
     this.profiles.set(mergedCheck.profile.id, mergedCheck.profile);
+    if (existing && cleanIncoming.updatedAt > existing.updatedAt) this.pendingUpdates.delete(cleanIncoming.id);
     this._emitChange();
     return true;
   }
 
   _applyDelete(id, ts) {
     if (typeof id !== 'string' || !ID_RE.test(id)) return;
-    this.tombstones.set(id, finiteTs(ts));
-    if (this.profiles.delete(id)) {
+    const cleanTs = Math.max(this.tombstones.get(id) || 0, finiteTs(ts));
+    this.tombstones.set(id, cleanTs);
+    const current = this.profiles.get(id);
+    if (current && current.updatedAt <= cleanTs) {
+      this.profiles.delete(id);
+      this.pendingUpdates.delete(id);
       this._emitChange();
-    } else {
-      this._saveToLocalStorage();
-    }
+    } else this._saveToLocalStorage();
   }
 
   _applyClearAll(ts) {
-    const cleanTs = finiteTs(ts);
-    for (const id of this.profiles.keys()) {
-      this.tombstones.set(id, cleanTs);
+    for (const id of [...this.profiles.keys()]) this._applyDelete(id, ts);
+  }
+
+  _publishDeletion(id, ts, { clearProfile = false } = {}) {
+    if (!this.shared || !this.client?.connected) return;
+    const ev = { ...this._compatEnvelope(), type: 'delete', id, ts };
+    try {
+      this.client.publish(this._deletionTopic(id, ts), JSON.stringify(ev), { qos: 1, retain: true });
+      this.client.publish(this._eventTopic(), JSON.stringify(ev), { qos: 1 });
+      if (clearProfile) this.client.publish(this._profileTopic(id), '', { qos: 1, retain: true });
+    } catch { /* The persisted tombstone is replayed after reconnection. */ }
+    // Replayed offline deletions do not clear a possibly newer retained profile.
+  }
+
+  _publishPendingProfile(id) {
+    const p = this.profiles.get(id);
+    if (!this.shared || !this.client?.connected || !p || p.isSample || !this.pendingUpdates.has(id)) return;
+    if (p.updatedAt <= (this.tombstones.get(id) || 0)) return;
+    const publishingClient = this.client;
+    try {
+      this.client.publish(this._profileTopic(id), JSON.stringify(p), { qos: 1, retain: true }, (err) => {
+        if (this.client === publishingClient && !err && this.profiles.get(id)?.updatedAt === p.updatedAt) {
+          this.pendingUpdates.delete(id);
+          this._saveToLocalStorage();
+        }
+      });
+    } catch {
+      // Keep the pending mutation for reconnection.
     }
-    this.profiles.clear();
-    this._emitChange();
   }
 
   getProfiles() {
@@ -988,7 +1046,7 @@ export class RoomProfileSync {
   }
 
   upsertProfile(profile) {
-    const now = Date.now();
+    const now = Math.max(Date.now(), (this.profiles.get(profile?.id)?.updatedAt || 0) + 1, (this.tombstones.get(profile?.id) || 0) + 1);
     const candidate = {
       ...profile,
       ...this._compatEnvelope(),
@@ -1001,8 +1059,9 @@ export class RoomProfileSync {
     }
     const updated = check.profile;
 
-    this.tombstones.delete(updated.id);
+    if (updated.updatedAt <= (this.tombstones.get(updated.id) || 0)) return null;
     this.profiles.set(updated.id, updated);
+    if (this.shared && !updated.isSample) this.pendingUpdates.add(updated.id);
     this._emitChange();
 
     if (this.bc) {
@@ -1012,22 +1071,13 @@ export class RoomProfileSync {
         // ignore
       }
     }
-    if (!updated.isSample && this.client && this.client.connected) {
-      try {
-        this.client.publish(this._profileTopic(updated.id), JSON.stringify(updated), {
-          qos: 1,
-          retain: true,
-        });
-      } catch {
-        // ignore
-      }
-    }
+    this._publishPendingProfile(updated.id);
     return updated;
   }
 
   deleteProfile(id) {
     if (typeof id !== 'string' || !ID_RE.test(id)) return;
-    const now = Date.now();
+    const now = Math.max(Date.now(), (this.profiles.get(id)?.updatedAt || 0) + 1, (this.tombstones.get(id) || 0) + 1);
     this._applyDelete(id, now);
     const evPayload = { ...this._compatEnvelope(), type: 'delete', id, ts: now };
     if (this.bc) {
@@ -1037,40 +1087,11 @@ export class RoomProfileSync {
         // ignore
       }
     }
-    if (this.client && this.client.connected) {
-      try {
-        this.client.publish(this._profileTopic(id), '', { qos: 1, retain: true });
-        this.client.publish(this._eventTopic(), JSON.stringify(evPayload), { qos: 1 });
-      } catch {
-        // ignore
-      }
-    }
+    this._publishDeletion(id, now, { clearProfile: true });
   }
 
   clearAllProfiles() {
-    const now = Date.now();
-    const idsToClear = Array.from(this.profiles.values())
-      .filter((p) => !p.isSample)
-      .map((p) => p.id);
-    this._applyClearAll(now);
-    const evPayload = { ...this._compatEnvelope(), type: 'clear_all', ts: now };
-    if (this.bc) {
-      try {
-        this.bc.postMessage(evPayload);
-      } catch {
-        // ignore
-      }
-    }
-    if (this.client && this.client.connected) {
-      try {
-        for (const id of idsToClear) {
-          this.client.publish(this._profileTopic(id), '', { qos: 1, retain: true });
-        }
-        this.client.publish(this._eventTopic(), JSON.stringify(evPayload), { qos: 1 });
-      } catch {
-        // ignore
-      }
-    }
+    for (const id of [...this.profiles.keys()]) this.deleteProfile(id);
   }
 
   loadSamples(sampleProfiles) {
@@ -1117,7 +1138,7 @@ export class RoomProfileSync {
   }
 
   getShareUrl() {
-    if (typeof window === 'undefined' || !window.location) return '';
+    if (!this.shared || typeof window === 'undefined' || !window.location) return '';
     const url = new URL(window.location.href);
     url.searchParams.set('room', this.roomCode);
     return url.toString();

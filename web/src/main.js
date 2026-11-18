@@ -1,3 +1,4 @@
+import { ActionGate } from './asyncActions.js';
 import {
   KeyPrintEngine,
   SmartKeystrokeRecorder,
@@ -33,6 +34,7 @@ const TARGET_PW_SHOTS = 4;
 
 const engine = new KeyPrintEngine();
 const deck = new SentenceDeck();
+const submissionGate = new ActionGate();
 
 const state = {
   ready: false,
@@ -40,7 +42,7 @@ const state = {
   mode: 'arena', // 'arena' | 'guard' | 'principles'
   arenaSub: 'enroll', // 'enroll' | 'blind'
   guardSub: 'verify', // 'verify' | 'enroll'
-  lang: 'ko', // 'ko' | 'en'
+  lang: 'en', // 'ko' | 'en' (evaluation corpus: English)
   thresholdOffset: 0, // 여유(-) / 표준(0) / 엄격(+) relative to the validation-calibrated threshold
   showPasswordPlain: true,
 
@@ -53,7 +55,7 @@ const state = {
   arenaBlindSentence: '',
 
   // In-progress enrollment buffers
-  arenaEnrollBuffer: { name: '', lang: 'ko', items: [] },
+  arenaEnrollBuffer: { name: '', lang: 'en', items: [] },
   arenaBlindBuffer: [],
   pwEnrollBuffer: { name: '', targetPw: '', items: [] },
 
@@ -191,21 +193,25 @@ const roomSync = new RoomProfileSync({
       renderPrinciplesView();
     }
   },
-  onStatusChange: ({ status, roomCode, peerCount, profileCount, compatSkipCount }) => {
+  onStatusChange: ({ status, shared, roomCode, peerCount, profileCount, compatSkipCount }) => {
     const syncDot = $('sync-dot');
     syncDot.className =
       'sync-dot ' +
       (status === 'online' ? 'is-online' : status === 'local' ? 'is-local' : 'is-connecting');
 
     const peerLabel = status === 'online' ? `기기 ${safeInt(peerCount, 1)}대` : '로컬';
-    $('room-pill-label').textContent = `방 #${roomCode} · ${peerLabel} · 프로필 ${safeInt(profileCount, 0)}명`;
+    $('room-pill-label').textContent = shared
+      ? `공유 방 #${roomCode} · ${peerLabel} · 프로필 ${safeInt(profileCount, 0)}명`
+      : `이 브라우저만 · 프로필 ${safeInt(profileCount, 0)}명`;
 
-    $('modal-room-code').textContent = `#${roomCode}`;
+    $('modal-room-code').textContent = shared ? `공유 방 #${roomCode}` : '이 브라우저만';
+    $('copy-invite-btn').disabled = !shared;
+    $('use-local-btn').hidden = !shared;
     $('modal-sync-badge').textContent =
-      status === 'online'
+      !shared ? '외부 전송 없이 로컬 저장' : status === 'online'
         ? `실시간 연결됨 · 현재 기기 ${safeInt(peerCount, 1)}대 접속`
         : status === 'local'
-          ? '로컬 브라우저 저장 모드'
+          ? '연결 끊김 · 변경은 로컬 보관 후 재연결 시 동기화'
           : '실시간 서버 연결 중…';
 
     const compatNotice = $('compat-isolation-notice');
@@ -223,11 +229,7 @@ const roomSync = new RoomProfileSync({
 
 function getArenaTemplateForProfile(profile, lang) {
   if (!profile?.arena) return null;
-  if (profile.arena[lang]) return profile.arena[lang];
-  if (profile.isSample) {
-    return profile.arena.en || profile.arena.ko || null;
-  }
-  return profile.arena.ko || profile.arena.en || null;
+  return profile.arena[lang] || null;
 }
 
 function getArenaCandidates() {
@@ -364,6 +366,11 @@ function renderAllRosters() {
   // 1) Arena Roster
   const arenaList = $('arena-roster-list');
   const cands = getArenaCandidates();
+  const otherLanguage = state.profiles.filter((p) => Object.keys(p.arena || {}).length && !p.arena?.[state.lang]).length;
+  $('arena-language-notice').textContent = state.lang === 'ko'
+    ? '한국어 입력은 체험용입니다. 공개 데이터의 정량 평가는 영어 타건 기준이며 한국어 성능은 별도 검증이 필요합니다.'
+    : '정량 평가는 영어 타건 기준입니다. 등록할 때와 같은 언어로 비교합니다.';
+  if (otherLanguage) $('arena-language-notice').textContent += ` 다른 언어로 등록된 ${otherLanguage}명은 비교에서 제외했습니다.`;
   if (cands.length === 0) {
     arenaList.innerHTML = `<span class="roster-empty">아직 없습니다 — 아래에서 ${safeInt(
       TARGET_ARENA_SHOTS,
@@ -433,6 +440,7 @@ function renderAllRosters() {
 
     guardList.querySelectorAll('[data-guard-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
+        submissionGate.invalidate();
         state.selectedGuardId = btn.getAttribute('data-guard-id');
         $('guard-result-card').hidden = true;
         setFeedback($('guard-verify-feedback'), '');
@@ -595,6 +603,9 @@ export function isSampleName(name) {
 }
 
 function switchLanguage(lang) {
+  submissionGate.invalidate();
+  state.querySeq += 1;
+  state.lastVerdict = null;
   state.lang = lang;
   $('lang-ko-btn').classList.toggle('is-active', lang === 'ko');
   $('lang-en-btn').classList.toggle('is-active', lang === 'en');
@@ -626,7 +637,7 @@ const arenaEnrollRecorder = new SmartKeystrokeRecorder($('arena-enroll-input'), 
         ? `백스페이스 ${live.backspaceCount}회 수정 보정됨`
         : '오타 시 백스페이스 수정 가능';
   },
-  onSubmit: () => handleArenaEnrollSubmit(),
+  onSubmit: () => runSubmission('arena-enroll', handleArenaEnrollSubmit),
 });
 
 const arenaBlindRecorder = new SmartKeystrokeRecorder($('arena-blind-input'), {
@@ -640,21 +651,21 @@ const arenaBlindRecorder = new SmartKeystrokeRecorder($('arena-blind-input'), {
         ? `백스페이스 ${live.backspaceCount}회 수정 보정됨`
         : '백스페이스 자유 사용';
   },
-  onSubmit: () => handleArenaBlindSubmit(),
+  onSubmit: () => runSubmission('arena-blind', handleArenaBlindSubmit),
 });
 
 const guardVerifyRecorder = new SmartKeystrokeRecorder($('guard-verify-input'), {
   onLiveUpdate: (live) => {
     invalidateLastVerdictOnTyping(live);
   },
-  onSubmit: () => handleGuardVerifySubmit(),
+  onSubmit: () => runSubmission('guard-verify', handleGuardVerifySubmit),
 });
 
 const guardEnrollRecorder = new SmartKeystrokeRecorder($('guard-enroll-input'), {
   onLiveUpdate: (live) => {
     invalidateLastVerdictOnTyping(live);
   },
-  onSubmit: () => handleGuardEnrollSubmit(),
+  onSubmit: () => runSubmission('guard-enroll', handleGuardEnrollSubmit),
 });
 
 // ================= SNAPSHOT HELPERS =================
@@ -705,8 +716,76 @@ export function getActiveVerdictForViz() {
   return v;
 }
 
+async function runSubmission(slot, action) {
+  const feedback = $(`${slot}-feedback`);
+  if (submissionGate.pending) {
+    setFeedback(feedback, '입력을 분석 중입니다. 완료 후 다시 제출해 주세요.');
+    return;
+  }
+  const input = $(`${slot}-input`);
+  try {
+    if (input) input.readOnly = true;
+    await submissionGate.run(async (isCurrent) => {
+      try { await action(isCurrent); }
+      catch (err) {
+        if (isCurrent()) setFeedback(feedback, `분석을 완료하지 못했습니다. 다시 입력해 주세요. (${err?.message || '추론 오류'})`, 'error');
+      }
+    });
+  } finally {
+    if (input) input.readOnly = false;
+  }
+}
+
+function resetRoomWork() {
+  submissionGate.invalidate();
+  state.querySeq += 1;
+  state.lastVerdict = null;
+  state.viz.lastQuery = null;
+  state.viz.selectedProfileId = null;
+  if (vizEmbedTimer) clearTimeout(vizEmbedTimer);
+  vizEmbedTimer = null;
+  $('arena-name-input').value = '';
+  $('guard-enroll-name').value = '';
+  $('guard-enroll-pw-target').value = '';
+  state.pwEnrollBuffer = { name: '', targetPw: '', items: [] };
+  state.selectedGuardId = null;
+  resetArenaEnrollProgress();
+  resetArenaBlindProgress();
+  dealArenaEnrollSentence();
+  dealArenaBlindSentence();
+  for (const [slot, recorder] of [['guard-enroll', guardEnrollRecorder], ['guard-verify', guardVerifyRecorder], ['viz-sandbox', vizSandboxRecorder]]) {
+    $(`${slot}-input`).value = '';
+    recorder.reset();
+  }
+  state.viz.capture = createPresetCapture('normal');
+  for (const slot of ['arena-enroll', 'arena-blind', 'guard-enroll', 'guard-verify']) setFeedback($(`${slot}-feedback`), '');
+  $('arena-result-card').hidden = true;
+  $('guard-result-card').hidden = true;
+  renderStepDots($('guard-step-dots'), $('guard-step-text'), 0, TARGET_PW_SHOTS, '리듬 등록');
+}
+
+function changeWorkspace(roomCode, shared) {
+  resetRoomWork();
+  roomSync.connect(roomCode, { shared });
+  $('share-room-consent').checked = false;
+  setFeedback($('room-feedback'), shared ? '공개 공유를 시작했습니다. 이 방에서 등록하는 프로필과 시연 문자열이 브로커에 전송됩니다.' : '이 브라우저의 로컬 프로필로 돌아왔습니다. 외부 전송을 중지했습니다.');
+}
+
+function startEnglishSampleExperience() {
+  if (!state.ready) {
+    setFeedback($('room-feedback'), notReadyMessage(), 'error');
+    return;
+  }
+  roomSync.loadSamples(engine.config?.mvp_sample_profiles || []);
+  switchLanguage('en');
+  switchMainMode('arena');
+  switchArenaSub('blind');
+  $('room-dialog').close();
+  setFeedback($('arena-blind-feedback'), '영어 실측 샘플과 비교합니다. 샘플은 다른 사람의 기록이므로 본인 확인용이 아닙니다. 자신의 리듬을 확인하려면 내 프로필을 등록하세요.');
+}
+
 // ================= ACTION HANDLERS =================
-async function handleArenaEnrollSubmit() {
+async function handleArenaEnrollSubmit(isCurrent) {
   if (!state.ready) {
     setFeedback($('arena-enroll-feedback'), notReadyMessage(), 'error');
     return;
@@ -744,6 +823,7 @@ async function handleArenaEnrollSubmit() {
   }
 
   const { embedding } = await engine.embedStroke(capture.stroke);
+  if (!isCurrent()) return;
   const queryId = ++state.querySeq;
   state.lastVerdict = null;
   state.viz.capture = {
@@ -891,7 +971,7 @@ async function handleArenaEnrollSubmit() {
   );
 }
 
-async function handleArenaBlindSubmit() {
+async function handleArenaBlindSubmit(isCurrent) {
   if (!state.ready) {
     setFeedback($('arena-blind-feedback'), notReadyMessage(), 'error');
     return;
@@ -900,7 +980,7 @@ async function handleArenaBlindSubmit() {
   if (candidates.length === 0) {
     setFeedback(
       $('arena-blind-feedback'),
-      '등록된 참가자가 없습니다. [1. 프로필 등록]에서 먼저 연습하거나 우측 상단에서 샘플 프로필을 추가해 보세요.',
+      '현재 언어로 등록된 참가자가 없습니다. 먼저 프로필을 등록하거나 [영어 샘플로 체험]을 선택해 주세요.',
       'error'
     );
     return;
@@ -919,6 +999,7 @@ async function handleArenaBlindSubmit() {
   }
 
   const { embedding: oneEmbedding, latencyMs } = await engine.embedStroke(capture.stroke);
+  if (!isCurrent()) return;
   state.arenaBlindBuffer.push({ embedding: oneEmbedding, capture, accuracy: check.accuracy });
   const got = state.arenaBlindBuffer.length;
   if (got < TARGET_BLIND_SHOTS) {
@@ -1017,8 +1098,8 @@ function renderArenaResult(res, stats) {
     $('arena-result-title').textContent = `'${res.winner.name}'님과 '${res.rankings[1].name}'님의 리듬이 너무 비슷해 판별하지 않았습니다`;
   } else {
     card.className = 'result-card is-block';
-    $('arena-result-kicker').textContent = '미등록 외부인 기각 (Open-Set Rejection)';
-    $('arena-result-title').textContent = '등록되지 않은 새로운 사용자의 타이핑입니다';
+    $('arena-result-kicker').textContent = '판별 보류 · 일치 근거 부족';
+    $('arena-result-title').textContent = '등록된 사용자와 충분히 일치하지 않아 확인할 수 없습니다';
   }
 
   const topList = res.rankings.slice(0, 5);
@@ -1049,7 +1130,7 @@ function renderArenaResult(res, stats) {
   $('arena-result-meta').textContent = `${sentTxt}${stats.cpm} 타/분 · 정확도 ${stats.accuracy}% · ${editTxt} (유효 전이 ${stats.cleanDigraphs}구간)${modeTxt}${behaviorNote(res.winner)}${deviceMismatchNote(res.winner.template, stats.inputMode)} · 추론 ${stats.latencyMs}ms`;
 }
 
-async function handleGuardEnrollSubmit() {
+async function handleGuardEnrollSubmit(isCurrent) {
   if (!state.ready) {
     setFeedback($('guard-enroll-feedback'), notReadyMessage(), 'error');
     return;
@@ -1106,6 +1187,7 @@ async function handleGuardEnrollSubmit() {
   }
 
   const both = await engine.embedAll(capture.stroke);
+  if (!isCurrent()) return;
   state.pwEnrollBuffer.items.push({
     embedding: both.password,
     embedding17: both.sentence,
@@ -1185,7 +1267,7 @@ async function handleGuardEnrollSubmit() {
   );
 }
 
-async function handleGuardVerifySubmit() {
+async function handleGuardVerifySubmit(isCurrent) {
   if (!state.ready) {
     setFeedback($('guard-verify-feedback'), notReadyMessage(), 'error');
     return;
@@ -1210,6 +1292,7 @@ async function handleGuardVerifySubmit() {
 
   setFeedback($('guard-verify-feedback'), '');
   const both = await engine.embedAll(capture.stroke);
+  if (!isCurrent()) return;
   const embedding = both.password;
   const embedding17 = both.sentence;
   const latencyMs = both.latencyMs;
@@ -1332,23 +1415,21 @@ async function handleGuardVerifySubmit() {
 
   if (res.accepted) {
     card.className = 'result-card is-pass';
-    $('guard-result-kicker').textContent = 'ACCESS GRANTED · 본인 인증 승인';
+    $('guard-result-kicker').textContent = '리듬 일치 · 시연 기준 통과';
     $('guard-result-title').textContent = `${targetAcc.name}님의 타이핑 리듬과 일치합니다`;
     $('guard-result-desc').textContent = `비밀번호 문자열과 손가락 전환 리듬이 모두 기준치(${Math.round(
       threshold * 100
     )}%)를 통과했습니다.`;
   } else {
     card.className = 'result-card is-block';
-    $('guard-result-kicker').textContent = 'INTRUSION BLOCKED · 침입 차단';
-    $('guard-result-title').textContent = '비밀번호는 맞지만 타이핑 지문이 불일치합니다';
+    $('guard-result-kicker').textContent = '확인 보류 · 리듬 기준 미달';
+    $('guard-result-title').textContent = '비밀번호는 맞지만 등록 리듬과의 일치를 확인할 수 없습니다';
     const hint = closerOther
       ? ` 입력된 리듬은 등록된 '${closerOther.name}'님의 타건 패턴(${(closerOther.sim * 100).toFixed(
           0
         )}%)에 더 가깝습니다.`
       : '';
-    $('guard-result-desc').textContent = `유출된 비밀번호를 알고 입력했으나 ${
-      targetAcc.name
-    }님의 고유 홀드·전환 리듬과 달라 접속을 차단했습니다.${hint}`;
+    $('guard-result-desc').textContent = `${targetAcc.name}님의 등록 리듬과 충분히 일치하지 않습니다. 본인이라도 입력 속도·기기·환경이 달라지면 기준에 미달할 수 있습니다.${hint}`;
   }
   card.dataset.reference = touchReference ? 'true' : 'false';
   if (touchReference) {
@@ -1414,6 +1495,7 @@ const vizSandboxRecorder = new SmartKeystrokeRecorder($('viz-sandbox-input'), {
     }
   },
   onSubmit: async () => {
+    const scheduledSeq = state.querySeq;
     if (!state.ready) {
       $('viz-signal-badge').textContent = notReadyMessage();
       return;
@@ -1427,7 +1509,10 @@ const vizSandboxRecorder = new SmartKeystrokeRecorder($('viz-sandbox-input'), {
     };
     renderVizStep1();
     if (cap.cleanDigraphCount >= 4) {
-      const embeddings = await engine.embedAll(cap.stroke);
+      let embeddings;
+      try { embeddings = await engine.embedAll(cap.stroke); }
+      catch { showVizError(); return; }
+      if (state.querySeq !== scheduledSeq) return;
       const queryId = ++state.querySeq;
       state.lastVerdict = null;
       state.viz.lastQuery = {
@@ -1601,7 +1686,7 @@ function formatVerdictBannerText(v, winnerName) {
   const simPct = (v.similarity * 100).toFixed(1);
   const thrPct = (v.threshold * 100).toFixed(1);
   if (v.domain === 'password') {
-    const statusLabel = v.accepted ? '본인 인증 승인' : '침입 차단 (리듬 불일치)';
+    const statusLabel = v.accepted ? '리듬 일치 · 시연 기준 통과' : '확인 보류 · 리듬 기준 미달';
     const refTag = v.touchReference ? ' · 모바일 참고용' : '';
     return `공식 판정 스냅샷 · [${winnerName}] ${statusLabel}${refTag} — 일치도 ${simPct}% (임계값 ${thrPct}%)`;
   }
@@ -1613,7 +1698,7 @@ function formatVerdictBannerText(v, winnerName) {
     const marginPct = `${((v.margin || 0) * 100).toFixed(1)}%p`;
     return `공식 판정 스냅샷 · 판별 보류 (1·2위 격차 ${leadPct} < 기준 ${marginPct}) — 최고 점수 ${simPct}% (임계값 ${thrPct}%)`;
   }
-  return `공식 판정 스냅샷 · 미등록 외부인 기각 — 최고 점수 ${simPct}% < 임계값 ${thrPct}%`;
+  return `공식 판정 스냅샷 · 판별 보류 · 일치 근거 부족 — 최고 점수 ${simPct}% < 임계값 ${thrPct}%`;
 }
 
 function renderVizStep3() {
@@ -1668,7 +1753,7 @@ function renderVizStep3() {
     // Exploratory preview (before official verdict or after invalidation by room/lang/input/deletion)
     if (bannerEl && statusEl && adaptBadgeEl) {
       bannerEl.className = 'viz-verdict-banner is-preview';
-      statusEl.textContent = '실시간 탐색 미리보기 (공식 인증 판정 전)';
+      statusEl.textContent = '실시간 탐색 미리보기 (비교 결과 확정 전)';
       adaptBadgeEl.hidden = true;
     }
 
@@ -1746,15 +1831,19 @@ function renderPrinciplesView() {
   renderVizStep3();
 }
 
+function showVizError() { $('viz-signal-badge').textContent = '분석하지 못했습니다. 잠시 후 다시 입력해 주세요.'; }
+
 async function applyVizPreset(mode) {
   $('viz-sandbox-input').value = '';
   vizSandboxRecorder.reset();
+  const scheduledSeq = ++state.querySeq;
   const cap = createPresetCapture(mode);
   state.viz.capture = cap;
   state.lastVerdict = null;
   renderVizStep1();
   if (state.ready) {
     const embeddings = await engine.embedAll(cap.stroke);
+    if (state.querySeq !== scheduledSeq) return;
     const queryId = ++state.querySeq;
     state.viz.lastQuery = {
       queryId,
@@ -1792,8 +1881,8 @@ function bindEvents() {
     state.viz.waveTab = 'tempo';
     renderVizStep1();
   });
-  $('viz-preset-fast-btn').addEventListener('click', () => applyVizPreset('normal'));
-  $('viz-preset-slow-btn').addEventListener('click', () => applyVizPreset('slow'));
+  $('viz-preset-fast-btn').addEventListener('click', () => applyVizPreset('normal').catch(showVizError));
+  $('viz-preset-slow-btn').addEventListener('click', () => applyVizPreset('slow').catch(showVizError));
 
   $('viz-map-domain-arena').addEventListener('click', () => {
     state.viz.mapDomain = 'arena';
@@ -1872,11 +1961,13 @@ function bindEvents() {
   $('lang-en-btn').addEventListener('click', () => switchLanguage('en'));
 
   $('arena-next-sentence-btn').addEventListener('click', () => {
+    submissionGate.invalidate();
     dealArenaEnrollSentence();
     $('arena-enroll-input').focus();
   });
 
   $('arena-blind-shuffle-btn').addEventListener('click', () => {
+    submissionGate.invalidate();
     dealArenaBlindSentence();
     $('arena-blind-input').focus();
   });
@@ -1888,6 +1979,7 @@ function bindEvents() {
   });
 
   $('arena-name-input').addEventListener('input', () => {
+    submissionGate.invalidate();
     const val = normalizeProfileName($('arena-name-input').value);
     if (val !== state.arenaEnrollBuffer.name) {
       resetArenaEnrollProgress();
@@ -1915,7 +2007,9 @@ function bindEvents() {
     }
   });
 
+  $('guard-enroll-name').addEventListener('input', () => submissionGate.invalidate());
   $('guard-enroll-pw-target').addEventListener('input', () => {
+    submissionGate.invalidate();
     state.pwEnrollBuffer = {
       name: normalizeProfileName($('guard-enroll-name').value),
       targetPw: $('guard-enroll-pw-target').value,
@@ -1989,15 +2083,22 @@ function bindEvents() {
     e.preventDefault();
     const raw = $('room-code-input').value;
     if (!raw.trim()) return;
+    if (!state.ready) {
+      setFeedback($('room-feedback'), notReadyMessage(), 'error');
+      return;
+    }
     const compatNotice = $('compat-isolation-notice');
     if (compatNotice) compatNotice.hidden = true;
-    try {
-      roomSync.connect(sanitizeRoomCode(raw));
-    } catch (syncErr) {
-      console.warn('Room switch fallback to local mode:', syncErr);
+    if (!$('share-room-consent').checked) {
+      setFeedback($('room-feedback'), '공개 브로커로 전송되는 항목을 확인하고 공유 동의에 체크해 주세요.', 'error');
+      return;
     }
-    $('room-code-input').value = '';
+    changeWorkspace(sanitizeRoomCode(raw), true);
   });
+
+  $('use-local-btn').addEventListener('click', () => changeWorkspace('LOCAL', false));
+  $('arena-sample-start-btn').addEventListener('click', startEnglishSampleExperience);
+  $('sample-start-btn').addEventListener('click', startEnglishSampleExperience);
 
   $('toggle-samples-btn').addEventListener('click', () => {
     if (roomSync.hasSamples()) {
@@ -2021,11 +2122,15 @@ window.__keyprintTestApi = {
 async function bootstrap() {
   const initialTabParam = new URLSearchParams(window.location.search).get('tab');
   const initialRoom = getInitialRoomCode();
-  roomSync.roomCode = initialRoom;
-  $('room-pill-label').textContent = `방 #${initialRoom} · 준비 중`;
-  $('modal-room-code').textContent = `#${initialRoom}`;
+  $('room-code-input').value = initialRoom;
+  $('room-pill-label').textContent = '이 브라우저만 · 준비 중';
+  $('modal-room-code').textContent = '이 브라우저만';
 
   bindEvents();
+  if (new URLSearchParams(window.location.search).has('room')) {
+    $('room-dialog').showModal();
+    setFeedback($('room-feedback'), `#${initialRoom} 초대 링크입니다. 공개 공유에 동의하고 입장해야 연결됩니다.`);
+  }
   dealArenaEnrollSentence();
   dealArenaBlindSentence();
 
@@ -2059,7 +2164,7 @@ async function bootstrap() {
 
   // Connect RoomProfileSync safely even if window.WebSocket throws synchronously
   try {
-    roomSync.connect(initialRoom);
+    roomSync.connect('LOCAL');
   } catch (syncErr) {
     console.warn('Room sync fallback to local mode:', syncErr);
   }
@@ -2071,7 +2176,9 @@ async function bootstrap() {
   if (state.ready) {
     try {
       if (!state.viz.lastQuery && state.viz.capture?.stroke) {
+        const scheduledSeq = state.querySeq;
         const embeddings = await engine.embedAll(state.viz.capture.stroke);
+        if (state.querySeq !== scheduledSeq) return;
         const queryId = ++state.querySeq;
         state.viz.lastQuery = {
           queryId,

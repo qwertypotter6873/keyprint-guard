@@ -155,6 +155,7 @@ export class SmartKeystrokeRecorder {
       const now = eventTime(e);
 
       if (e.key === 'Enter') {
+        if (e.repeat) { e.preventDefault(); return; }
         if (e.isComposing) {
           // Allow Korean IME composition to commit final syllable before reading inputEl.value
           setTimeout(() => {

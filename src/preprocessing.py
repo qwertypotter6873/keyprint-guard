@@ -323,6 +323,16 @@ def apply_channel_scaler(
     return ((seq - mean[None, :, None]) / std[None, :, None]).astype(np.float32)
 
 
+def prefix_sequences(raw_holds, raw_dds, raw_uds, key_block, length, bounds, mean, std):
+    """Recompute features after cropping raw input; no suffix enters Rel_H/Rel_DD."""
+    if not 1 <= length <= raw_dds.shape[1]:
+        raise ValueError("Prefix length must be within the observed digraph sequence")
+    h = np.clip(raw_holds[:, :length + 1], *bounds["H"])
+    d = np.clip(raw_dds[:, :length], *bounds["DD"])
+    u = np.clip(raw_uds[:, :length], *bounds["UD"])
+    return apply_channel_scaler(extract_sequences(h, d, u, key_block[..., :length]), mean, std)
+
+
 def augment_keystroke_batch(
     holds: np.ndarray,
     dds: np.ndarray,

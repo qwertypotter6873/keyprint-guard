@@ -10,3 +10,4 @@ data/processed/*.npz
 *.zip
 .tmp_*
 web-legacy-full/
+기말-*/

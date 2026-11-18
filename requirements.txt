@@ -11,4 +11,6 @@ onnxruntime>=1.18.0
 jupyter>=1.0.0
 nbconvert>=7.16.0
 nbformat>=5.10.0
+nbclient>=0.10.0
+jupyter-client>=8.6.0
 ipykernel>=6.29.0

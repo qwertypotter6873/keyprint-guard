@@ -3,14 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { findChromeExecutable } from './browser_helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(WEB_DIR, 'dist');
 const MODEL_CONFIG_PATH = path.join(WEB_DIR, 'public', 'models', 'model_config.json');
 const DEFAULT_SCREENSHOT_DIR = path.resolve(WEB_DIR, '..', 'assets', 'screenshots');
-const CHROME_PATH =
-  process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME_PATH = findChromeExecutable(chromium);
 const DEMO_ROOM = 'DEMO_CAPTURE';
 
 const MIME_TYPES = {
@@ -255,7 +255,7 @@ async function run() {
 
   fs.mkdirSync(outDir, { recursive: true });
   const { server, url } = await startStaticServer(DIST_DIR);
-  const roomUrl = `${url}/?room=${DEMO_ROOM}`;
+  const roomUrl = `${url}/`;
   console.log(
     `[E2E] Serving v2 build at ${roomUrl} | protocol: pw>=${protocol.passwordMinLength} ("${protocol.targetPassword}"), arena=${protocol.arenaEnrollSentences} enroll / ${protocol.arenaQuerySentences} query -> ${outDir}`
   );
@@ -505,7 +505,31 @@ async function run() {
       fullPage: false,
     });
 
-    // 4. Room Sync & Profile Management Dialog (screenshot 04)
+    // 4. Real UI validation: a short demonstration password is refused before enrollment.
+    const profilesBeforeValidation = await pageA.evaluate(() => window.__keyprintTestApi.state.profiles.length);
+    const shortDemoPassword = 'Demo2026'.slice(0, protocol.passwordMinLength - 1);
+    await pageA.click('#guard-sub-enroll');
+    await pageA.fill('#guard-enroll-name', '입력 확인 (시연)');
+    await pageA.fill('#guard-enroll-pw-target', shortDemoPassword);
+    await pageA.click('#guard-enroll-input');
+    await pageA.keyboard.type(shortDemoPassword, { delay: 35 });
+    await pageA.keyboard.press('Enter');
+    await pageA.waitForFunction(
+      (minLength) => document.getElementById('guard-enroll-feedback')?.textContent?.includes(`최소 ${minLength}자`),
+      protocol.passwordMinLength
+    );
+    const profilesAfterValidation = await pageA.evaluate(() => window.__keyprintTestApi.state.profiles.length);
+    if (profilesAfterValidation !== profilesBeforeValidation) {
+      throw new Error('Short password validation must not create a profile');
+    }
+    console.log('[E2E] Short demonstration password refused:', (await pageA.textContent('#guard-enroll-feedback'))?.trim());
+    await pageA.waitForTimeout(220);
+    await pageA.screenshot({
+      path: path.join(outDir, '04_exception_handling_guard.png'),
+      fullPage: false,
+    });
+
+    // Load the same comparison samples for screenshots 05 and 06.
     await pageA.click('#open-room-btn');
     await pageA.waitForSelector('#room-dialog[open]', { timeout: 5000 });
     const hasSamples = await pageA.evaluate(() =>
@@ -515,11 +539,6 @@ async function run() {
       await pageA.click('#toggle-samples-btn');
       await pageA.waitForTimeout(180);
     }
-    await pageA.waitForTimeout(220);
-    await pageA.screenshot({
-      path: path.join(outDir, '04_exception_handling_guard.png'),
-      fullPage: false,
-    });
     await pageA.click('#close-room-btn');
     await pageA.waitForTimeout(180);
 

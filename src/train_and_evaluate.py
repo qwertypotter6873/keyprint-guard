@@ -51,6 +51,9 @@ from preprocessing import (
 
 VANILLA_DEFAULT_EPOCHS = 35
 KEYPRINT_DEFAULT_EPOCHS = 35
+# Validation stays byte-for-byte compatible with checkpoint selection. Test bots
+# use an independent pool, while the RNG selecting human trials is unchanged.
+TEST_BOT_SEED = SEED + 1000003
 
 
 def set_all_seeds(seed: int = SEED) -> None:
@@ -151,6 +154,7 @@ def build_verification_trials(
     k_shot: int = 5,
     seed: int = SEED,
     session1_only_enroll: bool = False,
+    bot_seed: Optional[int] = None,
 ) -> Dict:
     """
     Construct open-set 1:1 biometric verification trials on unseen subjects:
@@ -160,7 +164,8 @@ def build_verification_trials(
     """
     rng = np.random.RandomState(seed)
     n_subjs = len(split.subjects)
-    bot_flat, bot_seq = generate_bot_sequences(240, chan_mean, chan_std, seed=seed)
+    bot_seed = seed if bot_seed is None else bot_seed
+    bot_flat, bot_seq = generate_bot_sequences(240, chan_mean, chan_std, seed=bot_seed)
 
     enroll_groups = []
     sessions_to_enroll = [1] if session1_only_enroll else [1, 3, 5, 7]
@@ -192,6 +197,7 @@ def build_verification_trials(
         "groups": enroll_groups,
         "bot_flat": bot_flat,
         "bot_seq": bot_seq,
+        "bot_seed": int(bot_seed),
     }
 
 
