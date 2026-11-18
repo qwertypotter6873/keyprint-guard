@@ -1,0 +1,436 @@
+{
+  "pr_5": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+  "aihub_archives_sha256": {
+    "TS": "49df847ff3637bc5e952ef20f4583a6f88941e1fab521e74c5f60c1dc2295af4",
+    "VS": "e394e99cf38185d5545e777cb821c2618046fecc8b2526241f3908d88df4044f"
+  },
+  "fitted_on": "333 AI Hub TS writers, Korean school subject, first 40 text taps; five earlier questions to enroll then two later questions in a joint probe; no VS or FACT data used in fitting.",
+  "primary_comparison": "Frozen PR rank vs. a seven-weight scorer learned on TS for five-candidate ranking. No neural weight updates. Same paired probes and five-person rosters. No threshold or rejection applied in these top1 results.",
+  "features": [
+    "deployed normalized score",
+    "raw 0.65 centroid + 0.35 best exemplar cosine",
+    "negative absolute difference in mean recording log-DD quantile 0.1",
+    "negative absolute difference in mean recording log-DD quantile 0.25",
+    "negative absolute difference in mean recording log-DD quantile 0.5",
+    "negative absolute difference in mean recording log-DD quantile 0.75",
+    "negative absolute difference in mean recording log-DD quantile 0.9"
+  ],
+  "learning": {
+    "loss": "five-way conditional log likelihood plus L2/2",
+    "l2": 0.01,
+    "candidate_draws_per_writer": 32,
+    "draws_seed": 71518,
+    "hyperparameter_search": false
+  },
+  "uncertainty": "Bootstrap resamples writers, paired, conditional on the gallery, training fit and data. AI Hub secondary prompt-holdout may include primary VS writers; FACT Korean and English share people and use 76 taps.",
+  "original_touch_rule": {
+    "rule": {
+      "threshold": 0.78,
+      "margin": 0.12
+    },
+    "validation_target_correct_accept": 0.2066,
+    "validation_calibration": {
+      "correct_accept": 0.2244,
+      "misidentified": 0.002,
+      "outsider_accepted": 0.0116
+    },
+    "gallery_3": {
+      "single_sentence_enroll3": {
+        "correct_accept": 0.2131,
+        "misidentified": 0.0035,
+        "outsider_accepted": 0.0119
+      },
+      "two_sentences_enroll5_margin": {
+        "correct_accept": 0.165,
+        "misidentified": 0.0001,
+        "outsider_accepted": 0.0033
+      }
+    },
+    "gallery_5": {
+      "single_sentence_enroll3": {
+        "correct_accept": 0.2223,
+        "misidentified": 0.0114,
+        "outsider_accepted": 0.018
+      },
+      "two_sentences_enroll5_margin": {
+        "correct_accept": 0.1692,
+        "misidentified": 0.0005,
+        "outsider_accepted": 0.0047
+      }
+    },
+    "gallery_10": {
+      "single_sentence_enroll3": {
+        "correct_accept": 0.2112,
+        "misidentified": 0.0226,
+        "outsider_accepted": 0.0347
+      },
+      "two_sentences_enroll5_margin": {
+        "correct_accept": 0.1511,
+        "misidentified": 0.0009,
+        "outsider_accepted": 0.0088
+      }
+    }
+  },
+  "comparisons": {
+    "validation": {
+      "writers": 46,
+      "probes": 46,
+      "roster_protocol": "all_five_person_rosters",
+      "models": {
+        "deployed_pr": {
+          "top1": 0.5861,
+          "change_vs_pr": 0.0,
+          "paired_95_ci_change": [
+            0.0,
+            0.0
+          ],
+          "change_vs_raw": -0.016936,
+          "paired_95_ci_change_vs_raw": [
+            -0.077381,
+            0.048708
+          ]
+        },
+        "same_frozen_encoder_before_cohort_normalization": {
+          "top1": 0.603037,
+          "change_vs_pr": 0.016936,
+          "paired_95_ci_change": [
+            -0.048708,
+            0.077381
+          ],
+          "change_vs_raw": 0.0,
+          "paired_95_ci_change_vs_raw": [
+            0.0,
+            0.0
+          ]
+        },
+        "timing_quantiles_without_fitted_weights": {
+          "top1": 0.517477,
+          "change_vs_pr": -0.068624,
+          "paired_95_ci_change": [
+            -0.18456,
+            0.039463
+          ],
+          "change_vs_raw": -0.08556,
+          "paired_95_ci_change_vs_raw": [
+            -0.186848,
+            0.013026
+          ]
+        },
+        "fixed_equal_family_weights": {
+          "top1": 0.567919,
+          "change_vs_pr": -0.018181,
+          "paired_95_ci_change": [
+            -0.111551,
+            0.067576
+          ],
+          "change_vs_raw": -0.035117,
+          "paired_95_ci_change_vs_raw": [
+            -0.116189,
+            0.042933
+          ]
+        },
+        "frozen_encoder_plus_learned_candidate_weights": {
+          "top1": 0.620467,
+          "change_vs_pr": 0.034367,
+          "paired_95_ci_change": [
+            -0.030972,
+            0.097169
+          ],
+          "change_vs_raw": 0.01743,
+          "paired_95_ci_change_vs_raw": [
+            -0.043354,
+            0.079536
+          ]
+        }
+      }
+    },
+    "nonoverlapping_prompts": {
+      "writers": 38,
+      "probes": 38,
+      "roster_protocol": "all_five_person_rosters",
+      "models": {
+        "deployed_pr": {
+          "top1": 0.63931,
+          "change_vs_pr": 0.0,
+          "paired_95_ci_change": [
+            0.0,
+            0.0
+          ],
+          "change_vs_raw": -0.047423,
+          "paired_95_ci_change_vs_raw": [
+            -0.095355,
+            -0.003977
+          ]
+        },
+        "same_frozen_encoder_before_cohort_normalization": {
+          "top1": 0.686733,
+          "change_vs_pr": 0.047423,
+          "paired_95_ci_change": [
+            0.003977,
+            0.095355
+          ],
+          "change_vs_raw": 0.0,
+          "paired_95_ci_change_vs_raw": [
+            0.0,
+            0.0
+          ]
+        },
+        "timing_quantiles_without_fitted_weights": {
+          "top1": 0.589092,
+          "change_vs_pr": -0.050219,
+          "paired_95_ci_change": [
+            -0.160113,
+            0.059016
+          ],
+          "change_vs_raw": -0.097641,
+          "paired_95_ci_change_vs_raw": [
+            -0.203427,
+            0.007316
+          ]
+        },
+        "fixed_equal_family_weights": {
+          "top1": 0.653876,
+          "change_vs_pr": 0.014565,
+          "paired_95_ci_change": [
+            -0.069774,
+            0.09835
+          ],
+          "change_vs_raw": -0.032857,
+          "paired_95_ci_change_vs_raw": [
+            -0.114253,
+            0.044962
+          ]
+        },
+        "frozen_encoder_plus_learned_candidate_weights": {
+          "top1": 0.664186,
+          "change_vs_pr": 0.024876,
+          "paired_95_ci_change": [
+            -0.036491,
+            0.082781
+          ],
+          "change_vs_raw": -0.022547,
+          "paired_95_ci_change_vs_raw": [
+            -0.091313,
+            0.041528
+          ]
+        }
+      }
+    },
+    "fact_ko": {
+      "writers": 50,
+      "probes": 250,
+      "roster_protocol": "published_project_fixed_rosters",
+      "models": {
+        "deployed_pr": {
+          "top1": 0.748,
+          "change_vs_pr": 0.0,
+          "paired_95_ci_change": [
+            0.0,
+            0.0
+          ],
+          "change_vs_raw": -0.036,
+          "paired_95_ci_change_vs_raw": [
+            -0.108,
+            0.032
+          ]
+        },
+        "same_frozen_encoder_before_cohort_normalization": {
+          "top1": 0.784,
+          "change_vs_pr": 0.036,
+          "paired_95_ci_change": [
+            -0.032,
+            0.108
+          ],
+          "change_vs_raw": 0.0,
+          "paired_95_ci_change_vs_raw": [
+            0.0,
+            0.0
+          ]
+        },
+        "timing_quantiles_without_fitted_weights": {
+          "top1": 0.756,
+          "change_vs_pr": 0.008,
+          "paired_95_ci_change": [
+            -0.068,
+            0.084
+          ],
+          "change_vs_raw": -0.028,
+          "paired_95_ci_change_vs_raw": [
+            -0.092,
+            0.032
+          ]
+        },
+        "fixed_equal_family_weights": {
+          "top1": 0.76,
+          "change_vs_pr": 0.012,
+          "paired_95_ci_change": [
+            -0.056,
+            0.08
+          ],
+          "change_vs_raw": -0.024,
+          "paired_95_ci_change_vs_raw": [
+            -0.084,
+            0.032
+          ]
+        },
+        "frozen_encoder_plus_learned_candidate_weights": {
+          "top1": 0.78,
+          "change_vs_pr": 0.032,
+          "paired_95_ci_change": [
+            -0.036,
+            0.104
+          ],
+          "change_vs_raw": -0.004,
+          "paired_95_ci_change_vs_raw": [
+            -0.064,
+            0.056
+          ]
+        }
+      }
+    },
+    "fact_en": {
+      "writers": 50,
+      "probes": 250,
+      "roster_protocol": "published_project_fixed_rosters",
+      "models": {
+        "deployed_pr": {
+          "top1": 0.72,
+          "change_vs_pr": 0.0,
+          "paired_95_ci_change": [
+            0.0,
+            0.0
+          ],
+          "change_vs_raw": -0.032,
+          "paired_95_ci_change_vs_raw": [
+            -0.1,
+            0.032
+          ]
+        },
+        "same_frozen_encoder_before_cohort_normalization": {
+          "top1": 0.752,
+          "change_vs_pr": 0.032,
+          "paired_95_ci_change": [
+            -0.032,
+            0.1
+          ],
+          "change_vs_raw": 0.0,
+          "paired_95_ci_change_vs_raw": [
+            0.0,
+            0.0
+          ]
+        },
+        "timing_quantiles_without_fitted_weights": {
+          "top1": 0.728,
+          "change_vs_pr": 0.008,
+          "paired_95_ci_change": [
+            -0.072,
+            0.088
+          ],
+          "change_vs_raw": -0.024,
+          "paired_95_ci_change_vs_raw": [
+            -0.076,
+            0.028
+          ]
+        },
+        "fixed_equal_family_weights": {
+          "top1": 0.752,
+          "change_vs_pr": 0.032,
+          "paired_95_ci_change": [
+            -0.04,
+            0.104
+          ],
+          "change_vs_raw": 0.0,
+          "paired_95_ci_change_vs_raw": [
+            -0.048,
+            0.048
+          ]
+        },
+        "frozen_encoder_plus_learned_candidate_weights": {
+          "top1": 0.72,
+          "change_vs_pr": 0.0,
+          "paired_95_ci_change": [
+            -0.068,
+            0.068
+          ],
+          "change_vs_raw": -0.032,
+          "paired_95_ci_change_vs_raw": [
+            -0.092,
+            0.02
+          ]
+        }
+      }
+    },
+    "three_fold_writer_disjoint_TS": {
+      "writers": 333,
+      "probes": 333,
+      "roster_protocol": "all five-person rosters within the held-out fold, with 111 eligible writers per fold",
+      "models": {
+        "deployed_pr": {
+          "top1": 0.580834,
+          "change_vs_pr": 0.0,
+          "paired_95_ci_change": [
+            0.0,
+            0.0
+          ],
+          "change_vs_raw": -0.004608,
+          "paired_95_ci_change_vs_raw": [
+            -0.0238,
+            0.015548
+          ]
+        },
+        "same_frozen_encoder_before_cohort_normalization": {
+          "top1": 0.585442,
+          "change_vs_pr": 0.004608,
+          "paired_95_ci_change": [
+            -0.015548,
+            0.0238
+          ],
+          "change_vs_raw": 0.0,
+          "paired_95_ci_change_vs_raw": [
+            0.0,
+            0.0
+          ]
+        },
+        "timing_quantiles_without_fitted_weights": {
+          "top1": 0.537207,
+          "change_vs_pr": -0.043627,
+          "paired_95_ci_change": [
+            -0.076611,
+            -0.011867
+          ],
+          "change_vs_raw": -0.048234,
+          "paired_95_ci_change_vs_raw": [
+            -0.077243,
+            -0.019067
+          ]
+        },
+        "fixed_equal_family_weights": {
+          "top1": 0.581574,
+          "change_vs_pr": 0.00074,
+          "paired_95_ci_change": [
+            -0.024282,
+            0.025373
+          ],
+          "change_vs_raw": -0.003868,
+          "paired_95_ci_change_vs_raw": [
+            -0.024676,
+            0.017581
+          ]
+        },
+        "frozen_encoder_plus_learned_candidate_weights": {
+          "top1": 0.601897,
+          "change_vs_pr": 0.021063,
+          "paired_95_ci_change": [
+            -0.001716,
+            0.042679
+          ],
+          "change_vs_raw": 0.016455,
+          "paired_95_ci_change_vs_raw": [
+            -0.002774,
+            0.035902
+          ]
+        }
+      }
+    }
+  }
+}

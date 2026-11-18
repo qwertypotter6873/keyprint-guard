@@ -1,0 +1,1108 @@
+{
+  "source": "https://www.aihub.or.kr/aihubdata/data/view.do?currMenu=115&dataSetSn=71518&topMenu=100",
+  "main": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+  "pr_5": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+  "protocol": {
+    "corpus": "Korean subject keyboard.json, STAGE_BASE, dates in Asia/Seoul. No labels or non-keyboard sensor files are opened.",
+    "inputs": "First 40 (primary) or 76 (sensitivity) printable or space taps per question; at least half are Hangul. Adjacent KEY_DOWN differences of 6 to 2200 ms only, cutting across intervening controls. No physical key coordinates, measured key holds, behavior, answer text, absolute timestamp or identifier in the input to the scorer.",
+    "task": "Five enrollment answers and one probe of two answers, seven distinct questions per writer. No overlap between actual timing windows. Chronological primary: all five reference answers precede both probes. Alternate global question holdout: question numbers divisible by three are always test questions; reference may follow probe.",
+    "sampling": "Use every eligible writer once per protocol and evaluate rosters within one publisher split. For each writer, average exactly over all choices of four other candidates for a known probe, or five other candidates for an outsider probe. Then give every writer equal weight. Separate fixed-roster counts use the web engine directly, seed 71518.",
+    "metrics": "top1 is the ranking before rejection. accept_correct, accept_wrong and reject_known have all known-writer probes as their denominator. accept_outsider has outsider probes as its denominator. Intervals resample writers 5000 times conditional on the observed candidate pool. Rates are fractions, not percentages.",
+    "data_use": "Both deployed networks are frozen. The exploratory two-cutoff diagnostic uses TS only to select settings and evaluates them on VS. Each capture uses at least eight eligible inter-tap intervals. This is an offline smart-device timing assessment, without a copied-text or browser-event reconstruction."
+  },
+  "audit": {
+    "archive_sha256": {
+      "TS": "49df847ff3637bc5e952ef20f4583a6f88941e1fab521e74c5f60c1dc2295af4",
+      "VS": "e394e99cf38185d5545e777cb821c2618046fecc8b2526241f3908d88df4044f"
+    },
+    "files_by_split": {
+      "TS": 8572,
+      "VS": 1105
+    },
+    "distinct_source_writers_by_split": {
+      "TS": 786,
+      "VS": 79
+    },
+    "source_writers_shared_by_split": 0,
+    "source_questions": 20,
+    "identical_base_groups": 59,
+    "all_records_in_identical_base_groups": 319,
+    "invalid_raw_records": {},
+    "valid_nondeduplicated_records": 9677,
+    "valid_unique_base_records": 9358,
+    "valid_unique_base_writers": 849,
+    "writers_with_multiple_local_days_after_dedup": 0
+  },
+  "studies": [
+    {
+      "split": "TS",
+      "prefix_text_taps": 40,
+      "question_selection": "chronological",
+      "writers": 333,
+      "enrolled_first_in_time": 333,
+      "distinct_enrollment_questions": 16,
+      "distinct_probe_questions": 14,
+      "questions_shared_between_roles_globally": 11,
+      "all_files_dropped_for_duplicate_prefix_in_both_splits": 0,
+      "median_valid_intervals_per_capture": 35.0,
+      "median_gap_minutes_after_enrollment": 2.86,
+      "results": {
+        "main": {
+          "default_similarity_threshold": 0.73,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.568431,
+            "accept_correct": 0.509344,
+            "accept_wrong": 0.375005,
+            "reject_known": 0.115651,
+            "reject_known_below_similarity": 0.115651,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.708947
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 192,
+            "accept_correct": 175,
+            "accept_wrong": 123,
+            "reject_known": 35,
+            "reject_known_below_similarity": 35,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 236
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.53364,
+              0.602034
+            ],
+            "accept_correct": [
+              0.468654,
+              0.548947
+            ],
+            "accept_wrong": [
+              0.345342,
+              0.405407
+            ],
+            "reject_known": [
+              0.090215,
+              0.141493
+            ],
+            "reject_known_below_similarity": [
+              0.090215,
+              0.141493
+            ],
+            "reject_known_by_margin": [
+              0.0,
+              0.0
+            ],
+            "accept_outsider": [
+              0.681536,
+              0.735616
+            ]
+          },
+          "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+          "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+          "model_hash": "ac38471759213dd1",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0.12,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.584213,
+            "accept_correct": 0.120047,
+            "accept_wrong": 0.008678,
+            "reject_known": 0.871276,
+            "reject_known_below_similarity": 0.049383,
+            "reject_known_by_margin": 0.821893,
+            "accept_outsider": 0.104099
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 195,
+            "accept_correct": 40,
+            "accept_wrong": 4,
+            "reject_known": 289,
+            "reject_known_below_similarity": 13,
+            "reject_known_by_margin": 276,
+            "accept_outsider": 30
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.550937,
+              0.616539
+            ],
+            "accept_correct": [
+              0.099638,
+              0.141258
+            ],
+            "accept_wrong": [
+              0.004977,
+              0.012971
+            ],
+            "reject_known": [
+              0.850564,
+              0.890864
+            ],
+            "reject_known_below_similarity": [
+              0.03295,
+              0.067499
+            ],
+            "reject_known_by_margin": [
+              0.796083,
+              0.846537
+            ],
+            "accept_outsider": [
+              0.094822,
+              0.113523
+            ]
+          },
+          "revision": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+          "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+          "model_hash": "f6a1f3dec3ff5f57",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr_zero_margin_diagnostic": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.584213,
+            "accept_correct": 0.555809,
+            "accept_wrong": 0.394808,
+            "reject_known": 0.049383,
+            "reject_known_below_similarity": 0.049383,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.819234
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 195,
+            "accept_correct": 185,
+            "accept_wrong": 135,
+            "reject_known": 13,
+            "reject_known_below_similarity": 13,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 271
+          }
+        },
+        "paired_pr_minus_main": {
+          "mean_rate_change": {
+            "top1": 0.015782,
+            "accept_correct": -0.389298,
+            "accept_wrong": -0.366327,
+            "reject_known": 0.755625,
+            "reject_known_below_similarity": -0.066268,
+            "reject_known_by_margin": 0.821893,
+            "accept_outsider": -0.604848
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              -0.008332,
+              0.040354
+            ],
+            "accept_correct": [
+              -0.424321,
+              -0.354137
+            ],
+            "accept_wrong": [
+              -0.396606,
+              -0.337379
+            ],
+            "reject_known": [
+              0.72409,
+              0.78666
+            ],
+            "reject_known_below_similarity": [
+              -0.088988,
+              -0.043735
+            ],
+            "reject_known_by_margin": [
+              0.796083,
+              0.846537
+            ],
+            "accept_outsider": [
+              -0.636699,
+              -0.572653
+            ]
+          }
+        },
+        "speed_only": {
+          "top1_mean_over_all_five_person_rosters": 0.440958
+        }
+      }
+    },
+    {
+      "split": "VS",
+      "prefix_text_taps": 40,
+      "question_selection": "chronological",
+      "writers": 46,
+      "enrolled_first_in_time": 46,
+      "distinct_enrollment_questions": 13,
+      "distinct_probe_questions": 12,
+      "questions_shared_between_roles_globally": 7,
+      "all_files_dropped_for_duplicate_prefix_in_both_splits": 0,
+      "median_valid_intervals_per_capture": 35.0,
+      "median_gap_minutes_after_enrollment": 2.91,
+      "results": {
+        "main": {
+          "default_similarity_threshold": 0.73,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.612699,
+            "accept_correct": 0.534143,
+            "accept_wrong": 0.359215,
+            "reject_known": 0.106642,
+            "reject_known_below_similarity": 0.106642,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.724717
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 30,
+            "accept_correct": 24,
+            "accept_wrong": 16,
+            "reject_known": 6,
+            "reject_known_below_similarity": 6,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 34
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.530058,
+              0.695632
+            ],
+            "accept_correct": [
+              0.427334,
+              0.640429
+            ],
+            "accept_wrong": [
+              0.283927,
+              0.434226
+            ],
+            "reject_known": [
+              0.046223,
+              0.181887
+            ],
+            "reject_known_below_similarity": [
+              0.046223,
+              0.181887
+            ],
+            "reject_known_by_margin": [
+              0.0,
+              0.0
+            ],
+            "accept_outsider": [
+              0.650396,
+              0.789993
+            ]
+          },
+          "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+          "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+          "model_hash": "ac38471759213dd1",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0.12,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.5861,
+            "accept_correct": 0.127495,
+            "accept_wrong": 0.005964,
+            "reject_known": 0.866541,
+            "reject_known_below_similarity": 0.032247,
+            "reject_known_by_margin": 0.834294,
+            "accept_outsider": 0.127023
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 24,
+            "accept_correct": 7,
+            "accept_wrong": 0,
+            "reject_known": 39,
+            "reject_known_below_similarity": 2,
+            "reject_known_by_margin": 37,
+            "accept_outsider": 3
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.502946,
+              0.669414
+            ],
+            "accept_correct": [
+              0.078715,
+              0.186148
+            ],
+            "accept_wrong": [
+              0.0,
+              0.017557
+            ],
+            "reject_known": [
+              0.808505,
+              0.915347
+            ],
+            "reject_known_below_similarity": [
+              0.00155,
+              0.084679
+            ],
+            "reject_known_by_margin": [
+              0.761996,
+              0.894849
+            ],
+            "accept_outsider": [
+              0.096155,
+              0.159311
+            ]
+          },
+          "revision": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+          "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+          "model_hash": "f6a1f3dec3ff5f57",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr_zero_margin_diagnostic": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.5861,
+            "accept_correct": 0.558717,
+            "accept_wrong": 0.409035,
+            "reject_known": 0.032247,
+            "reject_known_below_similarity": 0.032247,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.815538
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 24,
+            "accept_correct": 22,
+            "accept_wrong": 22,
+            "reject_known": 2,
+            "reject_known_below_similarity": 2,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 37
+          }
+        },
+        "paired_pr_minus_main": {
+          "mean_rate_change": {
+            "top1": -0.026599,
+            "accept_correct": -0.406648,
+            "accept_wrong": -0.353251,
+            "reject_known": 0.759899,
+            "reject_known_below_similarity": -0.074395,
+            "reject_known_by_margin": 0.834294,
+            "accept_outsider": -0.597694
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              -0.117388,
+              0.068139
+            ],
+            "accept_correct": [
+              -0.513767,
+              -0.295624
+            ],
+            "accept_wrong": [
+              -0.426571,
+              -0.278971
+            ],
+            "reject_known": [
+              0.658033,
+              0.844626
+            ],
+            "reject_known_below_similarity": [
+              -0.159612,
+              0.007623
+            ],
+            "reject_known_by_margin": [
+              0.761996,
+              0.894849
+            ],
+            "accept_outsider": [
+              -0.684352,
+              -0.504416
+            ]
+          }
+        },
+        "speed_only": {
+          "top1_mean_over_all_five_person_rosters": 0.396438
+        }
+      }
+    },
+    {
+      "split": "TS",
+      "prefix_text_taps": 76,
+      "question_selection": "chronological",
+      "writers": 51,
+      "enrolled_first_in_time": 51,
+      "distinct_enrollment_questions": 13,
+      "distinct_probe_questions": 10,
+      "questions_shared_between_roles_globally": 6,
+      "all_files_dropped_for_duplicate_prefix_in_both_splits": 0,
+      "median_valid_intervals_per_capture": 68.0,
+      "median_gap_minutes_after_enrollment": 4.45,
+      "results": {
+        "main": {
+          "default_similarity_threshold": 0.73,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.684165,
+            "accept_correct": 0.676085,
+            "accept_wrong": 0.311345,
+            "reject_known": 0.012571,
+            "reject_known_below_similarity": 0.012571,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.844697
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 31,
+            "accept_correct": 31,
+            "accept_wrong": 20,
+            "reject_known": 0,
+            "reject_known_below_similarity": 0,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 44
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.599139,
+              0.766699
+            ],
+            "accept_correct": [
+              0.587185,
+              0.763573
+            ],
+            "accept_wrong": [
+              0.230074,
+              0.393845
+            ],
+            "reject_known": [
+              0.0,
+              0.033763
+            ],
+            "reject_known_below_similarity": [
+              0.0,
+              0.033763
+            ],
+            "reject_known_by_margin": [
+              0.0,
+              0.0
+            ],
+            "accept_outsider": [
+              0.772945,
+              0.903907
+            ]
+          },
+          "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+          "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+          "model_hash": "ac38471759213dd1",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0.12,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.698172,
+            "accept_correct": 0.096107,
+            "accept_wrong": 0.004928,
+            "reject_known": 0.898965,
+            "reject_known_below_similarity": 0.020904,
+            "reject_known_by_margin": 0.878061,
+            "accept_outsider": 0.059653
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 32,
+            "accept_correct": 4,
+            "accept_wrong": 0,
+            "reject_known": 47,
+            "reject_known_below_similarity": 1,
+            "reject_known_by_margin": 46,
+            "accept_outsider": 4
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.614917,
+              0.776982
+            ],
+            "accept_correct": [
+              0.045441,
+              0.158879
+            ],
+            "accept_wrong": [
+              0.0,
+              0.014784
+            ],
+            "reject_known": [
+              0.835041,
+              0.949579
+            ],
+            "reject_known_below_similarity": [
+              0.0,
+              0.055578
+            ],
+            "reject_known_by_margin": [
+              0.809141,
+              0.933354
+            ],
+            "accept_outsider": [
+              0.039023,
+              0.08254
+            ]
+          },
+          "revision": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+          "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+          "model_hash": "f6a1f3dec3ff5f57",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr_zero_margin_diagnostic": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.698172,
+            "accept_correct": 0.682538,
+            "accept_wrong": 0.296559,
+            "reject_known": 0.020904,
+            "reject_known_below_similarity": 0.020904,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.870997
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 32,
+            "accept_correct": 31,
+            "accept_wrong": 19,
+            "reject_known": 1,
+            "reject_known_below_similarity": 1,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 45
+          }
+        },
+        "paired_pr_minus_main": {
+          "mean_rate_change": {
+            "top1": 0.014008,
+            "accept_correct": -0.579977,
+            "accept_wrong": -0.306417,
+            "reject_known": 0.886394,
+            "reject_known_below_similarity": 0.008333,
+            "reject_known_by_margin": 0.878061,
+            "accept_outsider": -0.785045
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              -0.051577,
+              0.076629
+            ],
+            "accept_correct": [
+              -0.660972,
+              -0.495717
+            ],
+            "accept_wrong": [
+              -0.388566,
+              -0.226779
+            ],
+            "reject_known": [
+              0.818452,
+              0.941302
+            ],
+            "reject_known_below_similarity": [
+              -0.014021,
+              0.041681
+            ],
+            "reject_known_by_margin": [
+              0.809141,
+              0.933354
+            ],
+            "accept_outsider": [
+              -0.856975,
+              -0.699633
+            ]
+          }
+        },
+        "speed_only": {
+          "top1_mean_over_all_five_person_rosters": 0.573068
+        }
+      }
+    },
+    {
+      "split": "VS",
+      "prefix_text_taps": 76,
+      "question_selection": "chronological",
+      "writers": 4,
+      "enrolled_first_in_time": 4,
+      "distinct_enrollment_questions": 10,
+      "distinct_probe_questions": 6,
+      "questions_shared_between_roles_globally": 2,
+      "all_files_dropped_for_duplicate_prefix_in_both_splits": 0,
+      "median_valid_intervals_per_capture": 67.0,
+      "median_gap_minutes_after_enrollment": 2.94
+    },
+    {
+      "split": "TS",
+      "prefix_text_taps": 40,
+      "question_selection": "global_question_holdout",
+      "writers": 257,
+      "enrolled_first_in_time": 7,
+      "distinct_enrollment_questions": 13,
+      "distinct_probe_questions": 6,
+      "questions_shared_between_roles_globally": 0,
+      "all_files_dropped_for_duplicate_prefix_in_both_splits": 0,
+      "median_valid_intervals_per_capture": 35.0,
+      "median_gap_minutes_after_enrollment": -16.85,
+      "results": {
+        "main": {
+          "default_similarity_threshold": 0.73,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.574048,
+            "accept_correct": 0.521705,
+            "accept_wrong": 0.390974,
+            "reject_known": 0.087321,
+            "reject_known_below_similarity": 0.087321,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.748618
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 152,
+            "accept_correct": 139,
+            "accept_wrong": 96,
+            "reject_known": 22,
+            "reject_known_below_similarity": 22,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 196
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.536485,
+              0.611785
+            ],
+            "accept_correct": [
+              0.479743,
+              0.564101
+            ],
+            "accept_wrong": [
+              0.355393,
+              0.425993
+            ],
+            "reject_known": [
+              0.060113,
+              0.114785
+            ],
+            "reject_known_below_similarity": [
+              0.060113,
+              0.114785
+            ],
+            "reject_known_by_margin": [
+              0.0,
+              0.0
+            ],
+            "accept_outsider": [
+              0.7179,
+              0.779481
+            ]
+          },
+          "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+          "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+          "model_hash": "ac38471759213dd1",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0.12,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.590979,
+            "accept_correct": 0.100366,
+            "accept_wrong": 0.003819,
+            "reject_known": 0.895815,
+            "reject_known_below_similarity": 0.051949,
+            "reject_known_by_margin": 0.843866,
+            "accept_outsider": 0.089216
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 159,
+            "accept_correct": 18,
+            "accept_wrong": 1,
+            "reject_known": 238,
+            "reject_known_below_similarity": 17,
+            "reject_known_by_margin": 221,
+            "accept_outsider": 25
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.554547,
+              0.626176
+            ],
+            "accept_correct": [
+              0.080093,
+              0.122169
+            ],
+            "accept_wrong": [
+              0.001507,
+              0.006715
+            ],
+            "reject_known": [
+              0.873802,
+              0.915864
+            ],
+            "reject_known_below_similarity": [
+              0.029976,
+              0.075428
+            ],
+            "reject_known_by_margin": [
+              0.814776,
+              0.871598
+            ],
+            "accept_outsider": [
+              0.080485,
+              0.098318
+            ]
+          },
+          "revision": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+          "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+          "model_hash": "f6a1f3dec3ff5f57",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr_zero_margin_diagnostic": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.590979,
+            "accept_correct": 0.555267,
+            "accept_wrong": 0.392784,
+            "reject_known": 0.051949,
+            "reject_known_below_similarity": 0.051949,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.8362
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 159,
+            "accept_correct": 147,
+            "accept_wrong": 93,
+            "reject_known": 17,
+            "reject_known_below_similarity": 17,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 222
+          }
+        },
+        "paired_pr_minus_main": {
+          "mean_rate_change": {
+            "top1": 0.016931,
+            "accept_correct": -0.421339,
+            "accept_wrong": -0.387155,
+            "reject_known": 0.808494,
+            "reject_known_below_similarity": -0.035372,
+            "reject_known_by_margin": 0.843866,
+            "accept_outsider": -0.659402
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              -0.010866,
+              0.044361
+            ],
+            "accept_correct": [
+              -0.458168,
+              -0.383997
+            ],
+            "accept_wrong": [
+              -0.421918,
+              -0.35205
+            ],
+            "reject_known": [
+              0.776372,
+              0.841356
+            ],
+            "reject_known_below_similarity": [
+              -0.056366,
+              -0.014933
+            ],
+            "reject_known_by_margin": [
+              0.814776,
+              0.871598
+            ],
+            "accept_outsider": [
+              -0.694732,
+              -0.622776
+            ]
+          }
+        },
+        "speed_only": {
+          "top1_mean_over_all_five_person_rosters": 0.432828
+        }
+      }
+    },
+    {
+      "split": "VS",
+      "prefix_text_taps": 40,
+      "question_selection": "global_question_holdout",
+      "writers": 38,
+      "enrolled_first_in_time": 9,
+      "distinct_enrollment_questions": 11,
+      "distinct_probe_questions": 6,
+      "questions_shared_between_roles_globally": 0,
+      "all_files_dropped_for_duplicate_prefix_in_both_splits": 0,
+      "median_valid_intervals_per_capture": 35.0,
+      "median_gap_minutes_after_enrollment": -12.27,
+      "results": {
+        "main": {
+          "default_similarity_threshold": 0.73,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.628948,
+            "accept_correct": 0.55219,
+            "accept_wrong": 0.332386,
+            "reject_known": 0.115424,
+            "reject_known_below_similarity": 0.115424,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.636811
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 19,
+            "accept_correct": 18,
+            "accept_wrong": 16,
+            "reject_known": 4,
+            "reject_known_below_similarity": 4,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 30
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.52673,
+              0.727394
+            ],
+            "accept_correct": [
+              0.422812,
+              0.676966
+            ],
+            "accept_wrong": [
+              0.244732,
+              0.42227
+            ],
+            "reject_known": [
+              0.047892,
+              0.195823
+            ],
+            "reject_known_below_similarity": [
+              0.047892,
+              0.195823
+            ],
+            "reject_known_by_margin": [
+              0.0,
+              0.0
+            ],
+            "accept_outsider": [
+              0.556238,
+              0.714758
+            ]
+          },
+          "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+          "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+          "model_hash": "ac38471759213dd1",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0.12,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.63931,
+            "accept_correct": 0.159961,
+            "accept_wrong": 0.0,
+            "reject_known": 0.840039,
+            "reject_known_below_similarity": 0.009485,
+            "reject_known_by_margin": 0.830554,
+            "accept_outsider": 0.144175
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 22,
+            "accept_correct": 5,
+            "accept_wrong": 0,
+            "reject_known": 33,
+            "reject_known_below_similarity": 0,
+            "reject_known_by_margin": 33,
+            "accept_outsider": 3
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              0.542583,
+              0.733169
+            ],
+            "accept_correct": [
+              0.104712,
+              0.221702
+            ],
+            "accept_wrong": [
+              0.0,
+              0.0
+            ],
+            "reject_known": [
+              0.778298,
+              0.895288
+            ],
+            "reject_known_below_similarity": [
+              0.0,
+              0.024927
+            ],
+            "reject_known_by_margin": [
+              0.769884,
+              0.88483
+            ],
+            "accept_outsider": [
+              0.108818,
+              0.181396
+            ]
+          },
+          "revision": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+          "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+          "model_hash": "f6a1f3dec3ff5f57",
+          "onnx_runtime": "1.31.1"
+        },
+        "pr_zero_margin_diagnostic": {
+          "default_similarity_threshold": 0.78,
+          "applied_margin": 0,
+          "mean_over_all_five_person_rosters": {
+            "top1": 0.63931,
+            "accept_correct": 0.631355,
+            "accept_wrong": 0.35916,
+            "reject_known": 0.009485,
+            "reject_known_below_similarity": 0.009485,
+            "reject_known_by_margin": 0.0,
+            "accept_outsider": 0.809445
+          },
+          "count_in_one_fixed_roster_per_writer": {
+            "top1": 22,
+            "accept_correct": 22,
+            "accept_wrong": 16,
+            "reject_known": 0,
+            "reject_known_below_similarity": 0,
+            "reject_known_by_margin": 0,
+            "accept_outsider": 32
+          }
+        },
+        "paired_pr_minus_main": {
+          "mean_rate_change": {
+            "top1": 0.010362,
+            "accept_correct": -0.392229,
+            "accept_wrong": -0.332386,
+            "reject_known": 0.724615,
+            "reject_known_below_similarity": -0.105939,
+            "reject_known_by_margin": 0.830554,
+            "accept_outsider": -0.492636
+          },
+          "writer_bootstrap_95_conditional_on_observed_gallery": {
+            "top1": [
+              -0.067854,
+              0.08429
+            ],
+            "accept_correct": [
+              -0.498182,
+              -0.286267
+            ],
+            "accept_wrong": [
+              -0.42227,
+              -0.244732
+            ],
+            "reject_known": [
+              0.646149,
+              0.801154
+            ],
+            "reject_known_below_similarity": [
+              -0.177902,
+              -0.044691
+            ],
+            "reject_known_by_margin": [
+              0.769884,
+              0.88483
+            ],
+            "accept_outsider": [
+              -0.587684,
+              -0.394677
+            ]
+          }
+        },
+        "speed_only": {
+          "top1_mean_over_all_five_person_rosters": 0.557546
+        }
+      }
+    }
+  ],
+  "exploratory_cutoff_fit": {
+    "development_outsider_acceptance_limit": 0.1,
+    "searched_similarity_values": "0.70 to 1.00 in 0.01 increments",
+    "searched_margin_values": "0.00 to 0.20 in 0.01 increments",
+    "objective": "maximize correct acceptance, then minimize wrong known and outsider acceptance, then prefer larger cutoffs",
+    "chosen_similarity_threshold": 0.85,
+    "chosen_margin": 0.08,
+    "TS": {
+      "writers": 333,
+      "mean_over_all_five_person_rosters": {
+        "top1": 0.584213,
+        "accept_correct": 0.125131,
+        "accept_wrong": 0.013575,
+        "reject_known": 0.861294,
+        "reject_known_below_similarity": 0.314611,
+        "reject_known_by_margin": 0.546683,
+        "accept_outsider": 0.093907
+      },
+      "writer_bootstrap_95_conditional_on_observed_gallery": {
+        "top1": [
+          0.550937,
+          0.616539
+        ],
+        "accept_correct": [
+          0.103298,
+          0.148887
+        ],
+        "accept_wrong": [
+          0.008864,
+          0.018754
+        ],
+        "reject_known": [
+          0.837489,
+          0.883217
+        ],
+        "reject_known_below_similarity": [
+          0.271519,
+          0.357638
+        ],
+        "reject_known_by_margin": [
+          0.508149,
+          0.587324
+        ],
+        "accept_outsider": [
+          0.085931,
+          0.102022
+        ]
+      }
+    },
+    "VS": {
+      "writers": 46,
+      "mean_over_all_five_person_rosters": {
+        "top1": 0.5861,
+        "accept_correct": 0.114935,
+        "accept_wrong": 0.012628,
+        "reject_known": 0.872437,
+        "reject_known_below_similarity": 0.36731,
+        "reject_known_by_margin": 0.505127,
+        "accept_outsider": 0.128237
+      },
+      "writer_bootstrap_95_conditional_on_observed_gallery": {
+        "top1": [
+          0.502946,
+          0.669414
+        ],
+        "accept_correct": [
+          0.059328,
+          0.179739
+        ],
+        "accept_wrong": [
+          0.00193,
+          0.028637
+        ],
+        "reject_known": [
+          0.80763,
+          0.927239
+        ],
+        "reject_known_below_similarity": [
+          0.258535,
+          0.483013
+        ],
+        "reject_known_by_margin": [
+          0.407521,
+          0.599853
+        ],
+        "accept_outsider": [
+          0.099551,
+          0.157224
+        ]
+      }
+    }
+  }
+}

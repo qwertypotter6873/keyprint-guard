@@ -372,7 +372,7 @@ function renderAllRosters() {
   const rosterNotes = [];
   if (otherLanguage) rosterNotes.push(`다른 언어로 등록된 ${otherLanguage}명은 비교에서 제외됩니다.`);
   if (cands.length === 1) {
-    rosterNotes.push('지금은 1명의 리듬과 비교합니다. 여러 사람 중 식별하려면 같은 언어로 2명 이상 등록하세요.');
+    rosterNotes.push('지금은 1명의 등록 리듬과 비교합니다. 예상 작성자 1위를 보려면 같은 언어로 2명 이상 등록하세요.');
   }
   const rosterNote = $('arena-roster-note');
   rosterNote.textContent = rosterNotes.join(' ');
@@ -391,7 +391,7 @@ function renderAllRosters() {
         const col = safeColor(c.color, '#2563eb');
         const tip = c.isSample
           ? '샘플 프로필은 시연용이라 수정할 수 없습니다'
-          : '클릭하면 이 프로필에 문장을 추가로 연습합니다 (본인 확인 후 반영)';
+          : '이 프로필에 문장을 추가로 연습합니다 (리듬 점수가 기준을 충족하면 반영)';
         return `<button type="button" class="user-chip" data-arena-pick="${escapeHtml(safeName)}" data-sample="${
           c.isSample ? '1' : '0'
         }" title="${escapeHtml(tip)}">
@@ -594,7 +594,7 @@ function renderEnrollMode() {
   const dots = $('arena-step-dots');
   if (target) {
     const n = safeInt(target.arena[state.lang].count, 0);
-    $('arena-step-text').textContent = `추가 연습 중 · '${target.name}' ${n}문장 (최근 12문장 반영, 본인 확인 후 추가)`;
+    $('arena-step-text').textContent = `추가 연습 중 · '${target.name}' ${n}문장 (리듬 기준 충족 시 최근 12문장에 반영)`;
     dots.hidden = true;
   } else {
     dots.hidden = false;
@@ -800,7 +800,7 @@ function startEnglishSampleExperience() {
   $('room-dialog').close();
   switchArenaSub('blind');
   switchMainMode('arena');
-  setFeedback($('arena-blind-feedback'), '영어 실측 샘플과 비교합니다. 샘플은 다른 사람의 기록이므로 본인 확인용이 아닙니다. 자신의 리듬을 확인하려면 내 프로필을 등록하세요.');
+  setFeedback($('arena-blind-feedback'), '다른 사람이 입력한 영어 실측 샘플과 비교합니다. 내 리듬과 비교하려면 내 프로필을 등록하세요.');
 }
 
 // ================= ACTION HANDLERS =================
@@ -917,11 +917,11 @@ async function handleArenaEnrollSubmit(isCurrent) {
     };
 
     dealArenaSentence('enroll');
-    const pct = (v) => `${Math.round(v * 100)}%`;
+    const scoreSummary = `리듬 점수 ${formatArenaScore(verdict.similarity)} · 기준 ${formatArenaScore(verdict.threshold)}`;
     if (!verdict.accepted) {
       setFeedback(
         $('arena-enroll-feedback'),
-        `'${name}'님의 등록 리듬과 달라 이 문장은 반영하지 않았습니다 (일치도 ${pct(verdict.similarity)}, 기준 ${pct(verdict.threshold)}). 본인이 맞다면 다음 문장을 이어서 쳐 보세요.`,
+        `'${name}'님의 등록 리듬과 비교한 점수가 기준보다 낮아 이 문장은 반영하지 않았습니다 (${scoreSummary}). 다음 문장을 이어서 쳐 보세요.`,
         'error'
       );
       renderEnrollMode();
@@ -938,7 +938,7 @@ async function handleArenaEnrollSubmit(isCurrent) {
     state.lastVerdict.adaptedAfterVerdict = true;
     setFeedback(
       $('arena-enroll-feedback'),
-      `'${name}' 프로필에 반영했습니다 (본인 확인 일치도 ${pct(verdict.similarity)} · 총 ${mergedTmpl.count}문장, 최근 12문장 사용).`,
+      `'${name}' 프로필에 반영했습니다 (${scoreSummary} · 총 ${mergedTmpl.count}문장, 최근 12문장 사용).`,
       'success'
     );
     renderEnrollMode();
@@ -985,12 +985,13 @@ async function handleArenaEnrollSubmit(isCurrent) {
   dealArenaSentence('enroll');
   setFeedback(
     $('arena-enroll-feedback'),
-    `'${name}' 프로필이 실시간 등록되었습니다! 다음 참가자를 등록하거나 [2. 누가 쳤을까?] 탭에서 판별해 보세요.`,
+    `'${name}' 프로필이 등록되었습니다. 다음 참가자를 등록하거나 [2. 누가 쳤을까?] 탭에서 리듬을 비교해 보세요.`,
     'success'
   );
 }
 
 async function handleArenaBlindSubmit(isCurrent) {
+  $('arena-result-card').hidden = true;
   if (!state.ready) {
     setFeedback($('arena-blind-feedback'), notReadyMessage(), 'error');
     return;
@@ -1052,7 +1053,7 @@ async function handleArenaBlindSubmit(isCurrent) {
   state.viz.capture = {
     ...capture,
     isPreset: false,
-    sourceLabel: '내 실시간 타건 · 누가 쳤을까? 판별 문장',
+    sourceLabel: '내 실시간 타건 · 누가 쳤을까? 비교 문장',
   };
   state.viz.mapDomain = 'arena';
   state.viz.selectedProfileId = res.winner?.id || state.viz.selectedProfileId;
@@ -1060,7 +1061,7 @@ async function handleArenaBlindSubmit(isCurrent) {
     queryId,
     embedding,
     embeddings: { sentence: embedding },
-    label: '방금 판별 타건',
+    label: '방금 비교한 타건',
     domain: 'arena',
   };
   state.lastVerdict = {
@@ -1100,48 +1101,48 @@ async function handleArenaBlindSubmit(isCurrent) {
   dealArenaSentence('blind');
 }
 
-function renderArenaResult(res, stats) {
-  const card = $('arena-result-card');
-  card.hidden = false;
+function formatArenaScore(score, digits = 1) {
+  return `${(score * 100).toFixed(digits)}점`;
+}
 
-  const pct = Math.round((Number(res.winner?.similarity) || 0) * 1000) / 10;
-  $('arena-result-score').textContent = `${pct.toFixed(1)}%`;
+function arenaDecisionLabel(accepted, candidateCount) {
+  if (candidateCount === 1) return accepted ? '리듬 일치' : '리듬 비교 보류';
+  return accepted ? '판정 수락' : '판정 보류';
+}
+
+function renderArenaResult(res, stats) {
   const singleCandidate = res.rankings.length === 1;
-  const minimumScore = `최소 리듬 일치도 ${(res.openSetThreshold * 100).toFixed(1)}%`;
+  $('arena-result-kicker').textContent = singleCandidate ? '1:1 비교 대상' : '예상 작성자 1위';
+  $('arena-result-title').textContent = res.winner.name;
+  $('arena-result-score').textContent = formatArenaScore(res.winner.similarity);
+
+  $('arena-result-decision').classList.toggle('is-pass', res.identified);
+  $('arena-result-status').textContent = arenaDecisionLabel(res.identified, res.rankings.length);
+  let reason = '리듬 점수가 기준보다 낮습니다.';
+  if (res.identified) {
+    reason = singleCandidate ? '리듬 점수가 기준을 충족했습니다.' : '리듬 점수와 1·2위 점수 차가 기준을 충족했습니다.';
+  } else if (res.rejectedByMargin) {
+    reason = '1·2위 점수 차가 기준보다 작습니다.';
+  }
+  $('arena-result-reason').textContent = reason;
+
+  const minimumScore = `최소 리듬 점수 ${formatArenaScore(res.openSetThreshold)}`;
   $('arena-result-criteria').textContent = singleCandidate
     ? minimumScore
-    : `1·2위 차이 ${(res.lead * 100).toFixed(2)}%p (최소 ${(res.margin * 100).toFixed(2)}%p) · ${minimumScore}`;
+    : `1·2위 점수 차 ${formatArenaScore(res.lead, 2)} (최소 ${formatArenaScore(res.margin, 2)}) · ${minimumScore}`;
 
-  if (res.identified) {
-    card.className = 'result-card is-pass';
-    $('arena-result-kicker').textContent = singleCandidate ? '등록 리듬 일치 기준 통과' : `후보 ${res.rankings.length}명 중 1위 일치`;
-    $('arena-result-title').textContent = singleCandidate
-      ? `'${res.winner.name}'님의 등록 리듬과 일치합니다`
-      : `지금 타이핑한 사람은 '${res.winner.name}'님입니다`;
-  } else if (res.rejectedByMargin) {
-    card.className = 'result-card is-block';
-    $('arena-result-kicker').textContent = '판별 보류 (1·2위 점수 차 부족)';
-    $('arena-result-title').textContent = `'${res.winner.name}'님과 '${res.rankings[1].name}'님의 리듬이 너무 비슷해 판별하지 않았습니다`;
-  } else {
-    card.className = 'result-card is-block';
-    $('arena-result-kicker').textContent = '판별 보류 · 일치 근거 부족';
-    $('arena-result-title').textContent = '등록된 사용자와 충분히 일치하지 않아 확인할 수 없습니다';
-  }
-
-  const topList = res.rankings.slice(0, 5);
-  $('arena-ranking-bars').innerHTML = topList
+  const rankingBars = $('arena-ranking-bars');
+  rankingBars.hidden = singleCandidate;
+  const topList = singleCandidate ? [] : res.rankings.slice(0, 5);
+  rankingBars.innerHTML = topList
     .map((r, idx) => {
       const simNum = Number(r?.similarity) || 0;
       const sPct = Math.max(4, Math.min(100, safeInt(simNum * 100, 4)));
-      const col = safeColor(r?.color, '#059669');
-      const fillStyle =
-        idx === 0 && res.identified
-          ? `width:${sPct}%;background:${col}`
-          : `width:${sPct}%;background:#9ca3af`;
+      const col = idx === 0 ? safeColor(r?.color, '#059669') : '#9ca3af';
       return `<div class="rank-item">
         <span class="rank-name">${safeInt(idx + 1)}. ${escapeHtml(r?.name)}</span>
-        <div class="rank-track"><div class="rank-fill" style="${fillStyle}"></div></div>
-        <span class="rank-val">${(simNum * 100).toFixed(1)}%</span>
+        <div class="rank-track"><div class="rank-fill" style="width:${sPct}%;background:${col}"></div></div>
+        <span class="rank-val">${formatArenaScore(simNum)}</span>
       </div>`;
     })
     .join('');
@@ -1154,6 +1155,7 @@ function renderArenaResult(res, stats) {
       : '';
   const sentTxt = stats.sentences > 1 ? `문장 ${stats.sentences}개 · ` : '';
   $('arena-result-meta').textContent = `${sentTxt}${stats.cpm} 타/분 · 정확도 ${stats.accuracy}% · ${editTxt} (유효 전이 ${stats.cleanDigraphs}구간)${modeTxt}${behaviorNote(res.winner)}${deviceMismatchNote(res.winner.template, stats.inputMode)} · 추론 ${stats.latencyMs}ms`;
+  $('arena-result-card').hidden = false;
 }
 
 async function handleGuardEnrollSubmit(isCurrent) {
@@ -1718,22 +1720,22 @@ function renderVizStep2() {
 }
 
 function formatVerdictBannerText(v, winnerName) {
-  const simPct = (v.similarity * 100).toFixed(1);
-  const thrPct = (v.threshold * 100).toFixed(1);
   if (v.domain === 'password') {
+    const simPct = (v.similarity * 100).toFixed(1);
+    const thrPct = (v.threshold * 100).toFixed(1);
     const statusLabel = v.accepted ? '리듬 일치 · 시연 기준 통과' : '확인 보류 · 리듬 기준 미달';
     const refTag = !v.touchReference ? '' : v.inputMode === 'touch' ? ' · 모바일 참고용' : ' · 혼합 입력 참고용';
     return `공식 판정 스냅샷 · [${winnerName}] ${statusLabel}${refTag} — 일치도 ${simPct}% (임계값 ${thrPct}%)`;
   }
-  if (v.accepted) {
-    return `공식 판정 스냅샷 · '${winnerName}' 식별 통과 — 일치도 ${simPct}% (임계값 ${thrPct}%)`;
-  }
-  if (v.rejectedReason === 'margin_hold') {
-    const leadPct = Number.isFinite(v.lead) ? `${(v.lead * 100).toFixed(1)}%p` : '부족';
-    const marginPct = `${((v.margin || 0) * 100).toFixed(1)}%p`;
-    return `공식 판정 스냅샷 · 판별 보류 (1·2위 격차 ${leadPct} < 기준 ${marginPct}) — 최고 점수 ${simPct}% (임계값 ${thrPct}%)`;
-  }
-  return `공식 판정 스냅샷 · 판별 보류 · 일치 근거 부족 — 최고 점수 ${simPct}% < 임계값 ${thrPct}%`;
+
+  const candidateCount = v.candidates.length;
+  const subject = candidateCount === 1 ? '1:1 비교 대상' : '예상 작성자 1위';
+  const decision = arenaDecisionLabel(v.accepted, candidateCount);
+  const score = `리듬 점수 ${formatArenaScore(v.similarity)} (기준 ${formatArenaScore(v.threshold)})`;
+  const gap = v.rejectedReason === 'margin_hold'
+    ? ` · 1·2위 점수 차 ${formatArenaScore(v.lead, 2)} (최소 ${formatArenaScore(v.margin, 2)})`
+    : '';
+  return `공식 판정 스냅샷 · ${subject} ${winnerName} · ${decision} — ${score}${gap}`;
 }
 
 function renderVizStep3() {
@@ -1776,13 +1778,15 @@ function renderVizStep3() {
       similarityPct: simPct,
       identified: activeVerdict.accepted,
       isPreview: false,
-      verdictLine: `*공식 판정: ${simPct}% / 기준 ${thrPct}% (${
-        activeVerdict.accepted
-          ? '승인'
-          : activeVerdict.rejectedReason === 'margin_hold'
-            ? '판별 보류'
-            : '기각/차단'
-      })`,
+      verdictLine: isArenaMap
+        ? `*${arenaDecisionLabel(activeVerdict.accepted, activeVerdict.candidates.length)} · 리듬 점수 ${formatArenaScore(activeVerdict.similarity)} / 기준 ${formatArenaScore(activeVerdict.threshold)}`
+        : `*공식 판정: ${simPct}% / 기준 ${thrPct}% (${
+          activeVerdict.accepted
+            ? '승인'
+            : activeVerdict.rejectedReason === 'margin_hold'
+              ? '판별 보류'
+              : '기각/차단'
+        })`,
     };
   } else {
     // Exploratory preview (before official verdict or after invalidation by room/lang/input/deletion)
@@ -1826,7 +1830,7 @@ function renderVizStep3() {
             similarityPct: (scored.winner.similarity * 100).toFixed(1),
             identified: scored.identified,
             isPreview: true,
-            verdictLine: `*탐색 유사도 미리보기: ${(scored.winner.similarity * 100).toFixed(1)}% (공식 판정 전)`,
+            verdictLine: `*탐색 리듬 점수 ${formatArenaScore(scored.winner.similarity)} (미리보기)`,
           };
         }
       } else {

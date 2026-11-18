@@ -584,13 +584,14 @@ async function run() {
     const blindTitle = (await pageA.textContent('#arena-result-title'))?.trim() || '';
     const blindMeta = (await pageA.textContent('#arena-result-meta'))?.trim() || '';
     console.log(`[E2E] Mode A ${protocol.arenaQuerySentences}-Sentence Blind Result: ${blindTitle} | ${blindMeta}`);
-    if (!blindTitle.includes('김대현')) {
+    const rankLabel = (await pageA.textContent('#arena-result-kicker'))?.trim();
+    if (rankLabel !== '예상 작성자 1위' || !blindTitle.includes('김대현')) {
       throw new Error(`Expected Blind 1:N winner to be 김대현, got: ${blindTitle}`);
     }
 
     await pageA.screenshot({
       path: path.join(outDir, '05_typing_arena_who_is_typing.png'),
-      fullPage: false,
+      fullPage: true,
     });
 
     // 6. Mode C: Principles & Profile Structure tab directly from the active verdict (#arena-inspect-viz-btn)

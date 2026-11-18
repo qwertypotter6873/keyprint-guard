@@ -156,7 +156,7 @@ def korean_study(report):
         ("작성자가 1위", "enrolled_probes", "top1_before_rejection"),
         ("작성자로 수락", "enrolled_probes", "accepted_correct"),
         ("다른 사람으로 수락", "enrolled_probes", "accepted_wrong"),
-        ("판별 보류", "enrolled_probes", "rejected"),
+        ("미등록 가능성 판정에서 보류", "enrolled_probes", "rejected"),
         ("미등록자를 등록자로 수락", "unknown_writer_probes", "false_accept"),
     ):
         a, b = main[population][key], pr[population][key]
@@ -171,8 +171,8 @@ def korean_study(report):
     low, high = difference["conditional_writer_bootstrap_95_ci_pp"]
     interpretation = (f"보류 여부와 관계없이 작성자가 1위였던 비율의 차이는 {difference['candidate_minus_main_pp']:+.1f}%p입니다. "
                       f"참가자 단위로 재표집한 95% 구간은 {low:+.1f}%p에서 {high:+.1f}%p로, 순위 정확도가 개선됐다고 단정하기 어렵습니다. "
-                      f"PR은 1위의 터치 일치도가 {pr['threshold']:.0%} 이상이고 2위보다 {100 * pr['margin']:.0f}%p 이상 앞서야 수락합니다. "
-                      f"기존 공개본의 두 기준은 각각 {main['threshold']:.0%}, {100 * main['margin']:.0f}%p입니다. "
+                      f"미등록자도 고려하는 터치 판정에서는 1위 리듬 점수가 {100 * pr['threshold']:.0f}점 이상이고 2위보다 {100 * pr['margin']:.0f}점 이상 앞서야 수락합니다. "
+                      f"기존 공개본의 두 기준은 100점 척도로 각각 {100 * main['threshold']:.0f}점, {100 * main['margin']:.0f}점 차이였습니다. "
                       f"PR 보류 {pr['enrolled_probes']['rejected']['count']}건 중 "
                       f"{pr['enrolled_probes']['rejected_by_margin']['count']}건은 1위 점수를 통과했지만 2위와의 차이가 작았습니다.")
     crowded = report["full_roster"]
@@ -180,7 +180,7 @@ def korean_study(report):
     stress = (f"후보를 {crowded['enrolled_probe_roster_size']}명으로 늘리면 1위 정답률은 "
               f"기존 {crowded['main']['enrolled_probes']['top1_before_rejection']['rate']:.1%}, "
               f"PR {crowded['candidate']['enrolled_probes']['top1_before_rejection']['rate']:.1%}였고, "
-              f"PR의 판별 보류는 {crowded['candidate']['enrolled_probes']['rejected']['count']}/{trials}건이었습니다. "
+              f"PR의 미등록 가능성 판정은 {crowded['candidate']['enrolled_probes']['rejected']['count']}/{trials}건을 보류했습니다. "
               f"{roster}명 후보에서 평균 약 235타인 원래 기록 전체를 사용하면 1위 정답률은 "
               f"기존 {longer['main']['enrolled_probes']['top1_before_rejection']['rate']:.1%}, "
               f"PR {longer['candidate']['enrolled_probes']['top1_before_rejection']['rate']:.1%}였습니다.")
@@ -198,6 +198,35 @@ def korean_study(report):
         <p>{interpretation}</p>
         <p>{stress}</p>'''
     return md, html
+
+
+def korean_ranking_summary(research):
+    def load(name):
+        return json.loads((research / name).read_text(encoding="utf-8"))
+
+    same_day = load("results.json")
+    pilot = load("ranking-pilot.json")["comparisons"]
+    validation, = (study for study in same_day["studies"]
+                   if (study["split"], study["question_selection"], study["prefix_text_taps"]) == ("VS", "chronological", 40))
+    rates = validation["results"]["pr"]["mean_over_all_five_person_rosters"]
+    rows = []
+    for key, label in [("validation", "AI Hub 국어"), ("fact_ko", "FACT 한국어"), ("fact_en", "FACT 영어")]:
+        case = pilot[key]
+        scores = case["models"]
+        rows.append([f"{label} ({case['writers']}명)", *[pct(scores[method]["top1"]) for method in (
+            "deployed_pr", "same_frozen_encoder_before_cohort_normalization", "frozen_encoder_plus_learned_candidate_weights")]])
+    contrast = pilot["validation"]["models"]["frozen_encoder_plus_learned_candidate_weights"]
+    low, high = contrast["paired_95_ci_change"]
+    return "\n\n".join([
+        f"AI Hub 국어 답안에서 같은 날 먼저 푼 5문항으로 등록하고, 이후의 다른 2문항을 묶어 한 번 판별했습니다. 각 문항의 첫 40타를 사용했습니다. "
+        f"평가 학생 {validation['writers']}명에 대해 가능한 모든 5인 후보 조합을 학생별로 평균했습니다. FACT에서는 언어별로 같은 참가자 50명의 250개 질의를 고정된 5인 후보와 비교했습니다.",
+        table(["등록자 5명 중 1위 정답률", "배포 점수", "참조 집단 보정 생략", "한국어로 순위 가중치 학습"], rows),
+        f"AI Hub에서 배포 점수의 1위 정답률은 {pct(rates['top1'])}였습니다. 미등록자도 입력할 수 있다고 가정하면 실제 작성자 수락은 {pct(rates['accept_correct'])}, 등록자 판정 보류는 {pct(rates['reject_known'])}, 미등록자 오수락은 {pct(rates['accept_outsider'])}였습니다. "
+        "정답 수락률과 등록자 보류율의 분모는 등록자 질의이며, 미등록자 오수락률의 분모는 작성자를 뺀 5명과 비교한 질의입니다.",
+        f"신경망을 고정하고 AI Hub 학습 분할 333명으로 후보 점수 가중치 7개를 학습했을 때 차이는 {contrast['change_vs_pr'] * 100:+.2f}%p였습니다. "
+        f"후보 집단을 고정한 학생 단위 95% 구간은 {low * 100:+.2f}에서 {high * 100:+.2f}%p였습니다. 서비스는 기존 배포 점수로 예상 1위의 이름을 표시하고 그 아래에 수락·보류를 표시합니다. "
+        "자료 탐색, 중복 제거, 판정 기준 13개, 보조 실험과 재현 명령을 별도로 기록했습니다. [연구 기록과 집계](research/korean-typing/README.md)",
+    ])
 
 
 def replace_block(text, name, body):
@@ -219,6 +248,7 @@ def main():
     report = read_json("evaluation_report.json")
     blocks = result_block(report, read_json("trial_sensitivity.json"), read_json("password_calibration.json"), read_json("timestamp_sensitivity.json"))
     blocks["korean-results"], study_table = korean_study(read_json("korean_fact_ab.json"))
+    blocks["korean-ranking"] = korean_ranking_summary(root / "research" / "korean-typing")
     study_path = root / "web" / "korean-study.html"
     study_page = study_path.read_text(encoding="utf-8")
     updated_study = replace_block(study_page, "korean-results", study_table)

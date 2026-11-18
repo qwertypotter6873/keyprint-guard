@@ -9,7 +9,7 @@ import { findChromeExecutable } from './browser_helpers.mjs';
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(process.env.KEYPRINT_WEB_DIST || path.join(web, 'dist'));
 const prefix = '/grading/keyprint-guard/';
-const mime = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.css': 'text/css', '.json': 'application/json' };
+const mime = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png' };
 const server = http.createServer((req, res) => {
   const { pathname } = new URL(req.url, 'http://localhost');
   if (!pathname.startsWith(prefix)) { res.writeHead(404).end(); return; }
@@ -47,7 +47,9 @@ async function assertArenaLayout(page, description) {
     const controls = document.querySelectorAll(`
       .mode-tab, .arena-head button, .experience-copy, .experience-guide a,
       #arena-sample-start-btn, .arena-roster .roster-label, #arena-manage-link,
-      #arena-roster-list, .arena-roster .user-chip, .arena-roster-note, #arena-result-criteria
+      #arena-roster-list, .arena-roster .user-chip, .arena-roster-note,
+      #arena-blind-panel .section-caption, #arena-result-title, #arena-result-decision,
+      #arena-result-card .result-score-box, #arena-result-criteria
     `);
     const overflow = [...controls].filter(element => {
       if (element.getClientRects().length === 0) return false;
@@ -63,6 +65,7 @@ async function assertArenaLayout(page, description) {
       ['#arena-roster-title', '#arena-manage-link'],
       ['#arena-roster-list', '#arena-manage-link'],
       ['#arena-roster-list', '#arena-roster-note'],
+      ['.arena-result-subject', '#arena-result-card .result-score-box'],
     ];
     const overlaps = adjacent.filter(([first, second]) => {
       const a = bounds(first);
@@ -82,28 +85,57 @@ async function assertArenaLayout(page, description) {
   assert.ok(layout.guideSpacing >= 12, description);
 }
 
-async function assertArenaResultCriteria(page, candidateCount) {
+async function assertArenaResult(page, candidateCount, inputMode = 'keyboard') {
   const shots = await page.evaluate(() => window.__keyprintTestApi.engine.arenaProtocol().query);
   const prompt = page.locator('#arena-blind-prompt');
   const input = page.locator('#arena-blind-input');
+  const card = page.locator('#arena-result-card');
   for (let i = 0; i < shots; i++) {
     const sentence = await prompt.textContent();
     await input.focus();
-    await typeWithHold(page, sentence);
+    if (inputMode === 'touch') {
+      for (const character of sentence) {
+        await page.keyboard.insertText(character);
+        await page.waitForTimeout(20);
+      }
+    } else {
+      await typeWithHold(page, sentence);
+    }
     await input.press('Enter');
     await page.waitForFunction(previous => {
       return !document.getElementById('arena-blind-input').readOnly
         && document.getElementById('arena-blind-prompt').textContent !== previous;
     }, sentence);
+    assert.equal(await card.isVisible(), i === shots - 1, 'Show a result once all query sentences are submitted');
   }
-  await page.locator('#arena-result-card').waitFor();
-  const { candidates, threshold, lead, margin } = await page.evaluate(() => window.__keyprintTestApi.state.lastVerdict);
+
+  const verdict = await page.evaluate(() => window.__keyprintTestApi.state.lastVerdict);
+  const { candidates, threshold, lead, margin, accepted } = verdict;
+  assert.equal(verdict.inputMode, inputMode);
+  assert.equal(threshold, inputMode === 'touch' ? 0.78 : 0.92);
+  assert.equal(margin, 0.12);
   assert.equal(candidates.length, candidateCount);
-  assert.equal(await page.textContent('#arena-result-card .score-caption'), '리듬 일치도');
-  const minimum = `최소 리듬 일치도 ${(threshold * 100).toFixed(1)}%`;
-  const comparison = `1·2위 차이 ${(lead * 100).toFixed(2)}%p (최소 ${(margin * 100).toFixed(2)}%p)`;
-  assert.equal(await page.textContent('#arena-result-criteria'), candidateCount === 1 ? minimum : `${comparison} · ${minimum}`);
+  const winner = candidates[0];
+  const singleCandidate = candidateCount === 1;
+  const status = singleCandidate
+    ? accepted ? '리듬 일치' : '리듬 비교 보류'
+    : accepted ? '판정 수락' : '판정 보류';
+  assert.equal(await page.textContent('#arena-result-kicker'), singleCandidate ? '1:1 비교 대상' : '예상 작성자 1위');
+  assert.equal(await page.textContent('#arena-result-title'), winner.name);
+  assert.equal(await page.textContent('#arena-result-status'), status);
+  const reason = await page.textContent('#arena-result-reason');
+  if (accepted) assert.match(reason, /기준을 충족/);
+  else if (verdict.rejectedReason === 'margin_hold') assert.match(reason, /1·2위 점수 차가 기준보다 작/);
+  else assert.match(reason, /리듬 점수가 기준보다 낮/);
+  assert.equal(await page.textContent('#arena-result-card .score-caption'), '리듬 점수 (0~100)');
+  assert.equal(await page.textContent('#arena-result-score'), `${(winner.similarity * 100).toFixed(1)}점`);
+  const minimum = `최소 리듬 점수 ${(threshold * 100).toFixed(1)}점`;
+  const comparison = `1·2위 점수 차 ${(lead * 100).toFixed(2)}점 (최소 ${(margin * 100).toFixed(2)}점)`;
+  assert.equal(await page.textContent('#arena-result-criteria'), singleCandidate ? minimum : `${comparison} · ${minimum}`);
+  assert.equal(await page.locator('#arena-ranking-bars').isVisible(), !singleCandidate);
+  if (!singleCandidate) assert.equal(await page.locator('#arena-ranking-bars .rank-name').first().textContent(), `1. ${winner.name}`);
   await assertArenaLayout(page, `Comparison result for ${candidateCount} participants`);
+  return verdict;
 }
 
 try {
@@ -154,7 +186,13 @@ try {
   const studyResponse = await studyPage.goto(new URL(studyUrl, origin).href);
   assert.equal(studyResponse.status(), 200);
   assert.equal(await studyPage.locator('h1').innerText(), '한국어 타건 평가');
-  assert.equal(await studyPage.locator('tbody tr').count(), 5);
+  assert.equal(await studyPage.locator('#aihub tbody tr').count(), 5);
+  assert.equal(await studyPage.locator('#fact tbody tr').count(), 5);
+  assert.equal(await studyPage.locator('#acceptance tbody tr').count(), 3);
+  const chart = studyPage.locator('#acceptance img');
+  await chart.scrollIntoViewIfNeeded();
+  await chart.evaluate(image => image.decode());
+  assert.match(await studyPage.textContent('#decision'), /예상 작성자 1위.*판정 수락.*판정 보류/s);
   assert.equal(await studyPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await studyPage.getByRole('link', { name: '한국어 타자연습' }).click();
   await studyPage.waitForFunction(() => window.__keyprintTestApi?.state.ready);
@@ -227,14 +265,55 @@ try {
   await page.click('#arena-sample-start-btn');
   assert.equal(await page.evaluate(() => window.__keyprintTestApi.state.lang), 'en');
   await page.setViewportSize({ ...viewport, width: 320 });
-  await assertArenaResultCriteria(page, 4);
-  await page.evaluate(() => {
+  await assertArenaResult(page, 4);
+  await page.evaluate(() => window.__keyprintTestApi.roomSync.removeSamples());
+
+  // Fix only the query embeddings to cover every gate with production ranking and real input submissions.
+  const writer = { id: 'arena_writer_fixture', name: 'LongArenaCandidate123456', vector: [1, 0] };
+  const other = { id: 'arena_other_fixture', name: '다른 후보', vector: [-1, 0] };
+  const similar = { ...other, vector: [0.99, Math.sqrt(1 - 0.99 ** 2)] };
+  const cases = [
+    { profiles: [other, writer], query: writer.vector, winner: writer, rejectedReason: null, inputMode: 'keyboard' },
+    { profiles: [writer, similar], query: [Math.SQRT1_2, Math.SQRT1_2], winner: similar, rejectedReason: 'margin_hold', inputMode: 'touch' },
+    { profiles: [other, writer], query: [0, 1], winner: writer, rejectedReason: 'below_threshold', inputMode: 'keyboard' },
+    { profiles: [writer], query: writer.vector, winner: writer, rejectedReason: null, inputMode: 'keyboard' },
+    { profiles: [writer], query: [0, 1], winner: writer, rejectedReason: 'below_threshold', inputMode: 'keyboard' },
+  ];
+  for (const { profiles, query, winner, rejectedReason, inputMode } of cases) {
+    await page.evaluate(({ profiles, query, inputMode, otherId }) => {
+      const { roomSync, engine } = window.__keyprintTestApi;
+      const toEmbedding = vector => [...vector, ...Array(62).fill(0)];
+      if (profiles.length === 1) roomSync.deleteProfile(otherId);
+      for (const { id, name, vector } of profiles) {
+        const centroid = toEmbedding(vector);
+        roomSync.upsertProfile({
+          id, name, isSample: false, color: '#2563eb',
+          arena: { en: { centroid, exemplars: [centroid], count: 5, inputMode } },
+        });
+      }
+      engine.embedStroke = async () => ({ embedding: toEmbedding(query), latencyMs: 0 });
+    }, { profiles, query, inputMode, otherId: other.id });
+    await page.click('#arena-retry-btn');
+    const verdict = await assertArenaResult(page, profiles.length, inputMode);
+    assert.equal(verdict.candidates[0].name, winner.name);
+    assert.equal(verdict.accepted, rejectedReason === null);
+    assert.equal(verdict.rejectedReason, rejectedReason);
+    if (rejectedReason === 'margin_hold') {
+      await page.click('#arena-inspect-viz-btn');
+      const snapshot = await page.textContent('#viz-verdict-status');
+      assert.ok(snapshot.includes(`예상 작성자 1위 ${winner.name} · 판정 보류`));
+      await page.click('#nav-arena-btn');
+    }
+  }
+
+  await page.evaluate(writerId => {
     const { roomSync, engine } = window.__keyprintTestApi;
-    roomSync.removeSamples();
-    roomSync.loadSamples(engine.config.mvp_sample_profiles.slice(0, 1));
-  });
-  await page.click('#arena-retry-btn');
-  await assertArenaResultCriteria(page, 1);
+    roomSync.deleteProfile(writerId);
+    delete engine.embedStroke;
+  }, writer.id);
+  await page.locator('#arena-blind-input').press('Enter');
+  assert.match(await page.textContent('#arena-blind-feedback'), /현재 언어로 등록된 참가자가 없습니다/);
+  assert.equal(await page.locator('#arena-result-card').isVisible(), false);
   await page.click('#arena-sample-start-btn');
   await page.setViewportSize(viewport);
 
@@ -393,5 +472,5 @@ try {
   assert.equal(deletedLast.backspaceCount, 2);
   assert.deepEqual(deletedLast.timings, replaced.timings.slice(0, -1));
   assert.deepEqual(outside, [], 'Asset and demo requests stay within the local deployment prefix');
-  console.log('Offline browser checks passed for prefixed deployment, real inference, responsive arena and encoder layouts, comparison criteria, consent, workspace isolation, samples, stale inference, offline tabs, physical Delete, and selection edits.');
+  console.log('Offline browser checks passed for prefixed deployment, real inference, responsive arena and encoder layouts, Arena ranking and verdicts, consent, workspace isolation, samples, stale inference, offline tabs, physical Delete, and selection edits.');
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

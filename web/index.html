@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KeyPrint — 타이핑 리듬 인물 식별 &amp; 암호 방어 데모</title>
+  <title>KeyPrint — 타이핑 리듬 비교 &amp; 암호 방어 데모</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2318181b'/%3E%3Cpath d='M20 34h24M24 24h16M26 44h12' stroke='%23ffffff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="./src/style.css">
 </head>
@@ -21,7 +21,7 @@
 
       <nav class="mode-nav" aria-label="데모 모드 전환">
         <button type="button" id="nav-arena-btn" class="mode-tab is-active" aria-pressed="true">
-          타자연습 인물 식별
+          타자연습 리듬 비교
         </button>
         <button type="button" id="nav-guard-btn" class="mode-tab" aria-pressed="false">
           암호 리듬 비교
@@ -44,7 +44,7 @@
       </div>
 
       <!-- =========================================================
-           MODE A: 타자연습 인물 식별 (Diverse Sentences + Backspace OK)
+           MODE A: 타자연습 리듬 비교 (Diverse Sentences + Backspace OK)
            ========================================================= -->
       <section id="view-arena" class="surface-card" aria-labelledby="arena-heading">
         <div class="card-head arena-head">
@@ -63,7 +63,7 @@
           </div>
         </div>
 
-        <h2 id="arena-heading" class="sr-only">타자연습 기반 사용자 자동 식별</h2>
+        <h2 id="arena-heading" class="sr-only">타자연습 기반 작성자 추정과 리듬 비교</h2>
 
         <div class="experience-guide">
           <div class="experience-copy">
@@ -139,11 +139,12 @@
           <p id="arena-enroll-feedback" class="feedback-line" aria-live="polite"></p>
         </div>
 
-        <!-- Subview A2: Blind Identification ("Who Is Typing?") -->
+        <!-- Subview A2: Blind Comparison ("Who Is Typing?") -->
         <div id="arena-blind-panel" class="panel-body" hidden>
           <div class="enroll-meta-row">
             <p class="section-caption">
               매번 <strong>새로운 문장</strong>이 출제됩니다. <strong id="arena-blind-need">문장 2개</strong>를 이어서 타이핑하면 등록된 리듬과 비교합니다.
+              후보가 2명 이상이면 예상 작성자 1위를 표시하고, 미등록자가 입력했을 가능성을 고려해 수락 또는 보류합니다.
             </p>
             <div class="progress-group" aria-live="polite">
               <span id="arena-blind-step-text" class="step-label">문장 1 / 2</span>
@@ -185,20 +186,23 @@
 
           <p id="arena-blind-feedback" class="feedback-line" aria-live="polite"></p>
 
-          <!-- Clean Identification Result -->
-          <div id="arena-result-card" class="result-card" hidden>
+          <article id="arena-result-card" class="result-card" aria-labelledby="arena-result-kicker arena-result-title" hidden>
             <div class="result-header">
-              <div>
-                <span id="arena-result-kicker" class="result-kicker">타이핑 리듬 판별 결과</span>
+              <div class="arena-result-subject">
+                <span id="arena-result-kicker" class="result-kicker"></span>
                 <h3 id="arena-result-title" class="result-title">—</h3>
               </div>
               <div class="result-score-box">
-                <span class="score-caption">리듬 일치도</span>
+                <span class="score-caption">리듬 점수 (0~100)</span>
                 <strong id="arena-result-score" class="score-number">—</strong>
               </div>
             </div>
 
-            <div id="arena-ranking-bars" class="ranking-bars" role="group" aria-label="참가자별 리듬 일치도"></div>
+            <p id="arena-result-decision" class="result-desc arena-result-decision" role="status">
+              <strong id="arena-result-status"></strong>
+              <span id="arena-result-reason"></span>
+            </p>
+            <div id="arena-ranking-bars" class="ranking-bars" role="group" aria-label="참가자별 리듬 점수 순위"></div>
             <p id="arena-result-criteria" class="result-meta result-criteria"></p>
 
             <div class="result-footer">
@@ -208,7 +212,7 @@
                 <button type="button" id="arena-retry-btn" class="ghost-sm-btn">다음 문장으로 계속 ↻</button>
               </div>
             </div>
-          </div>
+          </article>
         </div>
       </section>
 
@@ -472,7 +476,7 @@
               <h4 id="dual-encoder-heading">⑤ 듀얼 인코더 아키텍처</h4>
               <div class="details-grid">
                 <div class="detail-col">
-                  <h5>문장 식별 · 17채널 KeyPrintNet</h5>
+                  <h5>문장 리듬 비교 · 17채널 KeyPrintNet</h5>
                   <p>타건 타이밍에 키 위치와 누름 시간 유효 여부를 더해 문장 리듬을 인코딩합니다. 비교할 때 AS-Norm 점수에 행동 프로필 LLR을 반영합니다.</p>
                   <p>두 인코더는 상대 위치 신호(<code>(t+0.5)/L</code>)와 다중 스케일 잔차 SE-Conv1D를 사용합니다. 채널을 <code>80→24</code>로 줄인 뒤 6모드 DCT(144차원)를 계산하고, 주의 집중 통계 풀링(ASP, 160차원)과 결합해 입력 길이와 관계없이 64차원 단위 벡터를 만듭니다.</p>
                 </div>

@@ -924,6 +924,26 @@ body {
   color: var(--ink-secondary);
 }
 
+.arena-result-subject {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.arena-result-decision {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.arena-result-decision strong {
+  color: #9f1239;
+}
+
+.arena-result-decision.is-pass strong {
+  color: #065f46;
+}
+
 .ranking-bars {
   display: flex;
   flex-direction: column;

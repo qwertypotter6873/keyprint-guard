@@ -70,6 +70,15 @@ MANDATORY_ARCHIVE_FILES = [
     "web/ime-debug.html",
     "web/korean-study.html",
     "models/korean_fact_ab.json",
+    "research/korean-typing/README.md",
+    "research/korean-typing/reproduce.py",
+    "research/korean-typing/results.json",
+    "research/korean-typing/margin-sweep.json",
+    "research/korean-typing/ranking-pilot.json",
+    "research/korean-typing/aihub-71518-audit.json",
+    "research/korean-typing/fact-en-ko-comparison.json",
+    "research/korean-typing/fact-early-cutoff-review.json",
+    "web/src/assets/margin-sweep.png",
 ]
 
 NON_METRIC_METADATA_KEYS = {
@@ -151,6 +160,14 @@ def collect_archive_sources(root: Path, pdf_override: Path | None = None) -> dic
     add_tree(root / "src", suffixes=(".py",))
     if (root / "tests").exists():
         add_tree(root / "tests", suffixes=(".py", ".mjs", ".js", ".json"))
+
+    # The AI Hub archives require approval. Include the reproducible analysis and
+    # its named aggregate outputs, even if a user keeps other local results nearby.
+    research = root / "research" / "korean-typing"
+    add_tree(research, suffixes=(".py", ".mjs"))
+    for name in MANDATORY_ARCHIVE_FILES:
+        if name.startswith("research/korean-typing/"):
+            add_file(root / name)
 
     # 4. Executed Jupyter notebook
     add_file(root / "notebooks" / "keyprint_training_pipeline.ipynb")
