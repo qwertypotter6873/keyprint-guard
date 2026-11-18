@@ -337,29 +337,25 @@ function switchGuardSub(sub) {
 }
 
 function focusActiveArenaInput() {
-  setTimeout(() => {
-    if (state.mode !== 'arena') return;
-    if (state.arenaSub === 'enroll') {
-      const nameEl = $('arena-name-input');
-      if (!nameEl.value.trim()) nameEl.focus();
-      else $('arena-enroll-input').focus();
-    } else {
-      $('arena-blind-input').focus();
-    }
-  }, 20);
+  if (state.mode !== 'arena') return;
+  if (state.arenaSub === 'enroll') {
+    const nameEl = $('arena-name-input');
+    if (!nameEl.value.trim()) nameEl.focus();
+    else $('arena-enroll-input').focus();
+  } else {
+    $('arena-blind-input').focus();
+  }
 }
 
 function focusActiveGuardInput() {
-  setTimeout(() => {
-    if (state.mode !== 'guard') return;
-    if (state.guardSub === 'verify') {
-      if (getGuardAccounts().length > 0) $('guard-verify-input').focus();
-    } else {
-      const nameEl = $('guard-enroll-name');
-      if (!nameEl.value.trim()) nameEl.focus();
-      else $('guard-enroll-input').focus();
-    }
-  }, 20);
+  if (state.mode !== 'guard') return;
+  if (state.guardSub === 'verify') {
+    if (getGuardAccounts().length > 0) $('guard-verify-input').focus();
+  } else {
+    const nameEl = $('guard-enroll-name');
+    if (!nameEl.value.trim()) nameEl.focus();
+    else $('guard-enroll-input').focus();
+  }
 }
 
 function renderAllRosters() {

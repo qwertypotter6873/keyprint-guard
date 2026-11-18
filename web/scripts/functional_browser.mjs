@@ -102,16 +102,27 @@ try {
   assert.equal(await page.evaluate(() => window.__keyprintTestApi.state.lang), 'en');
   // A normal submission stays pending while a mock inference awaits its result.
   await page.click('#nav-guard-btn');
-  await page.click('#guard-sub-enroll');
+  await page.evaluate(() => {
+    document.getElementById('guard-sub-enroll').click();
+    document.getElementById('guard-enroll-pw-target').focus();
+  });
+  await page.waitForTimeout(60);
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'guard-enroll-pw-target',
+    'Changing panels must not steal focus from a field the user selected');
   await page.fill('#guard-enroll-name', 'Pending user');
-  await page.fill('#guard-enroll-pw-target', 'SampleFlow123');
+  const enrollmentText = 'sampleflowabc';
+  await page.fill('#guard-enroll-pw-target', enrollmentText);
   await page.evaluate(() => {
     const e = window.__keyprintTestApi.engine;
     window.__originalEmbedAll = e.embedAll.bind(e);
     e.embedAll = () => new Promise(resolve => { window.__finishInference = () => resolve({ password: [1, ...Array(63).fill(0)], sentence: [1, ...Array(63).fill(0)], latencyMs: 0 }); });
   });
-  await page.locator('#guard-enroll-input').pressSequentially('SampleFlow123', { delay: 25 });
-  await page.press('#guard-enroll-input', 'Enter');
+  const enrollInput = page.locator('#guard-enroll-input');
+  await enrollInput.focus();
+  await typeWithHold(page, enrollmentText);
+  assert.equal(await enrollInput.inputValue(), enrollmentText);
+  await enrollInput.press('Enter');
+  await page.waitForFunction(() => typeof window.__finishInference === 'function');
   assert.equal(await page.getAttribute('#guard-enroll-input', 'readonly'), '');
   await page.click('#open-room-btn');
   await page.check('#share-room-consent');
@@ -122,10 +133,11 @@ try {
   await page.click('#use-local-btn');
   await page.click('#close-room-btn');
   await page.fill('#guard-enroll-name', 'Error handling');
-  await page.fill('#guard-enroll-pw-target', 'SampleFlow123');
+  await page.fill('#guard-enroll-pw-target', enrollmentText);
   await page.evaluate(() => { window.__keyprintTestApi.engine.embedAll = async () => { throw new Error('simulated model failure'); }; });
-  await page.locator('#guard-enroll-input').pressSequentially('SampleFlow123', { delay: 25 });
-  await page.press('#guard-enroll-input', 'Enter');
+  await enrollInput.focus();
+  await typeWithHold(page, enrollmentText);
+  await enrollInput.press('Enter');
   await page.waitForFunction(() => document.getElementById('guard-enroll-feedback').textContent.includes('다시 입력해 주세요'));
   assert.equal(await page.getAttribute('#guard-enroll-input', 'readonly'), null);
   await page.evaluate(() => { window.__keyprintTestApi.engine.embedAll = window.__originalEmbedAll; });
