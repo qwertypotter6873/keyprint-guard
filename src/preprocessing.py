@@ -92,6 +92,11 @@ KEYRECS_DD_COLS: List[str] = [
     "DD.v.p", "DD.p.w", "DD.w.j", "DD.j.k", "DD.k.e",
     "DD.e.u", "DD.u.r", "DD.r.k", "DD.k.b",
 ]
+KEYRECS_FIXED_COLUMN_MAPS = {
+    "published_labels": {"DD": "DD", "DU": "DU", "UD": "UD", "UU": "UU"},
+    "release_label_swap": {"DD": "UU", "DU": "UD", "UD": "DU", "UU": "DD"},
+}
+KEYRECS_TIMESTAMP_TOLERANCE_SEC = 0.0020001
 
 
 @dataclass
@@ -610,12 +615,84 @@ def build_sentence_split(
     )
 
 
+def _read_keyrecs_fixed_csv(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.columns = df.columns.str.strip()
+    return df
+
+
+def _keyrecs_fixed_columns(prefix: str) -> List[str]:
+    return [f"{prefix}.{name.partition('.')[2]}" for name in KEYRECS_DD_COLS]
+
+
+def audit_keyrecs_fixed_timestamps(path: Path, train_subjects: List[str]) -> Dict:
+    """Select the only mapping consistent with all adjacent-key timing identities on Train."""
+    df = _read_keyrecs_fixed_csv(path)
+    train = df[df["participant"].isin(train_subjects)]
+    if train.empty:
+        raise ValueError("The KeyRecs fixed timestamp audit requires Train participants")
+    h = train[KEYRECS_HOLD_COLS].to_numpy(dtype=np.float64)
+    columns = {prefix: train[_keyrecs_fixed_columns(prefix)].to_numpy(dtype=np.float64)
+               for prefix in ("DD", "DU", "UD", "UU")}
+    # Score every mapping on the same timings to prevent missing cells from changing the denominator.
+    valid = np.isfinite(h[:, :-1]) & np.isfinite(h[:, 1:])
+    for values in columns.values():
+        valid &= np.isfinite(values)
+    if not valid.any():
+        raise ValueError("No complete KeyRecs fixed Train transitions to audit")
+
+    def describe(error: np.ndarray) -> Dict:
+        absolute = np.abs(error[valid])
+        return {
+            "n": int(len(absolute)),
+            "median_absolute_error_sec": float(np.median(absolute)),
+            "max_absolute_error_sec": float(absolute.max()),
+            "fraction_within_2ms": float(np.mean(absolute <= KEYRECS_TIMESTAMP_TOLERANCE_SEC)),
+        }
+
+    hypotheses = {}
+    for name, mapping in KEYRECS_FIXED_COLUMN_MAPS.items():
+        dd, du, ud, uu = (columns[mapping[key]] for key in ("DD", "DU", "UD", "UU"))
+        hypotheses[name] = {
+            "UD_equals_DD_minus_Hcurr": describe(ud - (dd - h[:, :-1])),
+            "DU_equals_DD_plus_Hnext": describe(du - (dd + h[:, 1:])),
+            "UU_equals_DD_plus_Hnext_minus_Hcurr": describe(uu - (dd + h[:, 1:] - h[:, :-1])),
+        }
+    passes = [name for name, results in hypotheses.items()
+              if all(row["fraction_within_2ms"] >= 0.99 for row in results.values())]
+    if len(passes) != 1:
+        raise ValueError("KeyRecs fixed timing identities must uniquely support one column mapping on Train")
+    selected = passes[0]
+    return {
+        "selection_split": "train_only",
+        "train_people": int(train["participant"].nunique()),
+        "train_rows": int(len(train)),
+        "minimum_fraction_within_2ms_per_identity": 0.99,
+        "selected_interpretation": selected,
+        "physical_to_published_fields": KEYRECS_FIXED_COLUMN_MAPS[selected],
+        "interpretations": hypotheses,
+        "DD_vs_UU_absolute_difference_sec": describe(columns["DD"] - columns["UU"]),
+    }
+
+
+def read_keyrecs_fixed_timings(path: Path, participants: List[str], interpretation: str):
+    """Decode a split using an already selected column mapping, deriving physical UD = DD - Hcurr."""
+    df = _read_keyrecs_fixed_csv(path)
+    dd_cols = _keyrecs_fixed_columns(KEYRECS_FIXED_COLUMN_MAPS[interpretation]["DD"])
+    df = df[df["participant"].isin(participants)].dropna(subset=KEYRECS_HOLD_COLS + dd_cols).reset_index(drop=True)
+    holds = df[KEYRECS_HOLD_COLS].to_numpy(dtype=np.float32)
+    dd = df[dd_cols].to_numpy(dtype=np.float32)
+    return df, holds, dd, dd - holds[:, :-1]
+
+
 def load_keyrecs_fixed_split(
     fixed_csv_path: Path,
     split_subjs: List[str],
     bounds: Dict[str, Tuple[float, float]],
     chan_mean: np.ndarray,
     chan_std: np.ndarray,
+    *,
+    interpretation: str,
 ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """
     Load KeyRecs fixed-text typing sequences (10 keys -> L=9 digraphs) for the given subjects.
@@ -624,15 +701,10 @@ def load_keyrecs_fixed_split(
     """
     if not fixed_csv_path.exists():
         return None
-    df = pd.read_csv(fixed_csv_path)
-    df.columns = [c.strip() for c in df.columns]
-    df = df[df["participant"].isin(split_subjs)].dropna(subset=KEYRECS_HOLD_COLS + KEYRECS_DD_COLS).reset_index(drop=True)
+    df, raw_holds, raw_dds, raw_uds = read_keyrecs_fixed_timings(fixed_csv_path, split_subjs, interpretation)
     if df.empty:
         return None
     subj_map = {s: idx for idx, s in enumerate(split_subjs)}
-    raw_holds = df[KEYRECS_HOLD_COLS].values.astype(np.float32)
-    raw_dds = df[KEYRECS_DD_COLS].values.astype(np.float32)
-    raw_uds = (raw_dds - raw_holds[:, :-1]).astype(np.float32)
     holds = np.clip(raw_holds, *bounds["H"]).astype(np.float32)
     dds = np.clip(raw_dds, *bounds["DD"]).astype(np.float32)
     uds = np.clip(raw_uds, *bounds["UD"]).astype(np.float32)
@@ -737,15 +809,19 @@ def prepare_full_pipeline(
 
     sentence_splits: Dict[str, SentenceSplitData] = {}
     keyrecs_fixed_train = None
+    keyrecs_fixed_audit = None
     keyrecs_meta = None
     if kr_records_df is not None and kr_splits_subjs is not None:
         for sname in ("train", "val", "test"):
             sentence_splits[sname] = build_sentence_split(
                 kr_records_df, kr_splits_subjs[sname], chan_mean, chan_std
             )
-        keyrecs_fixed_train = load_keyrecs_fixed_split(
-            fixed_csv_path, kr_splits_subjs["train"], bounds, chan_mean, chan_std
-        )
+        if fixed_csv_path.exists():
+            keyrecs_fixed_audit = audit_keyrecs_fixed_timestamps(fixed_csv_path, kr_splits_subjs["train"])
+            keyrecs_fixed_train = load_keyrecs_fixed_split(
+                fixed_csv_path, kr_splits_subjs["train"], bounds, chan_mean, chan_std,
+                interpretation=keyrecs_fixed_audit["selected_interpretation"],
+            )
         n_kr_tot = sum(len(v) for v in kr_splits_subjs.values())
         n_chunks_tot = sum(int(len(sentence_splits[sn].subject_ids)) for sn in ("train", "val", "test"))
         keyrecs_meta = {
@@ -791,6 +867,7 @@ def prepare_full_pipeline(
             "test_samples": int(len(splits["test"].df)),
         },
         "keyrecs_sentence_corpus": keyrecs_meta,
+        "keyrecs_fixed_timestamps": keyrecs_fixed_audit,
         "subjects_split": {
             "train": train_subjs,
             "val": val_subjs,

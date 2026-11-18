@@ -51,9 +51,26 @@ from preprocessing import (
 
 VANILLA_DEFAULT_EPOCHS = 35
 KEYPRINT_DEFAULT_EPOCHS = 35
-# Validation stays byte-for-byte compatible with checkpoint selection. Test bots
-# use an independent pool, while the RNG selecting human trials is unchanged.
+# Test bots use an independent pool. The RNG selecting human trials is unchanged.
 TEST_BOT_SEED = SEED + 1000003
+
+
+def checkpoint_training_recipe(fixed_interpretation: str, vanilla_epochs: int, keyprint_epochs: int) -> Dict:
+    """Describe the common inputs needed to distinguish retrained and historical checkpoints."""
+    return {
+        "keyrecs_fixed_interpretation": fixed_interpretation,
+        "vanilla_epochs": vanilla_epochs,
+        "keyprint_epochs": keyprint_epochs,
+        "batch_size": 256,
+        "seed": SEED,
+        "tempo_warp_probability": 0.45,
+        "touch_probability": {
+            "Vanilla1DCNN": 0.0,
+            "Vanilla1DCNN_Aug": TOUCH_PROB,
+            "KeyPrintNet_9ch": TOUCH_PROB,
+            "KeyPrintNet": TOUCH_PROB,
+        },
+    }
 
 
 def set_all_seeds(seed: int = SEED) -> None:
@@ -853,8 +870,9 @@ def train_keyprint_net(
     """
     set_all_seeds(SEED)
     in_ch = 4 if raw_channels_only else in_channels
-    if in_ch < N_CHANNELS:
-        touch_prob = 0.0  # 4ch / 9ch timing-only encoders carry no Hold_Valid flag
+    # Use the same imputed touch rows for both channel sets. Slicing the tensor drops Hold_Valid
+    # on the timing-only encoder while retaining the identical first nine timing channels.
+    touch_prob = touch_prob if use_augmentation else 0.0
 
     pools, num_classes = _build_training_pools(
         train_split, in_ch, kr_fixed_train=kr_fixed_train, sentence_train=sentence_train

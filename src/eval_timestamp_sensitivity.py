@@ -1,9 +1,6 @@
-"""Read-only DD/UU hypothesis sensitivity with frozen models and calibration.
-
-The release-clock hypothesis is a diagnostic, not a correction to training data.
-Outputs models/timestamp_sensitivity.json; does not change any model/config.
-"""
+"""Audit the Train-derived fixed-text interpretation and separate inference and training effects."""
 from pathlib import Path
+import hashlib
 import json
 import os
 import tempfile
@@ -11,11 +8,20 @@ import tempfile
 import numpy as np
 import torch
 
-import pandas as pd
-from feature_eval import eval_password_transfer
-from train_and_evaluate import compute_cohort_centroids, encode_sequences
+from feature_eval import eval_password_transfer, evaluate_clean_sentence_cross_session
+from train_and_evaluate import (
+    build_verification_trials,
+    compute_cohort_centroids,
+    encode_sequences,
+    find_optimal_val_threshold,
+    score_embedding_trials,
+    summarize_metrics,
+)
 from models import KeyPrintNet
-from preprocessing import prepare_full_pipeline, KEYRECS_DD_COLS, KEYRECS_HOLD_COLS
+from preprocessing import N_CHANNELS, SEED, prepare_full_pipeline
+
+NOMINAL_WEIGHT = "models/legacy/keyprint_net_17ch_published_dd.pt"
+NOMINAL_MANIFEST = "models/legacy/keyprint_net_17ch_published_dd.json"
 
 
 def column_identity_audit(path):
@@ -51,67 +57,97 @@ def column_identity_audit(path):
             for k, v in errors.items()}
 
 
+def checkpoint_sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_model_and_cohort(path: Path, channels: int, train, device):
+    model = KeyPrintNet(in_channels=channels)
+    model.load_state_dict(torch.load(path, weights_only=True, map_location=device))
+    cohort = compute_cohort_centroids(encode_sequences(model, train.seq_scaled[:, :channels], device), train.subject_ids)
+    return model, cohort
+
+
+def compare_training_interpretations(out, official, splits, sentence_splits, correct_model, correct_cohort, mean, std, device):
+    """Compare 17ch training runs using identical CMU and clean sentence Validation inputs."""
+    nominal_path, manifest_path = out / NOMINAL_WEIGHT, out / NOMINAL_MANIFEST
+    recipe = official["provenance"]["training_recipe"]
+    if not nominal_path.is_file() and not manifest_path.is_file():
+        if recipe["keyprint_epochs"] == 35:
+            raise FileNotFoundError("Run src/train_timestamp_control.py to create the published-DD reference and manifest")
+        return {"reference_available": False}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    nominal_recipe = {**recipe, "keyrecs_fixed_interpretation": "published_labels"}
+    if (manifest["training_recipe"] != nominal_recipe or manifest["sha256"] != checkpoint_sha(nominal_path)
+            or manifest["train_subjects"] != sentence_splits["train"].subjects):
+        raise ValueError("The published-DD reference must match the 17ch training recipe and checkpoint hash")
+    nominal_model, nominal_cohort = load_model_and_cohort(nominal_path, N_CHANNELS, splits["train"], device)
+    val = splits["val"]
+    trials = build_verification_trials(val, mean, std, seed=SEED)
+    metrics = {}
+    for interpretation, model, cmu_cohort in (
+        ("published_labels", nominal_model, nominal_cohort),
+        (recipe["keyrecs_fixed_interpretation"], correct_model, correct_cohort),
+    ):
+        encs = encode_sequences(model, val.seq_scaled, device)
+        bots = encode_sequences(model, trials["bot_seq"], device)
+        y, s, _ = score_embedding_trials(encs, bots, trials, cohort=cmu_cohort)
+        cmu = summarize_metrics(y, s, find_optimal_val_threshold(y, s))
+        train = sentence_splits["train"]
+        sent_cohort = compute_cohort_centroids(encode_sequences(model, train.seq_scaled, device), train.subject_ids)
+        metrics[interpretation] = {
+            "cmu_canonical_password": {k: cmu[k] for k in ("roc_auc", "eer", "macro_f1", "threshold")},
+            "clean_25_char_cross_session": evaluate_clean_sentence_cross_session(sentence_splits["val"], model, device, sent_cohort),
+        }
+    return {
+        "reference_available": True,
+        "evaluation_split": "validation_only",
+        "controlled_factor": "KeyRecs fixed-text DD interpretation in the Train pool",
+        "protocol": "Same seed, epochs, trainer, augmentation, scaler and Validation examples. Each run has its own Train cohorts and CMU Validation threshold.",
+        "reference_provenance": manifest,
+        "corrected_checkpoint_sha256": checkpoint_sha(out / "models/keyprint_net.pt"),
+        "validation": metrics,
+    }
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     out = Path(os.environ.get("KEYPRINT_OUTPUT_ROOT", root)).resolve()
-    config = json.loads((out / "web/public/models/model_config.json").read_text())
+    config = json.loads((out / "web/public/models/model_config.json").read_text(encoding="utf-8"))
+    official = json.loads((out / "models/evaluation_report.json").read_text(encoding="utf-8"))
     fixed_path = root / "data/raw/KeyRecs-fixed-text.csv"
-    df = pd.read_csv(fixed_path)
-    df.columns = [c.strip() for c in df.columns]
-    dd_cols = KEYRECS_DD_COLS
-    uu_cols = [c.replace("DD.", "UU.") for c in dd_cols]
-    du_cols = [c.replace("DD.", "DU.") for c in dd_cols]
-    ud_cols = [c.replace("DD.", "UD.") for c in dd_cols]
-    h = df[KEYRECS_HOLD_COLS].to_numpy()
-    dd, uu = df[dd_cols].to_numpy(), df[uu_cols].to_numpy()
-    du, ud = df[du_cols].to_numpy(), df[ud_cols].to_numpy()
-    def describe(values):
-        values = np.abs(values[np.isfinite(values)])
-        return {"n": len(values), "median_absolute_error_sec": float(np.median(values)),
-                "max_absolute_error_sec": float(values.max()),
-                "fraction_within_2ms": float(np.mean(values <= .0020001))}
-    audit = {
-        "published_labels": {
-            "UD_equals_DD_minus_Hcurr": describe(ud - (dd-h[:, :-1])),
-            "DU_equals_DD_plus_Hnext": describe(du - (dd+h[:, 1:])),
-            "UU_equals_DD_plus_Hnext_minus_Hcurr": describe(uu - (dd+h[:, 1:]-h[:, :-1])),
-        },
-        "hypothesis_DD_UU_and_DU_UD_labels_swapped": {
-            "UD_equals_DD_minus_Hcurr": describe(du - (uu-h[:, :-1])),
-            "DU_equals_DD_plus_Hnext": describe(ud - (uu+h[:, 1:])),
-            "UU_equals_DD_plus_Hnext_minus_Hcurr": describe(dd - (uu+h[:, 1:]-h[:, :-1])),
-        },
-        "DD_vs_UU_absolute_difference_sec": describe(dd-uu),
-    }
+    device = torch.device("cpu")
     with tempfile.TemporaryDirectory() as tmp:
-        splits, meta = prepare_full_pipeline(root / "data/raw/DSL-StrongPasswordData.csv", Path(tmp))
-        people = meta["_keyrecs_splits_subjs"]["test"]
-        mean, std = (np.asarray(config[k], np.float32) for k in ("channel_mean", "channel_std"))
-        encoders = {}
-        for name, channels, weight in (("legacy_9ch", 9, "models/legacy/keyprint_net_9ch.pt"),
-                                        ("keyprint_17ch", 17, "models/keyprint_net.pt")):
-            model = KeyPrintNet(in_channels=channels)
-            model.load_state_dict(torch.load(out / weight, weights_only=True, map_location="cpu"))
-            model.eval()
-            cohort = compute_cohort_centroids(encode_sequences(model, splits["train"].seq_scaled[:, :channels], torch.device("cpu")),
-                                              splits["train"].subject_ids)
-            threshold = config["feature_metrics"]["password_1to1"][name]["threshold"]
-            encoders[name] = (model, channels, cohort, threshold)
-        results = {}
-        for label, use_uu in (("published_DD", False), ("hypothesis_use_UU_as_DD", True)):
-            path = fixed_path
-            if use_uu:
-                candidate = df.copy()
-                candidate[dd_cols] = candidate[uu_cols].to_numpy()
-                path = Path(tmp) / "fixed_uu_hypothesis.csv"
-                candidate.to_csv(path, index=False)
-            results[label] = eval_password_transfer(path, {}, people, config["outlier_bounds"], mean, std,
-                                                    encoders, torch.device("cpu"), seed=42)["keyrecs_fixed_cross_session"]
+        splits, meta = prepare_full_pipeline(root / "data/raw/DSL-StrongPasswordData.csv", Path(tmp), seed=SEED)
+    people = meta["_keyrecs_splits_subjs"]["test"]
+    audit = meta["keyrecs_fixed_timestamps"]
+    mean, std = (np.asarray(config[k], np.float32) for k in ("channel_mean", "channel_std"))
+    encoders, hashes = {}, {}
+    for name, channels, weight in (("legacy_9ch", 9, "models/legacy/keyprint_net_9ch.pt"),
+                                    ("keyprint_17ch", 17, "models/keyprint_net.pt")):
+        path = out / weight
+        model, cohort = load_model_and_cohort(path, channels, splits["train"], device)
+        hashes[name] = checkpoint_sha(path)
+        threshold = config["feature_metrics"]["password_1to1"][name]["threshold"]
+        encoders[name] = (model, channels, cohort, threshold)
+    model, _, cohort, _ = encoders["keyprint_17ch"]
+    training_comparison = compare_training_interpretations(
+        out, official, splits, meta["_sentence_splits"], model, cohort, mean, std, device,
+    )
+    results = {
+        interpretation: eval_password_transfer(
+            fixed_path, {}, people, config["outlier_bounds"], mean, std, encoders, device,
+            fixed_interpretation=interpretation, seed=SEED,
+        )["keyrecs_fixed_cross_session"]
+        for interpretation in audit["interpretations"]
+    }
     report = {"fixed_text_column_identity_audit": audit,
               "free_text_column_identity_audit": column_identity_audit(root / "data/raw/KeyRecs-free-text.csv"),
               "fixed_text_frozen_model_sensitivity": results,
-              "protocol": "Test-only 18-person KeyRecs fixed text; first 4 Session-1 enrollment, Session-2 genuine; 10 Session-2 queries per other person. Same paired trials, original frozen 9ch/17ch weights, scaler, CMU cohorts and Validation thresholds.",
-              "interpretation": "A DD/UU label swap is an arithmetic hypothesis, not confirmed logger semantics. This input sensitivity is not retraining under the hypothesis. Neither hypothesis nor a model was selected on Test; training/calibration remain unchanged pending source confirmation."}
+              "frozen_checkpoint_sha256": hashes,
+              "matched_17ch_training_comparison": training_comparison,
+              "protocol": "Test fixed text: 18 people, first 4 Session-1 enrolment, Session-2 genuine and 10 Session-2 queries per other person. Fixed weights, paired trials, scaler, CMU cohorts and Validation thresholds under both input mappings.",
+              "interpretation": "Train timing identities identify the physical DD field as the published UU field. Training and fixed-text evaluation use DD from this field and derive UD = DD − Hcurr. The held-out input-swap diagnostic changes input interpretation alone. The 17ch training comparison is separately scored on Validation."}
     path = out / "models/timestamp_sensitivity.json"
     path.write_text(json.dumps(report, indent=2, ensure_ascii=False))
     print(json.dumps(report, indent=2))

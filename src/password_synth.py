@@ -16,8 +16,11 @@ impostor statistics on Validation strings, and tau is the Validation genuine qua
 
 from __future__ import annotations
 
+import hashlib
+import json
+from bisect import bisect_left
 from collections import Counter, defaultdict
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 from sklearn.metrics import roc_auc_score, roc_curve
@@ -29,12 +32,42 @@ from preprocessing import apply_channel_scaler, extract_sequences, touchify_timi
 
 LETTERS = "abcdefghijklmnopqrstuvwxyz"
 DISPLAY_SLOPE = 1.0  # web similarity = sigmoid(slope * (z - tau)); 0.5 is the decision point
+SourceKey = Tuple[str, int, int]  # participant, session, index in the source event stream
+SOURCE_EVENT_SCOPE = "Session 1 enrollment and same-day genuine queries for each participant and string."
+_RNG_SPLITS = {"val": 0, "test": 1}
+_RNG_STAGES = {
+    "word_selection": 0,
+    "word_trials": 1,
+    "length_selection": 2,
+    "length_trials": 3,
+    "capital_selection": 4,
+    "capital_trials": 5,
+    "adaptation_queries": 6,
+    "fixed_comparison_queries": 7,
+}
+
+
+def password_rng(seed: int, split: str, stage: str, length: int = 0) -> np.random.Generator:
+    """Provide a reproducible stream independent of other splits, stages and lengths."""
+    return np.random.default_rng(np.random.SeedSequence([seed, _RNG_SPLITS[split], _RNG_STAGES[stage], length]))
+
+
+class DigraphOccurrence(NamedTuple):
+    time: float
+    dd: float
+    hold_a: float
+    hold_b: float
+    start: SourceKey  # also uniquely identifies the occurrence, which ends at the next event
+
+
+def _end_key(start: SourceKey) -> SourceKey:
+    person, session, index = start
+    return person, session, index + 1
 
 
 def digraph_tables(raw_sessions, people: Sequence[str], max_dd: float = 1.5) -> Dict:
-    """{(person, session): {(a, b): [(t, dd, hold_a, hold_b, occ_id), ...]}} from clean letter->letter pairs."""
+    """Index clean consecutive letter pairs by their physical source events."""
     tabs = {}
-    next_occ_id = 0
     for p in people:
         for s in (1, 2):
             ev = raw_sessions.get((p, s))
@@ -42,12 +75,13 @@ def digraph_tables(raw_sessions, people: Sequence[str], max_dd: float = 1.5) -> 
                 continue
             tab = defaultdict(list)
             prev = None
-            for label, t, h in ev:
+            for i, (label, t, h) in enumerate(ev):
                 kind, _ = kind_of(label)
                 ok = kind == "char" and len(label) == 1 and label.isalpha() and 0.008 < h < 1.2
                 if ok and prev is not None and 0.006 < t - prev[1] < max_dd:
-                    tab[(prev[0], label.lower())].append((prev[1], t - prev[1], prev[2], h, next_occ_id))
-                    next_occ_id += 1
+                    tab[(prev[0], label.lower())].append(
+                        DigraphOccurrence(prev[1], t - prev[1], prev[2], h, (p, s, i - 1))
+                    )
                 prev = (label.lower(), t, h) if ok else None
             tabs[(p, s)] = dict(tab)
     return tabs
@@ -58,50 +92,114 @@ def covered(tab: Dict, word: str, min_per_occ: int = 1) -> bool:
     return all(len(tab.get(pr, ())) >= min_per_occ * cnt for pr, cnt in need.items())
 
 
+def _partition_witnesses(tab: Dict, need: Counter, rng=None):
+    """Find enough occurrences for every digraph on both sides by reserving their source events."""
+    pairs = sorted(need, key=lambda pair: (len(tab.get(pair, ())) - 2 * need[pair], pair))
+    if any(len(tab.get(pair, ())) < 2 * need[pair] for pair in pairs):
+        return None
+    choices = {pair: tab[pair] for pair in pairs}
+    if rng is not None:
+        choices = {pair: [instances[i] for i in rng.permutation(len(instances))] for pair, instances in choices.items()}
+    groups = [(pair, role) for pair in pairs for role in (0, 1)]
+    pools = [{pair: [] for pair in pairs} for _ in range(2)]
+    occupied = [Counter(), Counter()]
+
+    def reserve(group: int, offset: int) -> bool:
+        if group == len(groups):
+            return True
+        pair, role = groups[group]
+        pool = pools[role][pair]
+        missing = need[pair] - len(pool)
+        instances = choices[pair]
+        keys, other = occupied[role], occupied[1 - role]
+        for i in range(offset, len(instances) - missing + 1):
+            occ = instances[i]
+            start = occ.start[2]
+            if other[start] or other[start + 1]:
+                continue
+            pool.append(occ)
+            keys[start] += 1
+            keys[start + 1] += 1
+            next_group, next_offset = (group + 1, 0) if missing == 1 else (group, i + 1)
+            if reserve(next_group, next_offset):
+                return True
+            keys[start] -= 1
+            keys[start + 1] -= 1
+            pool.pop()
+        return False
+
+    return (pools, occupied) if reserve(0, 0) else None
+
+
+def _coverage_exclusion(tabs: Dict, person: str, word: str) -> Optional[str]:
+    if (person, 1) not in tabs or (person, 2) not in tabs:
+        return "missing_session"
+    tab1 = tabs[(person, 1)]
+    need = Counter(zip(word, word[1:]))
+    if not covered(tabs[(person, 2)], word) or any(len(tab1.get(pair, ())) < 2 * count for pair, count in need.items()):
+        return "insufficient_digraph_occurrences"
+
+    # A single cut proves eligibility for common digraphs. Search the remaining cases exactly.
+    if need:
+        first = min(tab1[pair][0].start[2] for pair in need)
+        last = max(tab1[pair][-1].start[2] for pair in need)
+        cut = (first + last + 1) // 2
+        if all(
+            bisect_left(tab1[pair], cut - 1, key=lambda occ: occ.start[2]) >= count
+            and len(tab1[pair]) - bisect_left(tab1[pair], cut, key=lambda occ: occ.start[2]) >= count
+            for pair, count in need.items()
+        ):
+            return None
+    return "no_disjoint_source_events" if _partition_witnesses(tab1, need) is None else None
+
+
 def covered_disjoint_s1(tabs: Dict, person: str, word: str) -> bool:
-    """Ensure Session 1 has >= 2x occurrences per digraph (for disjoint enroll vs same-day query pools)
-    and Session 2 has >= 1x occurrence per digraph."""
-    return (
-        (person, 1) in tabs
-        and (person, 2) in tabs
-        and covered(tabs[(person, 1)], word, min_per_occ=2)
-        and covered(tabs[(person, 2)], word, min_per_occ=1)
-    )
+    """Require physical key event separation in Session 1 and digraph coverage in Session 2."""
+    return _coverage_exclusion(tabs, person, word) is None
 
 
 def partition_tab_disjoint(tab1: Dict, word: str, rng) -> Tuple[Dict, Dict]:
-    """Partition a person's Session-1 digraph instances for `word` into two strictly disjoint occ_id pools."""
-    enr_tab: Dict = {}
-    same_tab: Dict = {}
-    for pr in sorted(set(zip(word, word[1:]))):
-        inst = list(tab1[pr])
-        perm = rng.permutation(len(inst))
-        mid = len(inst) // 2
-        if mid < 1 or len(inst) - mid < 1:
-            raise ValueError(f"Insufficient Session-1 occurrences to partition disjointly for digraph {pr}")
-        enr_tab[pr] = [inst[int(i)] for i in perm[:mid]]
-        same_tab[pr] = [inst[int(i)] for i in perm[mid:]]
-    return enr_tab, same_tab
+    """Assign source events to enroll or same-day pools for one person's word."""
+    witnesses = _partition_witnesses(tab1, Counter(zip(word, word[1:])), rng)
+    if witnesses is None:
+        raise ValueError(f"Session 1 cannot supply source-disjoint digraphs for {word!r}")
+    pools, occupied = witnesses
+    reserved = {occ.start for pool in pools for instances in pool.values() for occ in instances}
+    remaining = [(pair, occ) for pair in pools[0] for occ in tab1[pair] if occ.start not in reserved]
+    for i in rng.permutation(len(remaining)):
+        pair, occ = remaining[i]
+        start = occ.start[2]
+        roles = [role for role in (0, 1) if not (occupied[1 - role][start] or occupied[1 - role][start + 1])]
+        if not roles:
+            continue  # the two endpoints already belong to opposite pools
+        if len(roles) == 2 and len(pools[0][pair]) == len(pools[1][pair]):
+            role = int(rng.integers(2))
+        else:
+            role = min(roles, key=lambda k: len(pools[k][pair]))
+        pools[role][pair].append(occ)
+        occupied[role][start] += 1
+        occupied[role][start + 1] += 1
+    return pools[0], pools[1]
 
 
-def synthesise(tab: Dict, word: str, rng, window: float = 120.0) -> Tuple[np.ndarray, np.ndarray, List[int]]:
-    """One typing of `word`: unclipped raw holds (n,), unclipped raw dds (n-1,), and source occ_ids (n-1,)."""
+def synthesise(tab: Dict, word: str, rng, window: float = 120.0) -> Tuple[np.ndarray, np.ndarray, List[SourceKey]]:
+    """Return raw holds, raw DD intervals and a source occurrence ID per interval."""
     pairs = list(zip(word, word[1:]))
     a0 = pairs[rng.integers(len(pairs))]
-    anchor = tab[a0][rng.integers(len(tab[a0]))][0]
+    anchor = tab[a0][rng.integers(len(tab[a0]))].time
     holds, dds, occ_ids = [], [], []
     for i, pr in enumerate(pairs):
         inst = tab[pr]
-        ts = np.array([x[0] for x in inst])
+        ts = np.array([x.time for x in inst])
         near = np.where(np.abs(ts - anchor) <= window)[0]
         if len(near) == 0:
             near = np.argsort(np.abs(ts - anchor))[:2]
         x = inst[int(rng.choice(near))]
-        dds.append(x[1])
-        holds.append(x[2])
-        occ_ids.append(int(x[4]) if len(x) > 4 else -1)
+        dds.append(x.dd)
+        holds.append(x.hold_a)
+        occ_ids.append(x.start)
         if i == len(pairs) - 1:
-            holds.append(x[3])
+            holds.append(x.hold_b)
     return np.array(holds, dtype=np.float32), np.array(dds, dtype=np.float32), occ_ids
 
 
@@ -109,6 +207,18 @@ def synth(tab: Dict, word: str, rng, window: float = 120.0) -> Tuple[np.ndarray,
     """Two-tuple wrapper returning unclipped (holds, dds) in seconds."""
     holds, dds, _ = synthesise(tab, word, rng, window=window)
     return holds, dds
+
+
+def _source_keys(occ_ids: Sequence[SourceKey]) -> set[SourceKey]:
+    return {key for start in occ_ids for key in (start, _end_key(start))}
+
+
+def _enrollment_provenance(enroll, same, person: str, word: str):
+    occ_ids = sorted({occ for _, _, sources in enroll for occ in sources})
+    source_keys = _source_keys(occ_ids)
+    if any(not source_keys.isdisjoint(_source_keys(sources)) for _, _, sources in same):
+        raise AssertionError(f"Session 1 enrollment and query share source key events for {person} on {word!r}")
+    return occ_ids, sorted(source_keys)
 
 
 def choose_strings(
@@ -122,17 +232,16 @@ def choose_strings(
     vocab_people: Optional[Sequence[str]] = None,
 ) -> Dict[str, List[str]]:
     """Dictionary words / word fragments (6-10 letters) and random letter strings (8 letters) that at
-    least 70% of `people` can type with disjoint Session-1 occurrences and Session-2 coverage."""
+    least 70% of `people` can type with disjoint Session-1 source events and Session-2 coverage."""
     def cov_all(w: str) -> bool:
         return sum(covered_disjoint_s1(tabs, p, w) for p in people) >= max(6, int(0.7 * len(people)))
 
     allowed_vocab = set(vocab_people) if vocab_people is not None else None
     vocab = Counter()
-    for (p, _), ev in raw_sessions.items():
-        if allowed_vocab is not None and p not in allowed_vocab:
-            continue
+    vocab_sessions = sorted(key for key in raw_sessions if allowed_vocab is None or key[0] in allowed_vocab)
+    for key in vocab_sessions:
         cur = []
-        for label, _, _ in list(ev) + [("Space", 0, 0)]:
+        for label, _, _ in list(raw_sessions[key]) + [("Space", 0, 0)]:
             k, _ = kind_of(label)
             if k == "char" and len(label) == 1 and label.isalpha():
                 cur.append(label.lower())
@@ -213,7 +322,7 @@ def string_trials(
     k_enroll: int = 4,
 ) -> List[Dict]:
     """One row per attempt with raw9 / raw17 / deployed AS-Norm scores (keyboard + simulated touch),
-    enforcing strictly disjoint Session-1 occ_ids between enroll and same-day genuine queries."""
+    enforcing disjoint physical key events between enrollment and same-day queries for each word."""
     rows = []
     for kind, wl in strings.items():
         for w in wl:
@@ -221,7 +330,7 @@ def string_trials(
             if len(ppl) < 2:
                 continue
             typ = {}
-            enr_occ_map: Dict[str, List[int]] = {}
+            enroll_provenance = {}
             for p in ppl:
                 enr_tab, same_tab = partition_tab_disjoint(tabs[(p, 1)], w, rng)
                 typ[(p, "enroll")] = [synthesise(enr_tab, w, rng) for _ in range(k_enroll)]
@@ -229,13 +338,12 @@ def string_trials(
                 typ[(p, "cross")] = [synthesise(tabs[(p, 2)], w, rng) for _ in range(3)]
                 typ[(p, "imp")] = [synthesise(tabs[(p, int(rng.integers(1, 3)))], w, rng) for _ in range(2)]
 
-                enr_occ_set = {oid for _, _, oids in typ[(p, "enroll")] for oid in oids}
-                same_occ_set = {oid for _, _, oids in typ[(p, "same")] for oid in oids}
-                if not enr_occ_set.isdisjoint(same_occ_set):
-                    raise AssertionError(f"Non-disjoint Session-1 occ_ids detected for {p} on {w}")
-                enr_occ_map[p] = sorted(enr_occ_set)
+                enroll_provenance[p] = _enrollment_provenance(typ[(p, "enroll")], typ[(p, "same")], p, w)
 
             keys = [(k, i) for k, v in typ.items() for i in range(len(v))]
+            query_sources = {(k, i): sorted(_source_keys(typ[k][i][2])) for k, i in keys if k[1] != "enroll"}
+            enrollment_sources = {p: [attempt[2] for attempt in typ[(p, "enroll")]] for p in ppl}
+            enrollment_ids = {p: [f"{kind}|{w}|{p}|enroll|{k}" for k in range(k_enroll)] for p in ppl}
             idx = defaultdict(list)
             for j, k in enumerate(keys):
                 idx[k[0]].append(j)
@@ -244,12 +352,12 @@ def string_trials(
                 E9, E17 = embed9(T).astype(np.float64), embed17(T).astype(np.float64)
                 for p in ppl:
                     t9, t17 = make_template(E9[idx[(p, "enroll")]]), make_template(E17[idx[(p, "enroll")]])
+                    enroll_occ_ids, enroll_source_keys = enroll_provenance[p]
                     for q, tag, lab in [(p, "same", 1), (p, "cross", 1)] + [(q, "imp", 0) for q in ppl if q != p]:
                         J = idx[(q, tag)]
                         r9, r17 = raw_similarity(E9[J], t9), raw_similarity(E17[J], t17)
                         dep = as_norm_scores(E9[J], t9, cohorts9[mode])
                         for j in range(len(J)):
-                            q_oids = typ[(q, tag)][j][2]
                             rows.append(
                                 {
                                     "kind": kind,
@@ -262,13 +370,47 @@ def string_trials(
                                     "raw9": float(r9[j]),
                                     "raw17": float(r17[j]),
                                     "deployed": float(dep[j]),
-                                    "enroll_occ_ids": enr_occ_map[p],
-                                    "query_occ_ids": list(q_oids),
+                                    "enroll_occ_ids": enroll_occ_ids,
+                                    "query_occ_ids": typ[(q, tag)][j][2],
+                                    "enroll_source_key_ids": enroll_source_keys,
+                                    "query_source_key_ids": query_sources[((q, tag), j)],
                                     "attempt_id": f"{kind}|{w}|{q}|{tag}|{j}",
-                                    "enroll_attempt_ids": [f"{kind}|{w}|{p}|enroll|{k}" for k in range(k_enroll)],
+                                    "enroll_attempt_ids": enrollment_ids[p],
+                                    "enroll_attempt_occ_ids": enrollment_sources[p],
                                 }
                             )
     return rows
+
+
+def _source_digest(attempts):
+    return hashlib.sha256(json.dumps(attempts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _coverage_metadata(tabs, people, strings, requested_strings):
+    exclusions = Counter()
+    participants_by_string = {}
+    for kind, words in strings.items():
+        participants_by_string[kind] = {}
+        for word in words:
+            n = 0
+            for person in people:
+                reason = _coverage_exclusion(tabs, person, word)
+                if reason is None:
+                    n += 1
+                else:
+                    exclusions[reason] += 1
+            if n < 2:
+                exclusions["fewer_than_two_participants"] += n
+                n = 0
+            participants_by_string[kind][word] = n
+    return {
+        "num_participants_requested": len(people),
+        "requested_strings_by_kind": dict(requested_strings),
+        "selected_strings_by_kind": {kind: len(words) for kind, words in strings.items()},
+        "scored_participants_by_string": participants_by_string,
+        "excluded_person_string_pairs": sum(exclusions.values()),
+        "exclusion_counts_by_reason": dict(exclusions),
+    }
 
 
 def synthesis_metadata(
@@ -276,23 +418,36 @@ def synthesis_metadata(
     people: Sequence[str],
     strings: Dict[str, List[str]],
     rows: Sequence[Dict],
-    k_enroll: int = 4,
+    *,
+    requested_strings: Optional[Dict[str, int]] = None,
 ) -> Dict:
-    """Audit metadata for disjoint occ_id password synthesis."""
-    active_people = [p for p in people if (p, 1) in tabs and (p, 2) in tabs]
-    excluded_pairs = 0
-    for wl in strings.values():
-        for w in wl:
-            ppl = [p for p in active_people if covered_disjoint_s1(tabs, p, w)]
-            excluded_pairs += len(active_people) - len(ppl)
-    same_rows = [r for r in rows if r.get("tag") == "same" and "enroll_occ_ids" in r and "query_occ_ids" in r]
-    disjoint_ok = all(set(r["enroll_occ_ids"]).isdisjoint(r["query_occ_ids"]) for r in same_rows)
+    """Audit physical key separation, sample counts and source eligibility."""
+    same_rows = [r for r in rows if r.get("tag") == "same"]
+    checked = [
+        r for r in same_rows
+        if r.get("enroll_source_key_ids") and r.get("query_source_key_ids")
+        and set(r["enroll_source_key_ids"]).isdisjoint(r["query_source_key_ids"])
+    ]
+    coverage = _coverage_metadata(tabs, people, strings, requested_strings or {k: len(v) for k, v in strings.items()})
     counts = synthetic_input_counts(rows)
+    sources_by_attempt = {}
+    for r in rows:
+        if "query_occ_ids" in r:
+            sources_by_attempt[r["attempt_id"]] = r["query_occ_ids"]
+        sources_by_attempt.update(zip(r.get("enroll_attempt_ids", ()), r.get("enroll_attempt_occ_ids", ())))
     return {
         **counts,
-        "disjoint_occ_enforced": bool(disjoint_ok),
-        "same_day_rows_verified": int(len(same_rows)),
-        "excluded_person_string_pairs": int(excluded_pairs),
+        **coverage,
+        "num_participants_scored": len({r["target"] for r in rows}),
+        "disjoint_occ_enforced": bool(same_rows) and all(
+            r.get("enroll_occ_ids") and r.get("query_occ_ids") and set(r["enroll_occ_ids"]).isdisjoint(r["query_occ_ids"])
+            for r in same_rows
+        ),
+        "disjoint_source_events_enforced": bool(same_rows) and len(checked) == len(same_rows),
+        "source_event_disjointness_scope": SOURCE_EVENT_SCOPE,
+        "source_trial_sha256": _source_digest(sources_by_attempt),
+        "same_day_rows_verified": len(checked),
+        "same_day_generated_inputs_verified": len({r["attempt_id"] for r in checked}),
         "total_generated_attempts": counts["generated_attempts"],
     }
 
@@ -444,7 +599,6 @@ def adaptation_eval(
     for p in np.unique(P):
         others = np.where((P != p) & (S == 2))[0]
         impostor_indices[p] = rng.choice(others, size=min(40, len(others)), replace=False)
-    import hashlib
     query_hash = hashlib.sha256(b"".join(impostor_indices[p].tobytes() for p in sorted(impostor_indices))).hexdigest()
     out = {}
     for policy in ["deployed", "dual_no_adapt"] + [f"dual_adapt_margin_{m:g}" for m in margins]:
@@ -612,11 +766,26 @@ def capital_trials(
     k_enroll: int = 4,
 ) -> List[Tuple[int, float, bool, int]]:
     """Keyboard passwords of `length` letters whose first letter is a capital; each attempt's method is
-    drawn from that person's own CapsLock rate in that session, with disjoint Session-1 enroll vs query pools.
+    drawn from that person's CapsLock rate in that session, with separate Session-1 source events.
     Rows: (label, z, query_caps, enrol_caps)."""
-    people = [p for p in people if (p, 1) in tabs and (p, 2) in tabs and (p, 1) in rates and (p, 2) in rates]
+    people = _capital_people(tabs, rates, people)
     words = strings_of_length(tabs, people, length, n_words, rng)
+    rows, _ = _score_capital_trials(tabs, rates, people, words, embed9, embed17, bounds, mean, std,
+                                    touch_hold, prm, rng, k_enroll, n_words)
+    return rows
+
+
+def _capital_people(tabs, rates, people):
+    return [p for p in people if all((p, session) in tabs and (p, session) in rates for session in (1, 2))]
+
+
+def _score_capital_trials(
+    tabs, rates, people, words, embed9, embed17, bounds, mean, std, touch_hold, prm, rng, k_enroll, n_words,
+):
     rows = []
+    counts = Counter()
+    scored_people = set()
+    sources_by_attempt = {}
     for w in words:
         ppl = [p for p in people if covered_disjoint_s1(tabs, p, w)]
         if len(ppl) < 2:
@@ -629,11 +798,16 @@ def capital_trials(
             gen_s2 = [(synthesise(tabs[(p, 2)], w, rng), bool(rng.random() < rates[(p, 2)])) for _ in range(2)]
             imp_s2 = [(synthesise(tabs[(p, 2)], w, rng), bool(rng.random() < rates[(p, 2)])) for _ in range(2)]
 
-            enr_occ = {oid for (_, _, oids), _ in enr_att for oid in oids}
-            same_occ = {oid for (_, _, oids), _ in gen_s1 for oid in oids}
-            if not enr_occ.isdisjoint(same_occ):
-                raise AssertionError(f"Non-disjoint capital_trials Session-1 occ_ids for {p} on {w}")
+            _enrollment_provenance([typing for typing, _ in enr_att], [typing for typing, _ in gen_s1], p, w)
             typ[p] = {"e": enr_att, "g": gen_s1 + gen_s2, "i": imp_s2}
+            counts["generated_enrollment_inputs"] += len(enr_att)
+            counts["generated_genuine_query_inputs"] += len(gen_s1) + len(gen_s2)
+            counts["generated_impostor_query_inputs"] += len(imp_s2)
+            counts["same_day_generated_inputs_verified"] += len(gen_s1)
+            scored_people.add(p)
+            for tag, attempts in typ[p].items():
+                for i, (typing, method) in enumerate(attempts):
+                    sources_by_attempt[f"{w}|{p}|{tag}|{i}"] = (typing[2], method)
 
         keys = [(p, k, i) for p in ppl for k in ("e", "g", "i") for i in range(len(typ[p][k]))]
         T = typing_tensors(w, [typ[p][k][i][0] for p, k, i in keys], bounds, mean, std, False, touch_hold)
@@ -650,63 +824,185 @@ def capital_trials(
                 z = dual_z(raw_similarity(E9[J], t9), raw_similarity(E17[J], t17), prm)
                 for zz, (_, c) in zip(z, typ[q][tag]):
                     rows.append((int(q == p), float(zz), bool(c), int(n_caps)))
-    return rows
+    generated = sum(counts[k] for k in ("generated_enrollment_inputs", "generated_genuine_query_inputs", "generated_impostor_query_inputs"))
+    audit = {
+        **_coverage_metadata(tabs, people, {"capital": words}, {"capital": n_words}),
+        **counts,
+        "num_participants_scored": len(scored_people),
+        "generated_attempts": generated,
+        "comparison_trials": len(rows),
+        "disjoint_source_events_enforced": counts["same_day_generated_inputs_verified"] > 0,
+        "source_event_disjointness_scope": SOURCE_EVENT_SCOPE,
+        "source_trial_sha256": _source_digest(sources_by_attempt),
+        "same_day_rows_verified": counts["same_day_generated_inputs_verified"],
+    }
+    return rows, audit
 
 
-def capital_fusion(
+def _capital_scores(rows, weight, caps_share, k_enroll):
+    y = np.array([r[0] for r in rows])
+    s = np.array([r[1] + weight * capital_llr(r[2], r[3], k_enroll, caps_share) for r in rows])
+    return y, s
+
+
+def _capital_error_rates(labels, scores, threshold):
+    return float(np.mean(scores[labels == 0] >= threshold)), float(np.mean(scores[labels == 1] < threshold))
+
+
+def _fit_capital_fusion(
     val_rows,
-    test_rows,
     caps_share: float,
     base_tau: float,
     k_enroll: int = 4,
     frr_target: float = 0.10,
     grid: Sequence[float] = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0),
 ) -> Dict:
-    """Select (weight, tau_offset) strictly on Validation where decision threshold is `base_tau + tau_offset`
-    (matching biometrics.js:261 `prm.tau += cm.tau_offset`), and evaluate Test at exact deployed thresholds."""
-    def arr(rows, w):
-        y = np.array([r[0] for r in rows])
-        s = np.array([r[1] + w * capital_llr(r[2], r[3], k_enroll, caps_share) for r in rows])
-        return y, s
-
-    def at(rows, w, thr):
-        y, s = arr(rows, w)
-        return float(np.mean(s[y == 0] >= thr)), float(np.mean(s[y == 1] < thr))
-
+    """Select the weight and threshold offset on Validation using the exported population prior."""
     base_tau_r = round(float(base_tau), 4)
+    caps_share = round(float(caps_share), 4)
     offsets: Dict[float, float] = {}
-    thr: Dict[float, float] = {}
     val_far: Dict[float, float] = {}
     val_frr: Dict[float, float] = {}
     for w in grid:
-        yv, sv = arr(val_rows, w)
-        if w == 0.0:
-            off_w = 0.0
-        else:
-            off_w = round(float(np.quantile(sv[yv == 1], frr_target) - base_tau_r), 4)
-        offsets[w] = off_w
-        thr[w] = round(base_tau_r + off_w, 4)
-        far_w, frr_w = at(val_rows, w, thr[w])
-        val_far[w] = far_w
-        val_frr[w] = frr_w
+        yv, sv = _capital_scores(val_rows, w, caps_share, k_enroll)
+        offsets[w] = round(float(np.quantile(sv[yv == 1], frr_target) - base_tau_r), 4) if w else 0.0
+        val_far[w], val_frr[w] = _capital_error_rates(yv, sv, base_tau_r + offsets[w])
 
     best = min(grid, key=lambda w: (val_far[w], w))
     tau_offset = offsets[best]
-    deployed_thr_no_cap = base_tau_r
-    deployed_thr_with_cap = round(base_tau_r + tau_offset, 4)
-
-    far0, frr0 = at(test_rows, 0.0, deployed_thr_no_cap)
-    far1, frr1 = at(test_rows, best, deployed_thr_with_cap)
     return {
         "weight": float(best),
         "tau_offset": tau_offset,
-        "caps_share": round(float(caps_share), 4),
-        "deployed_threshold_no_capitals": deployed_thr_no_cap,
-        "deployed_threshold_with_capitals": deployed_thr_with_cap,
+        "caps_share": caps_share,
+        "deployed_threshold_no_capitals": base_tau_r,
+        "deployed_threshold_with_capitals": round(base_tau_r + tau_offset, 4),
         "validation_far_by_weight": {str(w): round(val_far[w], 4) for w in grid},
         "validation_frr_by_weight": {str(w): round(val_frr[w], 4) for w in grid},
+    }
+
+
+def _evaluate_capital_fusion(test_rows, calibration, k_enroll=4):
+    base_tau = calibration["deployed_threshold_no_capitals"]
+    caps_share = calibration["caps_share"]
+    labels, raw = _capital_scores(test_rows, 0.0, caps_share, k_enroll)
+    _, fused = _capital_scores(test_rows, calibration["weight"], caps_share, k_enroll)
+    far0, frr0 = _capital_error_rates(labels, raw, base_tau)
+    far1, frr1 = _capital_error_rates(labels, fused, base_tau + calibration["tau_offset"])
+    return {
+        **calibration,
         "test_without": {"far": round(far0, 4), "frr": round(frr0, 4)},
         "test_with": {"far": round(far1, 4), "frr": round(frr1, 4)},
         "num_test_genuine": int(sum(r[0] for r in test_rows)),
         "num_test_impostor": int(sum(1 - r[0] for r in test_rows)),
+    }
+
+
+def capital_fusion(
+    val_rows, test_rows, caps_share: float, base_tau: float, k_enroll: int = 4, frr_target: float = 0.10,
+    grid: Sequence[float] = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0),
+) -> Dict:
+    calibration = _fit_capital_fusion(val_rows, caps_share, base_tau, k_enroll, frr_target, grid)
+    return _evaluate_capital_fusion(test_rows, calibration, k_enroll)
+
+
+def run_password_synthesis(
+    raw_sessions, split_people, embed9, embed17, bounds, mean, std, touch_hold, cohorts9, deployed_thr,
+    *, seed: int, frr_target: float, min_length: int,
+) -> Dict:
+    """Freeze the free-text password protocol on Train/Validation, then generate and evaluate Test trials."""
+    def sessions_for(people):
+        return {(p, s): raw_sessions[(p, s)] for p in people for s in (1, 2) if (p, s) in raw_sessions}
+
+    vocab_sessions = sessions_for(sorted(split_people["train"] + split_people["val"]))
+
+    def draw_split(split, lengths, excluded):
+        people = sorted(split_people[split])
+        sessions = sessions_for(people)
+        tabs = digraph_tables(sessions, people)
+        available = [p for p in people if (p, 1) in tabs and (p, 2) in tabs]
+        used = set(excluded)
+        strings = choose_strings(vocab_sessions, tabs, available, 30, 30, password_rng(seed, split, "word_selection"), exclude=used)
+        used.update(w for words in strings.values() for w in words)
+        rows = string_trials(sessions, tabs, available, strings, embed9, embed17, bounds, mean, std,
+                             touch_hold, cohorts9, password_rng(seed, split, "word_trials"))
+        metadata = synthesis_metadata(tabs, people, strings, rows, requested_strings={"word": 30, "random": 30})
+        length_strings, length_rows, length_metadata = {}, {}, {}
+        for length in lengths:
+            words = strings_of_length(tabs, available, length, 15, password_rng(seed, split, "length_selection", length), exclude=used)
+            used.update(words)
+            length_strings[length] = words
+            length_rows[length] = string_trials(
+                sessions, tabs, available, {"random": words}, embed9, embed17, bounds, mean, std,
+                touch_hold, cohorts9, password_rng(seed, split, "length_trials", length),
+            )
+            length_metadata[length] = synthesis_metadata(
+                tabs, people, {"random": words}, length_rows[length], requested_strings={"random": 15},
+            )
+        return {
+            "people": people, "sessions": sessions, "tabs": tabs, "used": used,
+            "strings": strings, "rows": rows, "metadata": metadata,
+            "length_strings": length_strings, "length_rows": length_rows, "length_metadata": length_metadata,
+        }
+
+    def draw_capitals(split, data, rates, prm):
+        n = 12 if split == "val" else 15
+        tabs = data["tabs"]
+        people = _capital_people(tabs, rates, data["people"])
+        words = strings_of_length(tabs, people, min_length, n, password_rng(seed, split, "capital_selection", min_length),
+                                  exclude=data["used"])
+        rows, audit = _score_capital_trials(
+            tabs, rates, people, words, embed9, embed17, bounds, mean, std, touch_hold, prm,
+            password_rng(seed, split, "capital_trials", min_length), 4, n,
+        )
+        audit["num_participants_in_split"] = len(data["people"])
+        audit["participants_without_capital_coverage"] = sorted(set(data["people"]) - set(people))
+        return words, rows, audit
+
+    validation = draw_split("val", CALIB_LENGTHS, ())
+    dual = calibrate_dual(validation["rows"], frr_target)
+    table = calibrate_by_length(validation["length_rows"], frr_target)
+    capital_params = params_for_length(table, min_length, "kb")
+    calibration_rates = capital_method_rates(vocab_sessions)
+    caps_share = float(np.mean([calibration_rates[(p, 1)] for p in split_people["train"] if (p, 1) in calibration_rates]))
+    val_capital_words, val_capital_rows, val_capital_meta = draw_capitals("val", validation, calibration_rates, capital_params)
+    capital = _fit_capital_fusion(val_capital_rows, caps_share, capital_params["tau"], frr_target=frr_target)
+    excluded = frozenset(validation["used"].union(val_capital_words))
+
+    test = draw_split("test", (8, 12, 16, 20), excluded)
+    test_rates = capital_method_rates(test["sessions"])
+    test_capital_words, test_capital_rows, test_capital_meta = draw_capitals("test", test, test_rates, capital_params)
+    capital = _evaluate_capital_fusion(test_capital_rows, capital)
+    rates = {**calibration_rates, **test_rates}
+    both_days = [p for p, s in rates if s == 1 and (p, 2) in rates]
+    capital.update({
+        "habit_same_across_days": round(float(np.mean([(rates[(p, 1)] > 0.5) == (rates[(p, 2)] > 0.5) for p in both_days])), 4),
+        "people_mostly_capslock": sum(rates[(p, 1)] > 0.5 for p in both_days),
+        "people_with_capitals": len(both_days),
+        "strings": {"val": val_capital_words, "test": test_capital_words},
+        "synthesis_metadata": {"val": val_capital_meta, "test": test_capital_meta},
+        "selection_split": "val_only",
+    })
+    phases = {"val": validation, "test": test}
+    speed = person_speed(test["tabs"], sorted({r["target"] for r in test["rows"]}))
+    return {
+        "password_user_strings": {
+            "strings": {sp: data["strings"] for sp, data in phases.items()},
+            "synthesis_metadata": {sp: data["metadata"] for sp, data in phases.items()},
+            "frr_target": frr_target,
+            "dual_calibration": dual,
+            "calibration_split": "val_only",
+            "vocabulary_splits": ["train", "val"],
+            "rng_seed": seed,
+            "test": evaluate_strings(test["rows"], dual, deployed_thr, speed),
+        },
+        "password_length_calibration": {
+            "min_length": min_length,
+            "table": table,
+            "strings": {sp: {str(length): words for length, words in data["length_strings"].items()} for sp, data in phases.items()},
+            "synthesis_metadata": {
+                sp: {str(length): audit for length, audit in data["length_metadata"].items()} for sp, data in phases.items()
+            },
+            "test": evaluate_lengths(test["length_rows"], dual, table),
+        },
+        "password_capital_method": capital,
     }

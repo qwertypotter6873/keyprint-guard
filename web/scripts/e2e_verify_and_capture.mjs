@@ -27,10 +27,14 @@ const MIME_TYPES = {
 
 function parseCliArgs(argv) {
   let outDir = DEFAULT_SCREENSHOT_DIR;
+  let baseUrl = null;
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--out-dir' || arg === '-o') {
+    if (arg === '--base-url') {
+      baseUrl = new URL(args[++i]);
+      if (!['https:', 'http:'].includes(baseUrl.protocol)) throw new Error('Expected an HTTP(S) demo URL');
+    } else if (arg === '--out-dir' || arg === '-o') {
       if (!args[i + 1]) {
         throw new Error(`Missing directory path after ${arg}`);
       }
@@ -40,7 +44,7 @@ function parseCliArgs(argv) {
       outDir = path.resolve(process.cwd(), arg.slice('--out-dir='.length));
     }
   }
-  return { outDir };
+  return { outDir, baseUrl };
 }
 
 function loadProtocolConfig() {
@@ -246,18 +250,19 @@ async function selectGuardAccountByName(page, targetName) {
 }
 
 async function run() {
-  const { outDir } = parseCliArgs(process.argv);
+  const { outDir, baseUrl } = parseCliArgs(process.argv);
   const protocol = loadProtocolConfig();
 
-  if (!fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
+  if (!baseUrl && !fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
     throw new Error(`Missing production build at ${DIST_DIR}. Run "npm run build" in web/ first.`);
   }
 
   fs.mkdirSync(outDir, { recursive: true });
-  const { server, url } = await startStaticServer(DIST_DIR);
-  const roomUrl = `${url}/`;
+  const local = baseUrl ? null : await startStaticServer(DIST_DIR);
+  const roomUrl = baseUrl?.href ?? `${local.url}/`;
+  const appOrigin = new URL(roomUrl).origin;
   console.log(
-    `[E2E] Serving v2 build at ${roomUrl} | protocol: pw>=${protocol.passwordMinLength} ("${protocol.targetPassword}"), arena=${protocol.arenaEnrollSentences} enroll / ${protocol.arenaQuerySentences} query -> ${outDir}`
+    `[E2E] Checking ${roomUrl} | protocol: pw>=${protocol.passwordMinLength}, arena=${protocol.arenaEnrollSentences} enroll / ${protocol.arenaQuerySentences} query -> ${outDir}`
   );
 
   const browser = await chromium.launch({
@@ -301,7 +306,7 @@ async function run() {
     await context.route('**/*', (route) => {
       const reqUrl = new URL(route.request().url());
       if (
-        reqUrl.hostname === '127.0.0.1' ||
+        reqUrl.origin === appOrigin ||
         reqUrl.protocol === 'data:' ||
         reqUrl.protocol === 'blob:'
       ) {
@@ -675,7 +680,7 @@ async function run() {
     }
   } finally {
     await browser.close();
-    server.close();
+    local?.server.close();
   }
 }
 

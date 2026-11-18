@@ -58,12 +58,18 @@ def summarize_draws(draws, key):
         values = np.array([row[key][metric] for row in draws])
         result[metric] = {
             "mean": round(float(values.mean()), 6),
+            "median": round(float(np.median(values)), 6),
             "std_across_draws": round(float(values.std(ddof=1)), 6),
             "min": round(float(values.min()), 6),
             "max": round(float(values.max()), 6),
             "seed_at_min": draws[int(values.argmin())]["trial_seed"],
             "seed_at_max": draws[int(values.argmax())]["trial_seed"],
         }
+        if metric == "macro_f1" and key in ("proposed", "control"):
+            result[metric]["goal"] = 0.85
+            result[metric]["seeds_meeting_goal"] = [
+                row["trial_seed"] for row in draws if row[key][metric] >= 0.85
+            ]
     return result
 
 

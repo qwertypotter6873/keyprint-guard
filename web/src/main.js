@@ -1190,7 +1190,7 @@ async function handleGuardEnrollSubmit(isCurrent) {
   if (!isCurrent()) return;
   state.pwEnrollBuffer.items.push({
     embedding: both.password,
-    embedding17: both.sentence,
+    embedding17: both.passwordAux,
     capitalMethods: capture.capitalMethods,
     cpm: capture.cpm,
     holdMs: capture.holdMs,
@@ -1272,7 +1272,7 @@ async function handleGuardVerifySubmit(isCurrent) {
     setFeedback($('guard-verify-feedback'), notReadyMessage(), 'error');
     return;
   }
-  const accounts = getGuardAccounts();
+  let accounts = getGuardAccounts();
   if (accounts.length === 0) return;
 
   const targetAcc = accounts.find((a) => a.id === state.selectedGuardId) || accounts[0];
@@ -1293,8 +1293,15 @@ async function handleGuardVerifySubmit(isCurrent) {
   setFeedback($('guard-verify-feedback'), '');
   const both = await engine.embedAll(capture.stroke);
   if (!isCurrent()) return;
+  accounts = getGuardAccounts();
+  if (state.selectedGuardId !== targetAcc.id || !accounts.includes(targetAcc)) {
+    state.lastVerdict = null;
+    $('guard-result-card').hidden = true;
+    setFeedback($('guard-verify-feedback'), '분석 중 프로필이 변경되었습니다. 사용할 프로필을 선택하고 다시 입력해 주세요.', 'error');
+    return;
+  }
   const embedding = both.password;
-  const embedding17 = both.sentence;
+  const embedding17 = both.passwordAux;
   const latencyMs = both.latencyMs;
 
   const scoreOpts = {
@@ -1357,7 +1364,7 @@ async function handleGuardVerifySubmit(isCurrent) {
   state.viz.lastQuery = {
     queryId,
     embedding,
-    embeddings: { password: embedding, sentence: embedding17 },
+    embeddings: both,
     label: '방금 입력한 암호',
     domain: 'password',
   };
@@ -1417,9 +1424,9 @@ async function handleGuardVerifySubmit(isCurrent) {
     card.className = 'result-card is-pass';
     $('guard-result-kicker').textContent = '리듬 일치 · 시연 기준 통과';
     $('guard-result-title').textContent = `${targetAcc.name}님의 타이핑 리듬과 일치합니다`;
-    $('guard-result-desc').textContent = `비밀번호 문자열과 손가락 전환 리듬이 모두 기준치(${Math.round(
+    $('guard-result-desc').textContent = `시연 문자열이 일치했고 타이핑 리듬 점수가 기준(${Math.round(
       threshold * 100
-    )}%)를 통과했습니다.`;
+    )}%) 이상입니다.`;
   } else {
     card.className = 'result-card is-block';
     $('guard-result-kicker').textContent = '확인 보류 · 리듬 기준 미달';
@@ -1433,9 +1440,11 @@ async function handleGuardVerifySubmit(isCurrent) {
   }
   card.dataset.reference = touchReference ? 'true' : 'false';
   if (touchReference) {
-    $('guard-result-kicker').textContent += ' · 모바일 참고용';
-    $('guard-result-desc').textContent +=
-      ' 모바일 터치 입력은 누름 시간을 알 수 없어 비밀번호 길이의 입력만으로는 다른 사람을 충분히 구분하지 못합니다. 이 결과는 참고용으로만 보세요.';
+    const touchOnly = capture.inputMode === 'touch';
+    $('guard-result-kicker').textContent += touchOnly ? ' · 모바일 참고용' : ' · 혼합 입력 참고용';
+    $('guard-result-desc').textContent += touchOnly
+      ? ' 터치 입력에서는 키를 누르고 있던 시간을 측정할 수 없어 이 결과를 참고용으로 표시합니다.'
+      : ' 이 입력에는 누름 시간을 측정할 수 없는 키가 포함되어 이 결과를 참고용으로 표시합니다.';
   }
 
   const editTxt =
@@ -1687,7 +1696,7 @@ function formatVerdictBannerText(v, winnerName) {
   const thrPct = (v.threshold * 100).toFixed(1);
   if (v.domain === 'password') {
     const statusLabel = v.accepted ? '리듬 일치 · 시연 기준 통과' : '확인 보류 · 리듬 기준 미달';
-    const refTag = v.touchReference ? ' · 모바일 참고용' : '';
+    const refTag = !v.touchReference ? '' : v.inputMode === 'touch' ? ' · 모바일 참고용' : ' · 혼합 입력 참고용';
     return `공식 판정 스냅샷 · [${winnerName}] ${statusLabel}${refTag} — 일치도 ${simPct}% (임계값 ${thrPct}%)`;
   }
   if (v.accepted) {
@@ -1795,7 +1804,7 @@ function renderVizStep3() {
           };
         }
       } else {
-        const q17 = q?.embeddings?.sentence || null;
+        const q17 = q?.embeddings?.passwordAux || null;
         const ranked = entries
           .map((ent) => {
             const res = engine.scoreTemplate(qEmb, ent.template, {

@@ -45,6 +45,7 @@ from password_synth import (  # noqa: E402
 from preprocessing import (  # noqa: E402
     N_CHANNELS,
     SEED,
+    TOUCH_PROB,
     augment_keystroke_batch,
     load_keyrecs_fixed_split,
     parse_keyrecs_sentence_corpus,
@@ -345,7 +346,7 @@ class TestDisjointSynthesisAndCapitalThresholdParity(unittest.TestCase):
         subjs = sorted({p for (p, s) in raw_sessions if s == 1})[:20]
         tabs = digraph_tables(raw_sessions, subjs)
 
-        # Every occurrence across all (person, session, digraph) has a unique integer occ_id at index 4
+        # The starting event identifies an occurrence across participants and sessions.
         all_occ_ids = [occ[4] for tab in tabs.values() for lst in tab.values() for occ in lst]
         self.assertEqual(len(all_occ_ids), len(set(all_occ_ids)))
 
@@ -392,9 +393,12 @@ class TestDisjointSynthesisAndCapitalThresholdParity(unittest.TestCase):
         self.assertGreater(len(same_rows), 0)
         for r in same_rows:
             self.assertTrue(set(r["enroll_occ_ids"]).isdisjoint(set(r["query_occ_ids"])))
+            self.assertTrue(set(r["enroll_source_key_ids"]).isdisjoint(r["query_source_key_ids"]))
 
         synth_meta = synthesis_metadata(tabs, val_p, chosen_val, rows)
         self.assertTrue(synth_meta["disjoint_occ_enforced"])
+        self.assertTrue(synth_meta["disjoint_source_events_enforced"])
+        self.assertEqual(synth_meta["same_day_rows_verified"], len(same_rows))
         self.assertNotIn("unique_syntheses", json.dumps(synth_meta))
         self.assertIn("generated_attempts", synth_meta)
 
@@ -482,8 +486,14 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
         self.assertEqual(web_cfg["preprocess_version"], "kp-preproc-v4")
         sha17 = hashlib.sha256((scratch_root / "web/public/models/keyprint_net.onnx").read_bytes()).hexdigest()
         sha9 = hashlib.sha256((scratch_root / "web/public/models/keyprint_net_password.onnx").read_bytes()).hexdigest()
-        expected_hash = hashlib.sha256(f"{sha17}:{sha9}".encode("utf-8")).hexdigest()[:16]
-        self.assertEqual(web_cfg["onnx_sha256"], {"sentence_17ch": sha17, "password_9ch": sha9})
+        expected_shas = {"sentence_17ch": sha17, "password_9ch": sha9}
+        if web_cfg["sentence_model"]["encoder"] == "vanilla_17ch_aug":
+            aux_path = scratch_root / "web/public/models" / web_cfg["password_aux_model"]["file"]
+            expected_shas["password_17ch"] = hashlib.sha256(aux_path.read_bytes()).hexdigest()
+        else:
+            self.assertNotIn("password_aux_model", web_cfg)
+        expected_hash = hashlib.sha256(":".join(expected_shas.values()).encode("utf-8")).hexdigest()[:16]
+        self.assertEqual(web_cfg["onnx_sha256"], expected_shas)
         self.assertEqual(web_cfg["model_hash"], expected_hash)
         for sp in web_cfg["mvp_sample_profiles"]:
             self.assertEqual(sp["schemaVersion"], 4)
@@ -495,6 +505,22 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
         for case in parity_fx["cases"]:
             for k in ("h_curr", "h_next", "hv_curr", "hv_next"):
                 self.assertIn(k, case["expected"]["stroke"])
+
+        self.assertEqual(len(parity_fx["sample_password_cases"]), 4)
+        for case in parity_fx["sample_password_cases"]:
+            self.assertEqual(len(case["enrollment"]), 5)
+            for capture in [*case["enrollment"], case["genuine_query"]]:
+                self.assertEqual(len(capture["stroke"]["holds"]), 10)
+                self.assertEqual(len(capture["stroke"]["dds"]), 9)
+                self.assertEqual(np.shape(capture["tensor"]), (17, 9))
+        self.assertEqual(len(web_cfg["benchmark_presets"][0]["genuine_test_stroke"]["dds"]), 10)
+        selection = report["feature_upgrade"]["sentence_model_selection"]
+        self.assertEqual(selection["chosen_encoder"], web_cfg["sentence_model"]["encoder"])
+        keyboard = selection["web_68_char_keyboard"]
+        target = keyboard["validation"]["validation_target_correct_accept"]
+        for candidate in keyboard["validation"]["candidates"].values():
+            self.assertGreaterEqual(candidate["validation_5plus2"]["correct_accept"], target)
+        self.assertEqual(report["provenance"]["training_recipe"]["touch_probability"]["KeyPrintNet_9ch"], TOUCH_PROB)
 
         # Controlled baselines & human(1600) vs bot(200) breakdown
         for m_name in (
@@ -547,8 +573,12 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
 
         nb = nbformat.read(nb_path, as_version=4)
         from build_notebook import notebook_input_hashes, validate_notebook_outputs
-        self.assertEqual(validate_notebook_outputs(nb), 6)
-        self.assertEqual(dict(nb.metadata["verification_input_sha256"]), notebook_input_hashes(scratch_root))
+        hashes = notebook_input_hashes(scratch_root)
+        self.assertEqual(validate_notebook_outputs(nb, hashes), 6)
+        self.assertEqual(dict(nb.metadata["verification_input_sha256"]), hashes)
+        stale_figure = {**hashes, "assets/figures/fig8_feature_upgrade.png": "0" * 64}
+        with self.assertRaisesRegex(AssertionError, "Embedded figures"):
+            validate_notebook_outputs(nb, stale_figure)
 
         # 4) Verify `KEYPRINT_REUSE_WEIGHTS=1` preserves histories & exact metrics without retraining
         env_reuse = {**env, "KEYPRINT_REUSE_WEIGHTS": "1"}

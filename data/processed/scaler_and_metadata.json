@@ -43,6 +43,67 @@
     "sentence_stride_keys": 25,
     "sentence_digraphs": 24
   },
+  "keyrecs_fixed_timestamps": {
+    "selection_split": "train_only",
+    "train_people": 68,
+    "train_rows": 13588,
+    "minimum_fraction_within_2ms_per_identity": 0.99,
+    "selected_interpretation": "release_label_swap",
+    "physical_to_published_fields": {
+      "DD": "UU",
+      "DU": "UD",
+      "UD": "DU",
+      "UU": "DD"
+    },
+    "interpretations": {
+      "published_labels": {
+        "UD_equals_DD_minus_Hcurr": {
+          "n": 122292,
+          "median_absolute_error_sec": 0.182,
+          "max_absolute_error_sec": 1.096,
+          "fraction_within_2ms": 8.177149772675236e-06
+        },
+        "DU_equals_DD_plus_Hnext": {
+          "n": 122292,
+          "median_absolute_error_sec": 0.17800000000000005,
+          "max_absolute_error_sec": 9.146,
+          "fraction_within_2ms": 8.177149772675236e-06
+        },
+        "UU_equals_DD_plus_Hnext_minus_Hcurr": {
+          "n": 122292,
+          "median_absolute_error_sec": 0.03200000000000003,
+          "max_absolute_error_sec": 9.046,
+          "fraction_within_2ms": 0.09258168972622903
+        }
+      },
+      "release_label_swap": {
+        "UD_equals_DD_minus_Hcurr": {
+          "n": 122292,
+          "median_absolute_error_sec": 0.0,
+          "max_absolute_error_sec": 2155668.85,
+          "fraction_within_2ms": 0.9999918228502274
+        },
+        "DU_equals_DD_plus_Hnext": {
+          "n": 122292,
+          "median_absolute_error_sec": 0.0,
+          "max_absolute_error_sec": 2155668.85,
+          "fraction_within_2ms": 0.9999918228502274
+        },
+        "UU_equals_DD_plus_Hnext_minus_Hcurr": {
+          "n": 122292,
+          "median_absolute_error_sec": 0.0,
+          "max_absolute_error_sec": 2155668.85,
+          "fraction_within_2ms": 0.9999836457004546
+        }
+      }
+    },
+    "DD_vs_UU_absolute_difference_sec": {
+      "n": 122292,
+      "median_absolute_error_sec": 0.016000000000000014,
+      "max_absolute_error_sec": 1077834.51,
+      "fraction_within_2ms": 0.11376868478723057
+    }
+  },
   "subjects_split": {
     "train": [
       "s002",

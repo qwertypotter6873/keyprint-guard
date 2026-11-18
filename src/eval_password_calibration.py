@@ -36,7 +36,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import torch
 from sklearn.metrics import f1_score, roc_auc_score, roc_curve
 
@@ -48,15 +47,15 @@ from evaluation_protocol import balanced_impostor_indices
 from feature_eval import encode_variable, flat_to_hdu  # noqa: E402
 from keyboard_layout import code_for_label, key_channel_matrix, pairs_from_codes  # noqa: E402
 from models import KeyPrintNet  # noqa: E402
+from password_synth import password_rng
 from preprocessing import (  # noqa: E402
-    KEYRECS_DD_COLS,
     KEYRECS_FIXED_KEY_BLOCK,
-    KEYRECS_HOLD_COLS,
     N_TIMING_CHANNELS,
     SEED,
     apply_channel_scaler,
     extract_sequences,
     prepare_full_pipeline,
+    read_keyrecs_fixed_timings,
     touchify_timings,
 )
 from train_and_evaluate import TEST_BOT_SEED, build_verification_trials, compute_cohort_centroids, encode_sequences  # noqa: E402
@@ -136,14 +135,11 @@ def build_scenarios(data_root: Path, out_root: Path, device, which: str = "9") -
             ]
 
     # 2) KeyRecs fixed text: enroll 4 reps on day 1, genuine = day 2, impostors = 10 day-2 reps of each other person
-    rng = np.random.default_rng(SEED)
-    df = pd.read_csv(data_root / "data" / "raw" / "KeyRecs-fixed-text.csv")
-    df.columns = [c.strip() for c in df.columns]
-    df = df.dropna(subset=KEYRECS_HOLD_COLS + KEYRECS_DD_COLS).reset_index(drop=True)
+    fixed_path = data_root / "data" / "raw" / "KeyRecs-fixed-text.csv"
+    fixed_interpretation = meta["keyrecs_fixed_timestamps"]["selected_interpretation"]
     for part in ("val", "test"):
-        sub = df[df["participant"].isin(kr[part])].reset_index(drop=True)
-        raw_h = sub[KEYRECS_HOLD_COLS].values.astype(np.float32)
-        raw_d = sub[KEYRECS_DD_COLS].values.astype(np.float32)
+        rng = password_rng(SEED, part, "fixed_comparison_queries")
+        sub, raw_h, raw_d, raw_u = read_keyrecs_fixed_timings(fixed_path, kr[part], fixed_interpretation)
         P, S = sub["participant"].values, sub["session"].values
         imp_pick = {}
         for p in np.unique(P):
@@ -154,7 +150,8 @@ def build_scenarios(data_root: Path, out_root: Path, device, which: str = "9") -
                     imp.extend(rng.choice(cand, size=min(10, len(cand)), replace=False).tolist())
             imp_pick[p] = imp
         for mode in MODES:
-            emb = encode_variable(model, list(seqs(raw_h, raw_d, KEYRECS_FIXED_KEY_BLOCK, mode == "touch")), device, IN)
+            tensors = seqs(raw_h, raw_d, KEYRECS_FIXED_KEY_BLOCK, mode == "touch", raw_u)
+            emb = encode_variable(model, list(tensors), device, IN)
             groups = []
             for p in np.unique(P):
                 own = np.where(P == p)[0]
@@ -227,7 +224,10 @@ def build_scenarios(data_root: Path, out_root: Path, device, which: str = "9") -
                 if cross:
                     scen[f"words_cross_day_{mode}"] = cross
 
-    return scen, {"cohorts": cohorts, "words": words_by_part["test"], "words_val": words_by_part["val"]}
+    return scen, {
+        "cohorts": cohorts, "words": words_by_part["test"], "words_val": words_by_part["val"],
+        "keyrecs_fixed_timestamp_interpretation": fixed_interpretation,
+    }
 
 
 def score(groups, cohort):
@@ -290,6 +290,7 @@ def main() -> None:
         "dual": dual_prm,
         "words": info["words"],
         "words_val": info["words_val"],
+        "keyrecs_fixed_timestamp_interpretation": info["keyrecs_fixed_timestamp_interpretation"],
         "split_isolation": {
             "val_test_pooled": False,
             "calibration_splits": ["cmu_val", "keyrecs_val"],

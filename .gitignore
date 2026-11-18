@@ -8,6 +8,7 @@ web/dist/
 web/public/ort/
 data/processed/*.npz
 *.zip
+!기말-201935607-김대현.zip
 .tmp_*
 web-legacy-full/
 기말-*/

@@ -64,6 +64,8 @@ MANDATORY_ARCHIVE_FILES = [
     "web/public/models/model_config.json",
     "models/timestamp_sensitivity.json",
     "models/trial_sensitivity.json",
+    "models/legacy/keyprint_net_17ch_published_dd.pt",
+    "models/legacy/keyprint_net_17ch_published_dd.json",
     "src/eval_trial_sensitivity.py",
     "web/ime-debug.html",
 ]
@@ -268,12 +270,15 @@ def step1_static_and_hash_gate(tmp_zip: Path, extracted_dir: Path, sources: dict
             raise AssertionError(f"Missing or empty required key in submission.json: {key}")
     official_report = json.loads((extracted_dir / "models/evaluation_report.json").read_text(encoding="utf-8"))
     validate_submission_metric(sub_data, official_report)
+    _run_checked([sys.executable, "src/refresh_portfolio.py", "--check"], cwd=extracted_dir,
+                 step_label="Step 1 portfolio metrics")
 
     # 3. Executed notebook & zero error outputs check
     nb = nbformat.read(extracted_dir / "notebooks" / "keyprint_training_pipeline.ipynb", as_version=4)
     code_cells = [c for c in nb.cells if c.cell_type == "code"]
-    executed_count = validate_notebook_outputs(nb)
-    if dict(nb.metadata.get("verification_input_sha256", {})) != notebook_input_hashes(extracted_dir):
+    inputs = notebook_input_hashes(extracted_dir)
+    executed_count = validate_notebook_outputs(nb, inputs)
+    if dict(nb.metadata.get("verification_input_sha256", {})) != inputs:
         raise AssertionError("Notebook inputs differ from shipped artifacts; run python src/build_notebook.py --execute")
 
     # 4. Zero local file:// URIs in rendered portfolio PDF
@@ -329,6 +334,16 @@ def step2_as_shipped_web_and_parity_gate(extracted_dir: Path) -> None:
     )
 
 
+def password_source_audits(feature: dict) -> dict[str, dict]:
+    audits = {}
+    for split in ("val", "test"):
+        audits[f"{split}/base"] = feature["password_user_strings"]["synthesis_metadata"][split]
+        audits[f"{split}/capital"] = feature["password_capital_method"]["synthesis_metadata"][split]
+        for length, record in feature["password_length_calibration"]["synthesis_metadata"][split].items():
+            audits[f"{split}/length/{length}"] = record
+    return audits
+
+
 def validate_evaluation_protocol(report: dict, config: dict, sensitivity: dict) -> None:
     """Check the meaning of the revised protocols in addition to numeric reproducibility."""
     audit = report["bot_split_audit"]
@@ -342,6 +357,24 @@ def validate_evaluation_protocol(report: dict, config: dict, sensitivity: dict) 
         if len(ci) != 2 or not all(math.isfinite(x) for x in ci) or ci[0] > ci[1]:
             raise AssertionError(f"Invalid paired confidence interval: {metric}")
     feature = report["feature_upgrade"]
+    selection = feature["sentence_model_selection"]
+    val = selection["clean_25_char_cross_session"]["validation"]
+    winner = max(selection["tie_priority"], key=lambda name: val[name]["top1_accuracy"])
+    if selection["selection_split"] != "val_only" or selection["chosen_encoder"] != winner or config["sentence_model"]["encoder"] != winner:
+        raise AssertionError("Deployed sentence encoder differs from the Validation selection rule")
+    synthetic = feature["password_user_strings"]
+    if synthetic["calibration_split"] != "val_only" or synthetic["vocabulary_splits"] != ["train", "val"]:
+        raise AssertionError("Password calibration did not freeze Validation before Test")
+    for stage, record in password_source_audits(feature).items():
+        if not record["disjoint_source_events_enforced"] or not record["same_day_generated_inputs_verified"]:
+            raise AssertionError(f"Missing input-level enrollment/query separation audit at {stage}")
+    words = {}
+    for split in ("val", "test"):
+        groups = list(synthetic["strings"][split].values()) + list(feature["password_length_calibration"]["strings"][split].values())
+        groups.append(feature["password_capital_method"]["strings"][split])
+        words[split] = {word for group in groups for word in group}
+    if words["val"] & words["test"]:
+        raise AssertionError("Validation and Test synthesis words overlap")
     for split_key in ("password_transfer_val", "password_transfer_other_content"):
         words = feature[split_key]["repeated_words_unseen"]
         if words["sampling"]["rule"] != "equal_quota_all_eligible_other_people":
@@ -364,7 +397,10 @@ def validate_evaluation_protocol(report: dict, config: dict, sensitivity: dict) 
             counts = {values["num_impostor_trials"] for values in policies.values()}
             if len(hashes) != 1 or len(counts) != 1:
                 raise AssertionError(f"Adaptation policies do not share paired attack trials: {split}/{mode}")
-    for scenario in ("published_DD", "hypothesis_use_UU_as_DD"):
+    train_audit = sensitivity["fixed_text_column_identity_audit"]
+    if train_audit["selection_split"] != "train_only" or not sensitivity["matched_17ch_training_comparison"]["reference_available"]:
+        raise AssertionError("Missing Train-only timing audit or matched 17ch training comparison")
+    for scenario in ("published_labels", "release_label_swap"):
         values = sensitivity["fixed_text_frozen_model_sensitivity"][scenario]
         for model in ("legacy_9ch", "keyprint_17ch"):
             if not all(math.isfinite(values[model][k]) for k in ("roc_auc", "eer", "far_at_deployed_threshold")):
@@ -438,6 +474,13 @@ def step3_python_reproducibility_gate(extracted_dir: Path, python_bin: Path) -> 
     repro_trials = json.loads(trial_path.read_text(encoding="utf-8"))
     repro_config = json.loads((extracted_dir / "web/public/models/model_config.json").read_text(encoding="utf-8"))
     validate_evaluation_protocol(repro_eval, repro_config, repro_sensitivity)
+    if shipped_config["onnx_sha256"] != repro_config["onnx_sha256"]:
+        raise AssertionError("Re-exported ONNX model bytes do not match the shipped models")
+    reproduced_audits = password_source_audits(repro_eval["feature_upgrade"])
+    for stage, record in password_source_audits(shipped_eval["feature_upgrade"]).items():
+        reproduced = reproduced_audits[stage]
+        if reproduced["source_trial_sha256"] != record["source_trial_sha256"]:
+            raise AssertionError(f"Different raw keystrokes used on re-evaluation at {stage}")
     shipped_policy = shipped_eval["feature_upgrade"]["password_adaptation"]
     repro_policy = repro_eval["feature_upgrade"]["password_adaptation"]
     if (shipped_policy["chosen_policy"], shipped_policy["enabled"]) != (repro_policy["chosen_policy"], repro_policy["enabled"]):
