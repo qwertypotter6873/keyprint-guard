@@ -68,6 +68,8 @@ MANDATORY_ARCHIVE_FILES = [
     "models/legacy/keyprint_net_17ch_published_dd.json",
     "src/eval_trial_sensitivity.py",
     "web/ime-debug.html",
+    "web/korean-study.html",
+    "models/korean_fact_ab.json",
 ]
 
 NON_METRIC_METADATA_KEYS = {
@@ -161,7 +163,7 @@ def collect_archive_sources(root: Path, pdf_override: Path | None = None) -> dic
     add_tree(root / "assets" / "screenshots", suffixes=(".png",))
 
     # 7. Web application source, lockfile, public models/assets, and verification scripts
-    for web_file in ("package.json", "package-lock.json", "vite.config.js", "index.html", "ime-debug.html"):
+    for web_file in ("package.json", "package-lock.json", "vite.config.js", "index.html", "ime-debug.html", "korean-study.html"):
         add_file(root / "web" / web_file)
     add_tree(root / "web" / "src")
     add_tree(root / "web" / "public")

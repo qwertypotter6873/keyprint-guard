@@ -9,6 +9,9 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     target: 'es2022',
+    rollupOptions: {
+      input: ['index.html', 'korean-study.html'],
+    },
   },
   optimizeDeps: {
     exclude: ['onnxruntime-web'],

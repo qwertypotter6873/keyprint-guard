@@ -47,7 +47,7 @@
            MODE A: 타자연습 인물 식별 (Diverse Sentences + Backspace OK)
            ========================================================= -->
       <section id="view-arena" class="surface-card" aria-labelledby="arena-heading">
-        <div class="card-head">
+        <div class="card-head arena-head">
           <div class="sub-tabs" role="tablist" aria-label="타자연습 단계">
             <button type="button" id="arena-sub-enroll" class="sub-tab is-active" role="tab" aria-selected="true">
               1. 프로필 등록
@@ -58,24 +58,27 @@
           </div>
 
           <div class="lang-switch" role="group" aria-label="타자연습 언어">
-            <button type="button" id="lang-ko-btn" class="lang-btn">한국어</button>
-            <button type="button" id="lang-en-btn" class="lang-btn is-active">English</button>
+            <button type="button" id="lang-ko-btn" class="lang-btn" aria-pressed="false">한국어</button>
+            <button type="button" id="lang-en-btn" class="lang-btn is-active" lang="en" aria-pressed="true">English</button>
           </div>
         </div>
 
         <h2 id="arena-heading" class="sr-only">타자연습 기반 사용자 자동 식별</h2>
 
         <div class="experience-guide">
-          <p id="arena-language-notice">정량 평가는 영어 타건 기준입니다. 등록할 때와 같은 언어로 비교합니다.</p>
+          <div class="experience-copy">
+            <p id="arena-language-notice">영어 성능은 공개 타건 데이터로 평가했습니다. 등록할 때와 같은 언어로 비교합니다.</p>
+            <a id="arena-korean-study-link" class="text-btn" href="./korean-study.html" hidden>한국어 평가 결과</a>
+          </div>
           <button type="button" id="arena-sample-start-btn" class="secondary-btn sm-btn">영어 샘플로 체험</button>
         </div>
 
-        <!-- Registered Typist Roster Strip -->
-        <div class="roster-bar">
-          <span class="roster-label">등록된 참가자</span>
-          <div id="arena-roster-list" class="roster-chips"></div>
+        <section class="roster-bar arena-roster" aria-labelledby="arena-roster-title">
+          <h3 id="arena-roster-title" class="roster-label">등록된 참가자</h3>
           <button type="button" id="arena-manage-link" class="text-btn">관리 / 동시접속</button>
-        </div>
+          <div id="arena-roster-list" class="roster-chips"></div>
+          <p id="arena-roster-note" class="arena-roster-note" role="status" hidden></p>
+        </section>
 
         <!-- Subview A1: Multi-Sentence Typing Practice Enrollment -->
         <div id="arena-enroll-panel" class="panel-body">
@@ -140,7 +143,7 @@
         <div id="arena-blind-panel" class="panel-body" hidden>
           <div class="enroll-meta-row">
             <p class="section-caption">
-              매번 <strong>새로운 문장</strong>이 출제됩니다. 등록된 참가자 중 아무나 <strong id="arena-blind-need">문장 2개</strong>를 이어서 타이핑하면 판별합니다.
+              매번 <strong>새로운 문장</strong>이 출제됩니다. <strong id="arena-blind-need">문장 2개</strong>를 이어서 타이핑하면 등록된 리듬과 비교합니다.
             </p>
             <div class="progress-group" aria-live="polite">
               <span id="arena-blind-step-text" class="step-label">문장 1 / 2</span>
@@ -172,7 +175,7 @@
               id="arena-blind-input"
               enterkeyhint="done"
               class="typing-input"
-              placeholder="아무나 이 문장을 치고 Enter를 누르면 누군지 판별합니다"
+              placeholder="문장을 입력한 뒤 Enter를 누르세요"
               autocomplete="off"
               autocapitalize="off"
               autocorrect="off"
@@ -190,12 +193,13 @@
                 <h3 id="arena-result-title" class="result-title">—</h3>
               </div>
               <div class="result-score-box">
-                <span class="score-caption">생체 일치도</span>
+                <span class="score-caption">리듬 일치도</span>
                 <strong id="arena-result-score" class="score-number">—</strong>
               </div>
             </div>
 
-            <div id="arena-ranking-bars" class="ranking-bars"></div>
+            <div id="arena-ranking-bars" class="ranking-bars" role="group" aria-label="참가자별 리듬 일치도"></div>
+            <p id="arena-result-criteria" class="result-meta result-criteria"></p>
 
             <div class="result-footer">
               <span id="arena-result-meta" class="result-meta"></span>
@@ -445,7 +449,7 @@
           </div>
 
           <details class="viz-details">
-            <summary>추출되는 17채널 특징 텐서 [1, 17, L]·행동 프로필 및 KeyPrintNet 구조 보기</summary>
+            <summary>타건 특징 텐서 [1, 17, L]과 듀얼 인코더 구조 보기</summary>
             <div class="details-grid">
               <div class="detail-col">
                 <strong>① 물리 타이밍 (Ch 0~3)</strong>
@@ -463,11 +467,22 @@
                 <strong>④ 행동 프로필 (모델 밖 통계)</strong>
                 <p>백스페이스 비율·한 번에 지우는 길이·오타 인지/재개 지연, Shift·CapsLock 사용 방식, 멈춤 리듬을 누적합니다. 관찰 횟수가 적은 특징은 자동으로 영향이 0에 가까워지고, 융합 가중치는 검증 데이터로 정합니다.</p>
               </div>
-              <div class="detail-col">
-                <strong>⑤ 듀얼 인코더 아키텍처 (문장 17채널 KeyPrintNet + 비밀번호 내용 무관 9채널 타이밍 인코더 및 듀얼 점수 보정)</strong>
-                <p>상대 위치 신호(<code>(t+0.5)/L</code>) + 다중 스케일 잔차 SE-Conv1D + 스펙트럼 축소(<code>80→24</code>) 기반 6모드 DCT(<code>144-D</code>) 및 주의 집중 통계 풀링(<code>ASP, 160-D</code>) 결합으로 길이에 무관하게 <code>64-D</code> 단위 초구면 벡터로 압축합니다. 자유 문장 식별은 키 기하를 포함한 17채널 인코더(AS-Norm + 행동 프로필 LLR)를, 사용자 지정 비밀번호 검증은 내용 무관 9채널(Ch 0~8) 타이밍 인코더와 17채널 인코더를 길이별 타인 분포로 표준화 결합하는 듀얼 점수 보정(<code>dualPasswordScore</code>)을 수행합니다.</p>
-              </div>
             </div>
+            <section class="encoder-details" aria-labelledby="dual-encoder-heading">
+              <h4 id="dual-encoder-heading">⑤ 듀얼 인코더 아키텍처</h4>
+              <div class="details-grid">
+                <div class="detail-col">
+                  <h5>문장 식별 · 17채널 KeyPrintNet</h5>
+                  <p>타건 타이밍에 키 위치와 누름 시간 유효 여부를 더해 문장 리듬을 인코딩합니다. 비교할 때 AS-Norm 점수에 행동 프로필 LLR을 반영합니다.</p>
+                  <p>두 인코더는 상대 위치 신호(<code>(t+0.5)/L</code>)와 다중 스케일 잔차 SE-Conv1D를 사용합니다. 채널을 <code>80→24</code>로 줄인 뒤 6모드 DCT(144차원)를 계산하고, 주의 집중 통계 풀링(ASP, 160차원)과 결합해 입력 길이와 관계없이 64차원 단위 벡터를 만듭니다.</p>
+                </div>
+                <div class="detail-col">
+                  <h5>비밀번호 검증 · 9채널 타이밍 인코더</h5>
+                  <p>누름 시간과 키 사이 간격 등 비밀번호 내용과 무관한 타이밍 특징(Ch 0~8)을 사용합니다.</p>
+                  <p>듀얼 점수 보정은 암호 길이별 타인 점수 분포를 기준으로 9채널과 17채널의 유사도를 각각 표준화한 뒤 하나의 점수로 결합합니다(<code>dualPasswordScore</code>).</p>
+                </div>
+              </div>
+            </section>
           </details>
         </article>
 

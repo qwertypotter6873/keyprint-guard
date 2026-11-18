@@ -42,7 +42,7 @@ const state = {
   mode: 'arena', // 'arena' | 'guard' | 'principles'
   arenaSub: 'enroll', // 'enroll' | 'blind'
   guardSub: 'verify', // 'verify' | 'enroll'
-  lang: 'en', // 'ko' | 'en' (evaluation corpus: English)
+  lang: 'en', // The prerecorded practice profiles use English.
   thresholdOffset: 0, // 여유(-) / 표준(0) / 엄격(+) relative to the validation-calibrated threshold
   showPasswordPlain: true,
 
@@ -297,6 +297,7 @@ function switchMainMode(mode, { syncUrl = true } = {}) {
   }
 
   if (isArena) {
+    ensureActiveArenaSentence();
     focusActiveArenaInput();
   } else if (isGuard) {
     renderGuardVerifyState();
@@ -317,6 +318,7 @@ function switchArenaSub(sub) {
   $('arena-sub-blind').classList.toggle('is-active', !isEnroll);
   $('arena-sub-blind').setAttribute('aria-selected', String(!isEnroll));
 
+  ensureActiveArenaSentence();
   focusActiveArenaInput();
 }
 
@@ -364,14 +366,22 @@ function renderAllRosters() {
   const cands = getArenaCandidates();
   const otherLanguage = state.profiles.filter((p) => Object.keys(p.arena || {}).length && !p.arena?.[state.lang]).length;
   $('arena-language-notice').textContent = state.lang === 'ko'
-    ? '한국어 입력은 체험용입니다. 공개 데이터의 정량 평가는 영어 타건 기준이며 한국어 성능은 별도 검증이 필요합니다.'
-    : '정량 평가는 영어 타건 기준입니다. 등록할 때와 같은 언어로 비교합니다.';
-  if (otherLanguage) $('arena-language-notice').textContent += ` 다른 언어로 등록된 ${otherLanguage}명은 비교에서 제외했습니다.`;
+    ? '한국어 정량 평가는 공개 스마트폰 타건을 기준으로 합니다. PC 한글 입력은 체험용입니다.'
+    : '영어 성능은 공개 타건 데이터로 평가했습니다. 등록할 때와 같은 언어로 비교합니다.';
+  $('arena-korean-study-link').hidden = state.lang !== 'ko';
+  const rosterNotes = [];
+  if (otherLanguage) rosterNotes.push(`다른 언어로 등록된 ${otherLanguage}명은 비교에서 제외됩니다.`);
+  if (cands.length === 1) {
+    rosterNotes.push('지금은 1명의 리듬과 비교합니다. 여러 사람 중 식별하려면 같은 언어로 2명 이상 등록하세요.');
+  }
+  const rosterNote = $('arena-roster-note');
+  rosterNote.textContent = rosterNotes.join(' ');
+  rosterNote.hidden = rosterNotes.length === 0;
   if (cands.length === 0) {
-    arenaList.innerHTML = `<span class="roster-empty">아직 없습니다 — 아래에서 ${safeInt(
+    arenaList.innerHTML = `<span class="roster-empty">아래에서 ${safeInt(
       TARGET_ARENA_SHOTS,
       5
-    )}문장을 연습해 첫 프로필을 등록하세요</span>`;
+    )}문장을 연습해 첫 프로필을 등록하세요.</span>`;
   } else {
     arenaList.innerHTML = cands
       .map((c) => {
@@ -386,7 +396,7 @@ function renderAllRosters() {
           c.isSample ? '1' : '0'
         }" title="${escapeHtml(tip)}">
           <span class="chip-avatar" style="background:${col}">${initial}</span>
-          <span>${escapeHtml(safeName)}</span>
+          <span class="chip-name">${escapeHtml(safeName)}</span>
           <span class="chip-count">${cnt}문장</span>
         </button>`;
       })
@@ -529,24 +539,34 @@ function renderModalProfiles() {
 }
 
 // ================= SENTENCE MANAGEMENT =================
-function dealArenaEnrollSentence() {
-  state.arenaEnrollSentence = deck.next(state.lang);
-  $('arena-enroll-input').value = '';
-  arenaEnrollRecorder.reset();
-  renderSentencePrompt($('arena-enroll-prompt'), state.arenaEnrollSentence, '');
-  $('arena-enroll-cpm').textContent = '0';
-  $('arena-enroll-acc').textContent = '100%';
-  $('arena-enroll-edit-hint').textContent = '오타 시 백스페이스 수정 가능';
+function setArenaSentence(sub, sentence) {
+  const isEnroll = sub === 'enroll';
+  const slot = `arena-${sub}`;
+  if (isEnroll) state.arenaEnrollSentence = sentence;
+  else state.arenaBlindSentence = sentence;
+  const recorder = isEnroll ? arenaEnrollRecorder : arenaBlindRecorder;
+  $(`${slot}-input`).value = '';
+  recorder.reset();
+  renderSentencePrompt($(`${slot}-prompt`), sentence, '');
+  $(`${slot}-cpm`).textContent = '0';
+  $(`${slot}-acc`).textContent = '100%';
+  $(`${slot}-edit-hint`).textContent = isEnroll ? '오타 시 백스페이스 수정 가능' : '백스페이스 자유 사용';
 }
 
-function dealArenaBlindSentence() {
-  state.arenaBlindSentence = deck.next(state.lang);
-  $('arena-blind-input').value = '';
-  arenaBlindRecorder.reset();
-  renderSentencePrompt($('arena-blind-prompt'), state.arenaBlindSentence, '');
-  $('arena-blind-cpm').textContent = '0';
-  $('arena-blind-acc').textContent = '100%';
-  $('arena-blind-edit-hint').textContent = '백스페이스 자유 사용';
+function dealArenaSentence(sub) {
+  const active = state.mode === 'arena' && state.arenaSub === sub && !$('room-dialog').open;
+  setArenaSentence(sub, active ? deck.next(state.lang) : '');
+}
+
+function ensureActiveArenaSentence() {
+  if (state.mode !== 'arena') return;
+  const sentence = state.arenaSub === 'enroll' ? state.arenaEnrollSentence : state.arenaBlindSentence;
+  if (!sentence) dealArenaSentence(state.arenaSub);
+}
+
+function resetArenaSentences() {
+  setArenaSentence('enroll', '');
+  setArenaSentence('blind', '');
 }
 
 function resetArenaBlindProgress() {
@@ -598,25 +618,28 @@ export function isSampleName(name) {
   );
 }
 
-function switchLanguage(lang) {
+function switchLanguage(lang, { deferPrompt = false } = {}) {
   submissionGate.invalidate();
   state.querySeq += 1;
   state.lastVerdict = null;
   state.lang = lang;
-  $('lang-ko-btn').classList.toggle('is-active', lang === 'ko');
-  $('lang-en-btn').classList.toggle('is-active', lang === 'en');
+  for (const language of ['ko', 'en']) {
+    const button = $(`lang-${language}-btn`);
+    button.classList.toggle('is-active', language === lang);
+    button.setAttribute('aria-pressed', String(language === lang));
+  }
 
   resetArenaEnrollProgress();
   resetArenaBlindProgress();
-  dealArenaEnrollSentence();
-  dealArenaBlindSentence();
+  resetArenaSentences();
+  if (!deferPrompt) ensureActiveArenaSentence();
   $('arena-result-card').hidden = true;
   setFeedback($('arena-enroll-feedback'), '');
   setFeedback($('arena-blind-feedback'), '');
   renderAllRosters();
   if (state.mode === 'principles') {
     renderPrinciplesView();
-  } else {
+  } else if (!deferPrompt) {
     focusActiveArenaInput();
   }
 }
@@ -747,8 +770,8 @@ function resetRoomWork() {
   state.selectedGuardId = null;
   resetArenaEnrollProgress();
   resetArenaBlindProgress();
-  dealArenaEnrollSentence();
-  dealArenaBlindSentence();
+  resetArenaSentences();
+  ensureActiveArenaSentence();
   for (const [slot, recorder] of [['guard-enroll', guardEnrollRecorder], ['guard-verify', guardVerifyRecorder], ['viz-sandbox', vizSandboxRecorder]]) {
     $(`${slot}-input`).value = '';
     recorder.reset();
@@ -773,10 +796,10 @@ function startEnglishSampleExperience() {
     return;
   }
   roomSync.loadSamples(engine.config?.mvp_sample_profiles || []);
-  switchLanguage('en');
-  switchMainMode('arena');
-  switchArenaSub('blind');
+  switchLanguage('en', { deferPrompt: true });
   $('room-dialog').close();
+  switchArenaSub('blind');
+  switchMainMode('arena');
   setFeedback($('arena-blind-feedback'), '영어 실측 샘플과 비교합니다. 샘플은 다른 사람의 기록이므로 본인 확인용이 아닙니다. 자신의 리듬을 확인하려면 내 프로필을 등록하세요.');
 }
 
@@ -893,7 +916,7 @@ async function handleArenaEnrollSubmit(isCurrent) {
       ],
     };
 
-    dealArenaEnrollSentence();
+    dealArenaSentence('enroll');
     const pct = (v) => `${Math.round(v * 100)}%`;
     if (!verdict.accepted) {
       setFeedback(
@@ -924,7 +947,7 @@ async function handleArenaEnrollSubmit(isCurrent) {
 
   if (done < TARGET_ARENA_SHOTS) {
     renderStepDots($('arena-step-dots'), $('arena-step-text'), done, TARGET_ARENA_SHOTS, '문장');
-    dealArenaEnrollSentence();
+    dealArenaSentence('enroll');
     const bsNote =
       capture.backspaceCount > 0 ? ` (백스페이스 ${capture.backspaceCount}회 자동 보정)` : '';
     setFeedback(
@@ -959,7 +982,7 @@ async function handleArenaEnrollSubmit(isCurrent) {
 
   $('arena-name-input').value = '';
   resetArenaEnrollProgress();
-  dealArenaEnrollSentence();
+  dealArenaSentence('enroll');
   setFeedback(
     $('arena-enroll-feedback'),
     `'${name}' 프로필이 실시간 등록되었습니다! 다음 참가자를 등록하거나 [2. 누가 쳤을까?] 탭에서 판별해 보세요.`,
@@ -1002,10 +1025,10 @@ async function handleArenaBlindSubmit(isCurrent) {
     renderStepDots($('arena-blind-step-dots'), $('arena-blind-step-text'), got, TARGET_BLIND_SHOTS, '문장');
     setFeedback(
       $('arena-blind-feedback'),
-      `${got}/${TARGET_BLIND_SHOTS} 완료 — 한 문장 더 이어서 타이핑하면 판별합니다.`,
+      `${got}/${TARGET_BLIND_SHOTS} 완료. 한 문장 더 입력하면 비교 결과가 나옵니다.`,
       'success'
     );
-    dealArenaBlindSentence();
+    dealArenaSentence('blind');
     return;
   }
 
@@ -1074,7 +1097,7 @@ async function handleArenaBlindSubmit(isCurrent) {
     sentences: items.length,
   });
 
-  dealArenaBlindSentence();
+  dealArenaSentence('blind');
 }
 
 function renderArenaResult(res, stats) {
@@ -1083,11 +1106,18 @@ function renderArenaResult(res, stats) {
 
   const pct = Math.round((Number(res.winner?.similarity) || 0) * 1000) / 10;
   $('arena-result-score').textContent = `${pct.toFixed(1)}%`;
+  const singleCandidate = res.rankings.length === 1;
+  const minimumScore = `최소 리듬 일치도 ${(res.openSetThreshold * 100).toFixed(1)}%`;
+  $('arena-result-criteria').textContent = singleCandidate
+    ? minimumScore
+    : `1·2위 차이 ${(res.lead * 100).toFixed(2)}%p (최소 ${(res.margin * 100).toFixed(2)}%p) · ${minimumScore}`;
 
   if (res.identified) {
     card.className = 'result-card is-pass';
-    $('arena-result-kicker').textContent = `후보 ${res.rankings.length}명 중 1위 일치`;
-    $('arena-result-title').textContent = `지금 타이핑한 사람은 '${res.winner.name}'님입니다`;
+    $('arena-result-kicker').textContent = singleCandidate ? '등록 리듬 일치 기준 통과' : `후보 ${res.rankings.length}명 중 1위 일치`;
+    $('arena-result-title').textContent = singleCandidate
+      ? `'${res.winner.name}'님의 등록 리듬과 일치합니다`
+      : `지금 타이핑한 사람은 '${res.winner.name}'님입니다`;
   } else if (res.rejectedByMargin) {
     card.className = 'result-card is-block';
     $('arena-result-kicker').textContent = '판별 보류 (1·2위 점수 차 부족)';
@@ -1962,24 +1992,27 @@ function bindEvents() {
   $('guard-sub-verify').addEventListener('click', () => switchGuardSub('verify'));
   $('guard-sub-enroll').addEventListener('click', () => switchGuardSub('enroll'));
 
-  $('lang-ko-btn').addEventListener('click', () => switchLanguage('ko'));
-  $('lang-en-btn').addEventListener('click', () => switchLanguage('en'));
+  for (const lang of ['ko', 'en']) {
+    $(`lang-${lang}-btn`).addEventListener('click', () => {
+      if (state.lang !== lang) switchLanguage(lang);
+    });
+  }
 
   $('arena-next-sentence-btn').addEventListener('click', () => {
     submissionGate.invalidate();
-    dealArenaEnrollSentence();
+    dealArenaSentence('enroll');
     $('arena-enroll-input').focus();
   });
 
   $('arena-blind-shuffle-btn').addEventListener('click', () => {
     submissionGate.invalidate();
-    dealArenaBlindSentence();
+    dealArenaSentence('blind');
     $('arena-blind-input').focus();
   });
 
   $('arena-retry-btn').addEventListener('click', () => {
     $('arena-result-card').hidden = true;
-    dealArenaBlindSentence();
+    dealArenaSentence('blind');
     $('arena-blind-input').focus();
   });
 
@@ -2067,6 +2100,7 @@ function bindEvents() {
   $('arena-manage-link').addEventListener('click', openModal);
   $('guard-manage-link').addEventListener('click', openModal);
   $('close-room-btn').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('close', ensureActiveArenaSentence);
   dialog.addEventListener('click', (e) => {
     if (e.target === dialog) dialog.close();
   });
@@ -2125,24 +2159,25 @@ window.__keyprintTestApi = {
 };
 
 async function bootstrap() {
-  const initialTabParam = new URLSearchParams(window.location.search).get('tab');
+  const params = new URLSearchParams(window.location.search);
+  const initialTabParam = params.get('tab');
   const initialRoom = getInitialRoomCode();
   $('room-code-input').value = initialRoom;
   $('room-pill-label').textContent = '이 브라우저만 · 준비 중';
   $('modal-room-code').textContent = '이 브라우저만';
 
   bindEvents();
-  if (new URLSearchParams(window.location.search).has('room')) {
+  if (params.get('lang') === 'ko') switchLanguage('ko', { deferPrompt: true });
+  if (params.has('room')) {
     $('room-dialog').showModal();
     setFeedback($('room-feedback'), `#${initialRoom} 초대 링크입니다. 공개 공유에 동의하고 입장해야 연결됩니다.`);
   }
-  dealArenaEnrollSentence();
-  dealArenaBlindSentence();
-
   if (initialTabParam === 'principles' || initialTabParam === 'how') {
     switchMainMode('principles', { syncUrl: true });
   } else if (initialTabParam === 'guard') {
     switchMainMode('guard', { syncUrl: true });
+  } else {
+    ensureActiveArenaSentence();
   }
 
   // Initialize ONNX engine FIRST and independently of any network/WebSocket error

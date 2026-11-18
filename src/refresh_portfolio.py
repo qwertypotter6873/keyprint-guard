@@ -1,4 +1,4 @@
-"""Update the marked README results and submission metric from the evaluated checkpoints."""
+"""Update the portfolio, Korean study page and submission metric from the evaluated results."""
 import argparse
 import json
 from pathlib import Path
@@ -141,37 +141,101 @@ def result_block(report, trials, calibration, timestamps):
                       for length,v in features["password_length_calibration"]["test"].items()])]
     cap = features["password_capital_method"]
     result += [f"대문자 방식 표지를 추가한 12자 합성 시험에서 타인 수락률은 {pct(cap['test_without']['far'])} → {pct(cap['test_with']['far'])}, 본인 거부율은 {pct(cap['test_without']['frr'])} → {pct(cap['test_with']['frr'])}였습니다. 표지는 각 피험자의 세션별 Shift·CapsLock 사용 비율에서 얻었습니다.",
-               "공개 데이터의 두 KeyRecs 세션은 날짜 간격이 알려져 있지 않습니다. 한글 IME와 모바일 입력 경로는 기능 시험으로 확인했으며, 한국어 화자와 실물 스마트폰의 식별률에는 별도 수집이 필요합니다. [입력 방식별 분석](models/typing_style_analysis.json)"]
+               "KeyRecs 두 세션의 날짜 간격은 공개되지 않았습니다. 한글 IME의 입력 처리는 브라우저에서 시험했습니다. 한국어 스마트폰 타건의 작성자 식별 결과는 §5.8에 수록했습니다. [입력 방식별 분석](models/typing_style_analysis.json)"]
     return {"goals":"\n\n".join(goals), "evaluation":"\n\n".join(result)}
+
+
+def korean_study(report):
+    roster = report["enrolled_probe_roster_size"]
+    main, pr = report["main"], report["candidate"]
+    trials = pr["enrolled_probes"]["trials"]
+    writers = report["participants"]
+    unknown_trials = pr["unknown_writer_probes"]["trials"]
+    rows = []
+    for label, population, key in (
+        ("작성자가 1위", "enrolled_probes", "top1_before_rejection"),
+        ("작성자로 수락", "enrolled_probes", "accepted_correct"),
+        ("다른 사람으로 수락", "enrolled_probes", "accepted_wrong"),
+        ("판별 보류", "enrolled_probes", "rejected"),
+        ("미등록자를 등록자로 수락", "unknown_writer_probes", "false_accept"),
+    ):
+        a, b = main[population][key], pr[population][key]
+        rows.append((label, f"{a['rate']:.1%} ({a['count']}건)", f"{b['rate']:.1%} ({b['count']}건)"))
+
+    input_length = report["protocol"]["source_prefix_keystrokes"]
+    setup = (f"각 기록에서 처음 {input_length}타를 사용했습니다. 데모의 한국어 문장을 두벌식으로 칠 때 필요한 타수의 중앙값입니다. "
+             f"한국어 입력자 {writers}명을 {roster}명씩 나누고, 각자 {report['enroll_shots']}개 기록으로 등록했습니다. "
+             f"별도 시험 기록을 {report['query_shots']}개씩 묶은 {trials}건에서 작성자를 찾았습니다. "
+             f"같은 입력을 작성자가 없는 다른 {roster}명에게 비교해 미등록자 수락도 {unknown_trials}건에서 측정했습니다.")
+    difference = report["paired_change"]["top1_before_rejection"]
+    low, high = difference["conditional_writer_bootstrap_95_ci_pp"]
+    interpretation = (f"보류 여부와 관계없이 작성자가 1위였던 비율의 차이는 {difference['candidate_minus_main_pp']:+.1f}%p입니다. "
+                      f"참가자 단위로 재표집한 95% 구간은 {low:+.1f}%p에서 {high:+.1f}%p로, 순위 정확도가 개선됐다고 단정하기 어렵습니다. "
+                      f"PR은 1위의 터치 일치도가 {pr['threshold']:.0%} 이상이고 2위보다 {100 * pr['margin']:.0f}%p 이상 앞서야 수락합니다. "
+                      f"기존 공개본의 두 기준은 각각 {main['threshold']:.0%}, {100 * main['margin']:.0f}%p입니다. "
+                      f"PR 보류 {pr['enrolled_probes']['rejected']['count']}건 중 "
+                      f"{pr['enrolled_probes']['rejected_by_margin']['count']}건은 1위 점수를 통과했지만 2위와의 차이가 작았습니다.")
+    crowded = report["full_roster"]
+    longer = report["full_recording"]
+    stress = (f"후보를 {crowded['enrolled_probe_roster_size']}명으로 늘리면 1위 정답률은 "
+              f"기존 {crowded['main']['enrolled_probes']['top1_before_rejection']['rate']:.1%}, "
+              f"PR {crowded['candidate']['enrolled_probes']['top1_before_rejection']['rate']:.1%}였고, "
+              f"PR의 판별 보류는 {crowded['candidate']['enrolled_probes']['rejected']['count']}/{trials}건이었습니다. "
+              f"{roster}명 후보에서 평균 약 235타인 원래 기록 전체를 사용하면 1위 정답률은 "
+              f"기존 {longer['main']['enrolled_probes']['top1_before_rejection']['rate']:.1%}, "
+              f"PR {longer['candidate']['enrolled_probes']['top1_before_rejection']['rate']:.1%}였습니다.")
+    headings = (f"{roster}인 후보 기준", "기존 공개본", "PR #5")
+    md = "\n\n".join([setup, table(headings, rows), interpretation, stress])
+    html_rows = "\n".join(
+        f'            <tr><th scope="row">{label}</th><td>{a}</td><td>{b}</td></tr>' for label, a, b in rows)
+    html = f'''        <p>{setup}</p>
+        <table aria-label="후보 다섯 명에서 측정한 작성자 식별">
+          <thead><tr><th scope="col">{headings[0]}</th><th scope="col">{headings[1]}</th><th scope="col">{headings[2]}</th></tr></thead>
+          <tbody>
+{html_rows}
+          </tbody>
+        </table>
+        <p>{interpretation}</p>
+        <p>{stress}</p>'''
+    return md, html
+
+
+def replace_block(text, name, body):
+    start, end = f"<!-- {name}:start -->", f"<!-- {name}:end -->"
+    if text.count(start) != 1 or text.count(end) != 1:
+        raise ValueError(f"Expected one pair of {name} markers")
+    prefix, rest = text.split(start, 1)
+    _, suffix = rest.split(end, 1)
+    return prefix + start + "\n\n" + body + "\n\n" + end + suffix
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="Check the README and submission.json without rewriting either.")
+    parser.add_argument("--check", action="store_true", help="Check generated results without rewriting any file.")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     def read_json(name):
         return json.loads((root / "models" / name).read_text(encoding="utf-8"))
     report = read_json("evaluation_report.json")
     blocks = result_block(report, read_json("trial_sensitivity.json"), read_json("password_calibration.json"), read_json("timestamp_sensitivity.json"))
+    blocks["korean-results"], study_table = korean_study(read_json("korean_fact_ab.json"))
+    study_path = root / "web" / "korean-study.html"
+    study_page = study_path.read_text(encoding="utf-8")
+    updated_study = replace_block(study_page, "korean-results", study_table)
     path = root / "README.md"
     original = path.read_text(encoding="utf-8")
     updated = original
     for key, body in blocks.items():
-        start, end = f"<!-- {key}:start -->", f"<!-- {key}:end -->"
-        if updated.count(start) != 1 or updated.count(end) != 1:
-            raise ValueError(f"Expected one pair of {key} markers in README.md")
-        prefix, rest = updated.split(start, 1)
-        _, suffix = rest.split(end, 1)
-        updated = prefix + start + "\n\n" + body + "\n\n" + end + suffix
+        updated = replace_block(updated, key, body)
     submission_path = root / "submission.json"
     submission = json.loads(submission_path.read_text(encoding="utf-8"))
     value = report["models"]["KeyPrintNet"]["macro_f1"]
     if args.check:
-        if updated != original or submission["primary_metric"]["value"] != value:
-            raise SystemExit("README results or submission.json differ from the evaluated checkpoints")
+        if updated != original or updated_study != study_page or submission["primary_metric"]["value"] != value:
+            raise SystemExit("Published results differ from the saved evaluations")
     else:
         path.write_text(updated, encoding="utf-8")
+        study_path.write_text(updated_study, encoding="utf-8")
         submission["primary_metric"]["value"] = value
         submission_path.write_text(json.dumps(submission, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 

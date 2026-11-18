@@ -1,0 +1,19 @@
+.study {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: clamp(16px, 4vw, 48px) clamp(12px, 3vw, 28px);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.study nav { margin-bottom: 14px; }
+.study a { color: var(--accent-blue); text-underline-offset: 0.18em; }
+.study h1 { margin: 0 0 8px; font-size: clamp(1.75rem, 5vw, 2.5rem); line-height: 1.2; }
+.study section { margin-top: 24px; }
+.study h2 { margin: 0 0 10px; font-size: 1.2rem; }
+.study p { margin: 8px 0; color: var(--ink-secondary); }
+.study table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.study th, .study td { padding: 8px; border-bottom: 1px solid var(--border-hairline); text-align: right; }
+.study thead th { background: var(--bg-subtle); }
+.study th:first-child { text-align: left; }
+.study td { font-variant-numeric: tabular-nums; }

@@ -3,7 +3,7 @@
   "name": "김대현",
   "title": "KeyPrint Guard & Arena: 타이핑 생체 지문 임베딩 기반 실시간 해커 침입 차단(1:1) 및 타자연습 인물 자동 분류(1:N) 시스템",
   "github_url": "https://github.com/qwertypotter6873/keyprint-guard/tree/4c24b2b0fddde0824c90ecce51f1742f11a62b31",
-  "demo_url": "https://keyprint-guard-pr5.bookend-dev.chatgpt.site/",
+  "demo_url": "https://qwertypotter6873.github.io/keyprint-guard/",
   "data_type": "tabular_sequence (keystroke_dynamics_biometrics)",
   "training": "scratch (deep_metric_learning)",
   "models": [

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>한국어 타건 평가 · KeyPrint</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./src/style.css">
+  <link rel="stylesheet" href="./src/study.css">
+</head>
+<body>
+  <main class="study">
+    <nav aria-label="데모"><a href="./?lang=ko">← 한국어 타자연습</a></nav>
+    <article class="surface-card">
+      <header>
+        <h1>한국어 타건 평가</h1>
+        <p>FACT 연구에서 참가자 50명이 스마트폰에 직접 입력한 한국어 타건을 사용해, 기존 공개본과 PR #5가 같은 입력의 작성자를 얼마나 잘 찾는지 비교했습니다.</p>
+      </header>
+      <section aria-labelledby="results-title">
+        <h2 id="results-title">작성자를 얼마나 잘 찾았나</h2>
+        <!-- korean-results:start -->
+
+        <p>각 기록에서 처음 76타를 사용했습니다. 데모의 한국어 문장을 두벌식으로 칠 때 필요한 타수의 중앙값입니다. 한국어 입력자 50명을 5명씩 나누고, 각자 5개 기록으로 등록했습니다. 별도 시험 기록을 2개씩 묶은 250건에서 작성자를 찾았습니다. 같은 입력을 작성자가 없는 다른 5명에게 비교해 미등록자 수락도 250건에서 측정했습니다.</p>
+        <table aria-label="후보 다섯 명에서 측정한 작성자 식별">
+          <thead><tr><th scope="col">5인 후보 기준</th><th scope="col">기존 공개본</th><th scope="col">PR #5</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">작성자가 1위</th><td>70.8% (177건)</td><td>74.8% (187건)</td></tr>
+            <tr><th scope="row">작성자로 수락</th><td>70.4% (176건)</td><td>7.6% (19건)</td></tr>
+            <tr><th scope="row">다른 사람으로 수락</th><td>29.2% (73건)</td><td>0.0% (0건)</td></tr>
+            <tr><th scope="row">판별 보류</th><td>0.4% (1건)</td><td>92.4% (231건)</td></tr>
+            <tr><th scope="row">미등록자를 등록자로 수락</th><td>87.6% (219건)</td><td>13.2% (33건)</td></tr>
+          </tbody>
+        </table>
+        <p>보류 여부와 관계없이 작성자가 1위였던 비율의 차이는 +4.0%p입니다. 참가자 단위로 재표집한 95% 구간은 -2.8%p에서 +10.8%p로, 순위 정확도가 개선됐다고 단정하기 어렵습니다. PR은 1위의 터치 일치도가 78% 이상이고 2위보다 12%p 이상 앞서야 수락합니다. 기존 공개본의 두 기준은 각각 73%, 0%p입니다. PR 보류 231건 중 230건은 1위 점수를 통과했지만 2위와의 차이가 작았습니다.</p>
+        <p>후보를 50명으로 늘리면 1위 정답률은 기존 25.2%, PR 26.8%였고, PR의 판별 보류는 250/250건이었습니다. 5명 후보에서 평균 약 235타인 원래 기록 전체를 사용하면 1위 정답률은 기존 84.0%, PR 85.6%였습니다.</p>
+
+<!-- korean-results:end -->
+      </section>
+      <section aria-labelledby="conditions-title">
+        <h2 id="conditions-title">어떤 입력을 비교했나</h2>
+        <p>Galaxy S8에서 수집한 실제 한국어 입력을 사용했습니다. 발표된 등록·시험 분할과 각 버전의 배포 모델을 그대로 사용했으며, 한국어 시험 결과로 수락 기준을 조정하지 않았습니다.</p>
+        <p>두 버전 모두 키 위치와 편집 습관을 가리고, 홀드 시간에 배포 모델의 터치 대체값을 적용했습니다. 지문 식별자와 입력 날짜는 공개 자료에 없습니다. PC에서 두벌식으로 입력할 때의 인식률은 별도 측정이 필요합니다.</p>
+        <p><a href="https://doi.org/10.1016/j.patcog.2020.107556">FACT 연구와 공개 데이터</a> · <a href="https://github.com/qwertypotter6873/keyprint-guard/pull/5">평가 코드와 전체 결과가 담긴 PR</a></p>
+      </section>
+    </article>
+  </main>
+</body>
+</html>

@@ -362,6 +362,55 @@ body {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
+.arena-head {
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+}
+
+.arena-head :is(.sub-tabs, .lang-switch) {
+  max-width: 100%;
+}
+
+.arena-head :is(.sub-tab, .lang-btn) {
+  min-width: 0;
+  min-height: 32px;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.experience-guide {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 16px;
+}
+
+.experience-copy {
+  flex: 1 1 16rem;
+  min-width: 0;
+  color: var(--ink-secondary);
+  font-size: 0.86rem;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.experience-copy p {
+  margin: 0;
+}
+
+.experience-copy a {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 0;
+}
+
+.experience-guide button {
+  flex-shrink: 0;
+  max-width: 100%;
+  min-height: 34px;
+}
+
 /* ================= ROSTER BAR ================= */
 .roster-bar {
   display: flex;
@@ -438,6 +487,60 @@ body {
 .roster-empty {
   font-size: 0.8rem;
   color: var(--ink-muted);
+}
+
+.arena-roster {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+}
+
+.arena-roster .roster-label {
+  margin: 0;
+  white-space: normal;
+  word-break: keep-all;
+}
+
+.arena-roster .text-btn {
+  justify-self: end;
+  text-align: right;
+}
+
+.arena-roster .roster-chips,
+.arena-roster-note {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.arena-roster-note {
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: 0.8rem;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.arena-roster .user-chip {
+  max-width: 100%;
+  gap: 4px;
+  padding-inline: 5px;
+  text-align: left;
+}
+
+.arena-roster :is(.chip-avatar, .chip-count) {
+  flex: none;
+}
+
+.arena-roster .chip-name {
+  min-width: 0;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.arena-roster .roster-empty {
+  color: var(--ink-secondary);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 /* ================= TYPING STAGE ================= */
@@ -876,6 +979,13 @@ body {
 .result-meta {
   font-size: 0.78rem;
   color: var(--ink-secondary);
+}
+
+.result-criteria {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 /* ================= BUTTONS ================= */
@@ -1520,6 +1630,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .viz-details summary::-webkit-details-marker {
@@ -1543,7 +1655,7 @@ body {
 .details-grid {
   margin-top: 12px;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -1554,18 +1666,35 @@ body {
   padding: 12px 13px;
   font-size: 0.8rem;
   color: var(--ink-secondary);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
-.detail-col strong {
+.detail-col :is(strong, h5) {
   display: block;
   color: var(--ink-primary);
   font-size: 0.82rem;
-  margin-bottom: 5px;
+  margin: 0 0 5px;
 }
 
 .detail-col p {
   margin: 0;
   line-height: 1.5;
+}
+
+.detail-col p + p {
+  margin-top: 8px;
+}
+
+.encoder-details {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-hairline);
+}
+
+.encoder-details h4 {
+  margin: 0;
+  font-size: 0.94rem;
 }
 
 @media (max-width: 680px) {
@@ -1589,15 +1718,29 @@ body {
   }
 }
 
-/* Workspace consent and corpus guidance. */
-.experience-guide { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--border, #e5e7eb); }
-.experience-guide p { margin: 0; color: #52525b; font-size: 12px; line-height: 1.6; }
-.experience-guide button { flex-shrink: 0; }
+@media (max-width: 420px) {
+  .mode-nav {
+    width: 100%;
+    border-radius: var(--radius-lg);
+  }
+
+  .mode-tab {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 4px;
+    border-radius: var(--radius-md);
+    line-height: 1.3;
+    white-space: normal;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* Workspace consent. */
 .room-switch-row { flex-wrap: wrap; }
 .share-consent { display: flex; align-items: flex-start; gap: 8px; flex-basis: 100%; font-size: 12px; line-height: 1.6; color: #52525b; }
 .share-consent input { margin-top: 3px; flex-shrink: 0; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 input[readonly] { opacity: .7; }
-@media (max-width: 640px) { .experience-guide { align-items: flex-start; flex-direction: column; padding: 12px 16px; } }
 
 .danger-sm-btn { flex-shrink: 0; white-space: nowrap; }

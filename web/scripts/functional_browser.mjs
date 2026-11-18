@@ -41,6 +41,71 @@ async function typeWithHold(tab, text) {
   }
 }
 
+async function assertArenaLayout(page, description) {
+  const layout = await page.evaluate(() => {
+    const viewport = document.documentElement;
+    const controls = document.querySelectorAll(`
+      .mode-tab, .arena-head button, .experience-copy, .experience-guide a,
+      #arena-sample-start-btn, .arena-roster .roster-label, #arena-manage-link,
+      #arena-roster-list, .arena-roster .user-chip, .arena-roster-note, #arena-result-criteria
+    `);
+    const overflow = [...controls].filter(element => {
+      if (element.getClientRects().length === 0) return false;
+      const { left, right } = element.getBoundingClientRect();
+      return left < 0 || right > viewport.clientWidth + 1 || element.scrollWidth > element.clientWidth + 1;
+    }).map(element => element.id || element.className);
+
+    const bounds = selector => document.querySelector(selector).getBoundingClientRect();
+    const adjacent = [
+      ['.arena-head .sub-tabs', '.arena-head .lang-switch'],
+      ['.experience-copy', '#arena-sample-start-btn'],
+      ['.experience-guide', '.arena-roster'],
+      ['#arena-roster-title', '#arena-manage-link'],
+      ['#arena-roster-list', '#arena-manage-link'],
+      ['#arena-roster-list', '#arena-roster-note'],
+    ];
+    const overlaps = adjacent.filter(([first, second]) => {
+      const a = bounds(first);
+      const b = bounds(second);
+      return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    });
+    return {
+      overflow,
+      overlaps,
+      pageOverflow: viewport.scrollWidth - viewport.clientWidth,
+      guideSpacing: bounds('.arena-roster').top - bounds('.experience-guide').bottom,
+    };
+  });
+  assert.deepEqual(layout.overflow, [], description);
+  assert.deepEqual(layout.overlaps, [], description);
+  assert.ok(layout.pageOverflow <= 1, description);
+  assert.ok(layout.guideSpacing >= 12, description);
+}
+
+async function assertArenaResultCriteria(page, candidateCount) {
+  const shots = await page.evaluate(() => window.__keyprintTestApi.engine.arenaProtocol().query);
+  const prompt = page.locator('#arena-blind-prompt');
+  const input = page.locator('#arena-blind-input');
+  for (let i = 0; i < shots; i++) {
+    const sentence = await prompt.textContent();
+    await input.focus();
+    await typeWithHold(page, sentence);
+    await input.press('Enter');
+    await page.waitForFunction(previous => {
+      return !document.getElementById('arena-blind-input').readOnly
+        && document.getElementById('arena-blind-prompt').textContent !== previous;
+    }, sentence);
+  }
+  await page.locator('#arena-result-card').waitFor();
+  const { candidates, threshold, lead, margin } = await page.evaluate(() => window.__keyprintTestApi.state.lastVerdict);
+  assert.equal(candidates.length, candidateCount);
+  assert.equal(await page.textContent('#arena-result-card .score-caption'), '리듬 일치도');
+  const minimum = `최소 리듬 일치도 ${(threshold * 100).toFixed(1)}%`;
+  const comparison = `1·2위 차이 ${(lead * 100).toFixed(2)}%p (최소 ${(margin * 100).toFixed(2)}%p)`;
+  assert.equal(await page.textContent('#arena-result-criteria'), candidateCount === 1 ? minimum : `${comparison} · ${minimum}`);
+  await assertArenaLayout(page, `Comparison result for ${candidateCount} participants`);
+}
+
 try {
   const ctx = await browser.newContext();
   const host = `http://127.0.0.1:${server.address().port}`;
@@ -81,7 +146,68 @@ try {
   assert.equal(await page.locator('#arena-roster-list [data-sample="1"]').count(), 4);
   await page.click('#lang-ko-btn');
   assert.equal(await page.locator('#arena-roster-list [data-sample="1"]').count(), 0, 'English samples are excluded from Korean comparisons');
-  assert.match(await page.textContent('#arena-language-notice'), /별도 검증/);
+  assert.match(await page.textContent('#arena-language-notice'), /공개 스마트폰 타건.*PC 한글 입력은 체험용/);
+
+  const studyPage = await ctx.newPage();
+  await studyPage.setViewportSize({ width: 320, height: 780 });
+  const studyUrl = await page.locator('#arena-korean-study-link').getAttribute('href');
+  const studyResponse = await studyPage.goto(new URL(studyUrl, origin).href);
+  assert.equal(studyResponse.status(), 200);
+  assert.equal(await studyPage.locator('h1').innerText(), '한국어 타건 평가');
+  assert.equal(await studyPage.locator('tbody tr').count(), 5);
+  assert.equal(await studyPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await studyPage.getByRole('link', { name: '한국어 타자연습' }).click();
+  await studyPage.waitForFunction(() => window.__keyprintTestApi?.state.ready);
+  assert.equal(await studyPage.locator('#lang-ko-btn').getAttribute('aria-pressed'), 'true');
+  await studyPage.close();
+
+  // Use one local Korean profile alongside the four English samples from the demo.
+  await page.evaluate(() => {
+    const centroid = [1, ...Array(63).fill(0)];
+    window.__keyprintTestApi.roomSync.upsertProfile({
+      id: 'responsive_korean_fixture', name: '한글'.repeat(12), isSample: false, color: '#e11d48',
+      arena: { ko: { centroid, exemplars: [centroid], count: 5, inputMode: 'keyboard' } },
+    });
+  });
+  const viewport = page.viewportSize();
+  for (const width of [320, 375, 768, 1280]) {
+    await page.setViewportSize({ ...viewport, width });
+    for (const lang of ['ko', 'en']) {
+      await page.click(`#lang-${lang}-btn`);
+      const korean = lang === 'ko';
+      assert.equal(await page.getAttribute(`#lang-${lang}-btn`, 'aria-pressed'), 'true');
+      assert.equal(await page.locator('#arena-korean-study-link').isVisible(), korean);
+      assert.equal(await page.locator('#arena-roster-list .user-chip').count(), korean ? 1 : 4);
+      assert.match(await page.textContent('#arena-roster-note'), korean ? /4명.*제외.*2명 이상 등록/ : /1명.*제외/);
+      await assertArenaLayout(page, `${lang} comparison at ${width}px`);
+      await page.click('#arena-sub-enroll');
+      await assertArenaLayout(page, `${lang} enrollment at ${width}px`);
+      await page.click('#arena-sub-blind');
+    }
+    await page.click('#nav-principles-btn');
+    const details = page.locator('#view-principles .viz-details').first();
+    if (!(await details.evaluate(element => element.open))) await details.locator('summary').click();
+    const encoders = details.locator('.encoder-details .detail-col');
+    assert.equal(await encoders.count(), 2);
+    assert.match(await encoders.nth(0).textContent(), /17채널 KeyPrintNet/);
+    assert.match(await encoders.nth(1).textContent(), /9채널 타이밍 인코더.*듀얼 점수 보정/s);
+    const [sentence, password] = await encoders.evaluateAll(blocks => blocks.map(block => {
+      const { top, bottom, left, right } = block.getBoundingClientRect();
+      return { top, bottom, left, right, overflow: block.scrollWidth - block.clientWidth };
+    }));
+    assert.ok(sentence.overflow <= 1 && password.overflow <= 1, `Encoder text fits at ${width}px`);
+    assert.ok(width <= 680 ? sentence.bottom < password.top : sentence.right < password.left, `Encoder blocks fit at ${width}px`);
+    await page.click('#nav-arena-btn');
+  }
+  await page.setViewportSize({ ...viewport, width: 320 });
+  await page.click('#lang-ko-btn');
+  assert.equal(await page.getAttribute('#arena-korean-study-link', 'href'), './korean-study.html');
+  await page.click('#arena-manage-link');
+  assert.equal(await page.locator('#room-dialog[open]').count(), 1);
+  await page.click('#close-room-btn');
+  await page.evaluate(() => window.__keyprintTestApi.roomSync.deleteProfile('responsive_korean_fixture'));
+  await page.setViewportSize(viewport);
+
   // Benign in-progress fixture, used to check workspace reset without typing a long sequence.
   await page.evaluate(() => {
     const s = window.__keyprintTestApi.state;
@@ -100,6 +226,18 @@ try {
   await page.click('#close-room-btn');
   await page.click('#arena-sample-start-btn');
   assert.equal(await page.evaluate(() => window.__keyprintTestApi.state.lang), 'en');
+  await page.setViewportSize({ ...viewport, width: 320 });
+  await assertArenaResultCriteria(page, 4);
+  await page.evaluate(() => {
+    const { roomSync, engine } = window.__keyprintTestApi;
+    roomSync.removeSamples();
+    roomSync.loadSamples(engine.config.mvp_sample_profiles.slice(0, 1));
+  });
+  await page.click('#arena-retry-btn');
+  await assertArenaResultCriteria(page, 1);
+  await page.click('#arena-sample-start-btn');
+  await page.setViewportSize(viewport);
+
   // A normal submission stays pending while a mock inference awaits its result.
   await page.click('#nav-guard-btn');
   await page.evaluate(() => {
@@ -255,5 +393,5 @@ try {
   assert.equal(deletedLast.backspaceCount, 2);
   assert.deepEqual(deletedLast.timings, replaced.timings.slice(0, -1));
   assert.deepEqual(outside, [], 'Asset and demo requests stay within the local deployment prefix');
-  console.log('Functional browser flows passed: prefixed deployment and real inference, consent, workspace isolation, samples, stale inference, offline tabs, physical Delete and selection edits. No external traffic.');
+  console.log('Offline browser checks passed for prefixed deployment, real inference, responsive arena and encoder layouts, comparison criteria, consent, workspace isolation, samples, stale inference, offline tabs, physical Delete, and selection edits.');
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
