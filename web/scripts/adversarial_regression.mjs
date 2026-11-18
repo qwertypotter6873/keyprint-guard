@@ -891,13 +891,16 @@ try {
     await page.click('#nav-principles-btn');
 
     const bootState = await page.evaluate(() => {
-      const stored = JSON.parse(localStorage.getItem('keyprint_mvp_v4_room_SURVIVE') || '{}');
+      const sync = window.__keyprintTestApi.roomSync;
+      const records = Object.keys(localStorage)
+        .filter((key) => key.startsWith(sync._recordsPrefix()))
+        .map((key) => JSON.parse(localStorage.getItem(key)));
       return {
         ready: window.__keyprintTestApi.state.ready,
         polluted: ({}).pollutedBoot,
         liveIds: window.__keyprintTestApi.state.profiles.map((p) => p.id),
-        storedIds: (stored.profiles || []).map((p) => p.id),
-        storedTombKeys: Object.keys(stored.tombstones || {}),
+        legacyRetired: localStorage.getItem('keyprint_mvp_v4_room_SURVIVE') === null,
+        records: records.map((record) => [record.type, record.profile?.id ?? record.id]).sort(),
       };
     });
 
@@ -908,9 +911,9 @@ try {
       `Only valid profile survived in memory: ${JSON.stringify(bootState.liveIds)}`
     );
     check(
-      JSON.stringify(bootState.storedIds) === JSON.stringify(['good_survivor']) &&
-        JSON.stringify(bootState.storedTombKeys) === JSON.stringify(['valid_tomb']),
-      `Corrupt entries pruned from localStorage: profiles=${JSON.stringify(bootState.storedIds)}`
+      bootState.legacyRetired &&
+        JSON.stringify(bootState.records) === JSON.stringify([['delete', 'valid_tomb'], ['upsert', 'good_survivor']]),
+      `Only valid records migrated in localStorage: records=${JSON.stringify(bootState.records)}, legacyRetired=${bootState.legacyRetired}`
     );
     check(pageErrors.length === 0, `Suite 2 zero pageerrors (${pageErrors.join('; ')})`);
     console.log('  ✓ Corrupt profiles pruned before render & persisted cleanly; reload survived with 0 errors');
