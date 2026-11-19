@@ -50,11 +50,16 @@ for (const lang of ['ko', 'en']) {
   assert.equal(SENTENCE_POOLS[lang].length, 128, `${lang} total pool size`);
   assert.equal(new Set(SENTENCE_POOLS[lang]).size, 128, `${lang} pool is 100% unique`);
 
-  const allowed = lang === 'ko' ? /^[가-힣 ]+$/ : /^[a-z ]+$/;
+  const allowed = lang === 'ko' ? /^[가-힣][가-힣 ]*[가-힣]\.$/ : /^[A-Z][A-Za-z, ]*[a-z]\.$/;
   for (const s of SENTENCE_POOLS[lang]) {
     assert.equal(s.trim(), s, `${lang} prompt trimmed`);
     assert.equal(/  /.test(s), false, `${lang} prompt has single spaces`);
-    assert.equal(allowed.test(s), true, `${lang} prompt matches character policy: ${s}`);
+    assert.equal(/ [.,]/.test(s), false, `${lang} prompt has no space before punctuation: ${s}`);
+    assert.equal(allowed.test(s), true, `${lang} prompt matches sentence capitalization & period policy: ${s}`);
+    if (lang === 'en') {
+      assert.equal(/\bi\b/.test(s), false, `EN prompt never uses lowercase pronoun "i": ${s}`);
+      assert.equal(/,[^ ]/.test(s), false, `EN prompt follows comma with a space: ${s}`);
+    }
   }
 }
 
@@ -67,7 +72,7 @@ for (const s of PANGRAM_SENTENCES.ko) {
 }
 
 for (const s of PANGRAM_SENTENCES.en) {
-  const chars = new Set(s);
+  const chars = new Set(s.toLowerCase());
   assert.deepEqual(ALL_26_EN.filter((c) => !chars.has(c)), [], `EN pangram covers a-z: ${s}`);
 }
 
