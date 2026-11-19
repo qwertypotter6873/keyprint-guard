@@ -2382,8 +2382,13 @@ function renderEvalStudyPanel() {
 
   const motion = evalStudy.motion.getLiveStatus();
   const motionEl = $('eval-motion-status');
+  const isTouchEnv = navigator.maxTouchPoints > 0 || s.keyboardType.startsWith('touch_');
+  const insecureHttp = typeof window !== 'undefined' && window.isSecureContext === false;
   if (motion.permissionState === 'unsupported') {
-    motionEl.textContent = '모션 센서 미지원 기기 (PC 브라우저)';
+    motionEl.textContent =
+      isTouchEnv && insecureHttp
+        ? 'HTTP 접속 중 · HTTPS(:8443)로 이동 시 모션 활성'
+        : '모션 센서 미지원 기기 (PC 브라우저)';
     motionEl.classList.remove('is-active');
   } else if (motion.permissionState === 'denied') {
     motionEl.textContent = '모션 센서 권한 거부됨';
@@ -2538,7 +2543,16 @@ function bindEvalStudyEvents() {
   $('eval-motion-btn').addEventListener('click', async () => {
     const status = await evalStudy.motion.requestAndStart();
     if (status.permissionState === 'unsupported') {
-      setFeedback($('eval-action-feedback'), '현재 브라우저는 DeviceMotion 이벤트를 제공하지 않습니다(스마트폰 브라우저에서 사용).');
+      const httpsUrl = evalStudy.hubInfo?.urls?.https;
+      if (typeof window !== 'undefined' && window.isSecureContext === false && httpsUrl) {
+        setFeedback(
+          $('eval-action-feedback'),
+          `iOS Safari 등 모바일 브라우저는 HTTPS에서만 모션 센서를 허용합니다. ${httpsUrl} 로 이동합니다...`
+        );
+        window.location.href = httpsUrl;
+        return;
+      }
+      setFeedback($('eval-action-feedback'), '현재 브라우저는 DeviceMotion 이벤트를 제공하지 않습니다(스마트폰 HTTPS에서 사용).');
     } else if (status.permissionState === 'denied') {
       setFeedback($('eval-action-feedback'), '모션 센서 권한이 거부되었습니다. 브라우저 사이트 설정에서 동작 및 방향 접근을 허용해 주세요.', 'error');
     } else {

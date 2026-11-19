@@ -802,9 +802,19 @@ def analyze_hold_calibration(
     }
 
 
-# ---------------------------------------------------------------------------------------
-# Section 3: Smartphone Touch `beta` Sweep & `DeviceMotion` Verification
-# ---------------------------------------------------------------------------------------
+def _infer_posture_from_motion(dm: Optional[Dict]) -> Optional[str]:
+    if not dm or not dm.get("available"):
+        return None
+    pitch = dm.get("pitchDeg")
+    roll = dm.get("rollDeg")
+    gj = dm.get("gravityJitterRms")
+    gyro = dm.get("gyroRms")
+    if pitch is not None and gj is not None and gyro is not None:
+        flat_tilt = abs(float(pitch)) < 12.0 and (
+            roll is None or abs(float(roll)) < 12.0 or abs(abs(float(roll)) - 180.0) < 12.0
+        )
+        return "on_desk_flat" if (float(gj) < 0.85 and float(gyro) < 10.0 and flat_tilt) else "in_hand"
+    return dm.get("inferredPosture")
 def _motion_feature_vec(dm: Optional[Dict]) -> Optional[np.ndarray]:
     if not dm or not dm.get("available"):
         return None
@@ -897,7 +907,7 @@ def analyze_touch_and_motion(
         env = r.get("env") or r.get("queryEnv") or {}
         declared = str(env.get("posture") or "")
         dm = r["deviceMotion"]
-        inferred = dm.get("inferredPosture")
+        inferred = _infer_posture_from_motion(dm)
         if declared in ("hand_two_thumbs", "hand_one_finger"):
             if dm.get("tapImpulseMean") is not None:
                 tap_hand.append(float(dm["tapImpulseMean"]))
@@ -925,24 +935,35 @@ def analyze_touch_and_motion(
     all_mvecs = [v for v in all_mvecs if v is not None]
     m_scale = np.maximum(np.std(all_mvecs, axis=0), np.asarray([0.05, 0.05, 1.0, 4.0])) if len(all_mvecs) >= 3 else np.asarray([0.25, 0.25, 6.0, 12.0])
 
-    def _eval_sensor_fusion(queries_sub: Sequence[Dict], gamma_motion: float) -> Dict[str, object]:
+    def _eval_sensor_fusion(
+        queries_sub: Sequence[Dict],
+        gamma_motion: float,
+        *,
+        posture_gated: bool = False,
+    ) -> Dict[str, object]:
         enr_top1, enr_acc, enr_n = 0, 0, 0
         out_fa, out_n = 0, 0
         evaluated = 0
+        top1_scores: List[float] = []
         for q in queries_sub:
-            q_mv = _motion_feature_vec(q.get("deviceMotion"))
+            q_dm = q.get("deviceMotion")
+            q_mv = _motion_feature_vec(q_dm)
             if q_mv is None:
                 continue
+            q_pos = _infer_posture_from_motion(q_dm)
             room = str(q.get("roomCode") or "LOCAL")
             dom_key = f"arena_{q.get('lang') or 'en'}"
             rankings = q.get("rankings") or []
             cand_mvs = {}
+            cand_pos = {}
             for r_cand in rankings:
                 cid = str(r_cand.get("id") or "")
                 enr = _lookup_enroll(enroll_idx, room, cid, dom_key)
-                mv = _motion_feature_vec((enr or {}).get("deviceMotion"))
+                e_dm = (enr or {}).get("deviceMotion")
+                mv = _motion_feature_vec(e_dm)
                 if mv is not None:
                     cand_mvs[cid] = mv
+                    cand_pos[cid] = _infer_posture_from_motion(e_dm)
             if not cand_mvs:
                 continue
 
@@ -954,7 +975,8 @@ def analyze_touch_and_motion(
             for r_cand in rankings:
                 cid = str(r_cand.get("id") or "")
                 base_s = float(r_cand.get("similarity") or 0.5)
-                if gamma_motion > 0 and cid in cand_mvs:
+                same_pos = not posture_gated or (q_pos is not None and q_pos == cand_pos.get(cid))
+                if gamma_motion > 0 and cid in cand_mvs and same_pos:
                     z_diff = (q_mv - cand_mvs[cid]) / m_scale
                     # Zero-mean Gaussian LLR: positive when closer than population unit variance (d^2 < D*0.75)
                     m_llr = max(-3.0, min(3.0, 0.5 * (3.0 - float(np.sum(z_diff ** 2)))))
@@ -964,6 +986,7 @@ def analyze_touch_and_motion(
                 scored.append((s, cid))
             scored.sort(key=lambda x: x[0], reverse=True)
             scores_desc = [s for s, _ in scored]
+            top1_scores.append(scores_desc[0])
             win_id = scored[0][1]
             acc = _open_set_accept(scores_desc, thr, margin)
 
@@ -986,6 +1009,7 @@ def analyze_touch_and_motion(
             "top1_acc": _safe_rate(enr_top1, enr_n),
             "genuine_accept_rate": _safe_rate(enr_acc, enr_n),
             "outsider_far": _safe_rate(out_fa, out_n),
+            "mean_top1_score": _safe_mean(top1_scores, 4),
         }
 
     in_hand_q = [
@@ -1009,14 +1033,17 @@ def analyze_touch_and_motion(
             "all_touch": {
                 "keystroke_only": _eval_sensor_fusion(touch_arena, 0.0),
                 "keystroke_plus_motion": _eval_sensor_fusion(touch_arena, 0.12),
+                "keystroke_plus_motion_posture_gated": _eval_sensor_fusion(touch_arena, 0.12, posture_gated=True),
             },
             "in_hand": {
                 "keystroke_only": _eval_sensor_fusion(in_hand_q, 0.0),
                 "keystroke_plus_motion": _eval_sensor_fusion(in_hand_q, 0.12),
+                "keystroke_plus_motion_posture_gated": _eval_sensor_fusion(in_hand_q, 0.12, posture_gated=True),
             },
             "on_desk_flat": {
                 "keystroke_only": _eval_sensor_fusion(on_desk_q, 0.0),
                 "keystroke_plus_motion": _eval_sensor_fusion(on_desk_q, 0.12),
+                "keystroke_plus_motion_posture_gated": _eval_sensor_fusion(on_desk_q, 0.12, posture_gated=True),
             },
         },
     }

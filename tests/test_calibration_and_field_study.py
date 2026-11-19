@@ -514,6 +514,93 @@ class CalibrationAndFieldStudyTests(unittest.TestCase):
         self.assertEqual(pw_rescore["n_genuine"], 1)
         self.assertEqual(pw_rescore["n_impostor"], 1)
 
+    def test_posture_gated_motion_fusion_protects_cross_posture_queries(self) -> None:
+        enr_hand = {
+            "schema": "kp-eval-log-v1",
+            "recordId": "ev_m_enr",
+            "eventType": "enroll",
+            "recordedAt": "2026-11-19T03:00:00Z",
+            "domain": "arena",
+            "lang": "ko",
+            "roomCode": "STUDY1",
+            "profileId": "u_m1",
+            "profileName": "모바일참가자",
+            "env": {"participantId": "P01", "keyboardType": "touch_phone", "posture": "hand_two_thumbs", "detectedInputMode": "touch"},
+            "deviceMotion": {
+                "available": True,
+                "effectiveHz": 58.8,
+                "medianIntervalMs": 17.0,
+                "tapImpulseMean": 0.68,
+                "linearAccelRms": 0.55,
+                "gyroRms": 11.2,
+                "pitchDeg": -55.0,
+                "rollDeg": 8.5,
+                "gravityJitterRms": 0.58,
+                "inferredPosture": "in_hand",
+            },
+        }
+        q_hand = {
+            "schema": "kp-eval-log-v1",
+            "recordId": "ev_m_q_hand",
+            "eventType": "query",
+            "recordedAt": "2026-11-19T03:02:00Z",
+            "domain": "arena",
+            "lang": "ko",
+            "roomCode": "STUDY1",
+            "queryEnv": {"participantId": "P01", "keyboardType": "touch_phone", "posture": "hand_two_thumbs", "detectedInputMode": "touch"},
+            "groundTruth": {"role": "enrolled", "profileId": "u_m1"},
+            "verdict": {"openSetThreshold": 0.72, "marginThreshold": 0.03},
+            "rankings": [
+                {"id": "u_m1", "name": "모바일참가자", "rank": 1, "similarity": 0.74, "embeddingSimilarity": 0.70, "behaviorLlr": 0.8},
+                {"id": "u_m2", "name": "비교군", "rank": 2, "similarity": 0.42, "embeddingSimilarity": 0.42, "behaviorLlr": 0.0},
+            ],
+            "deviceMotion": {
+                "available": True,
+                "effectiveHz": 58.8,
+                "medianIntervalMs": 17.0,
+                "tapImpulseMean": 0.69,
+                "linearAccelRms": 0.53,
+                "gyroRms": 11.8,
+                "pitchDeg": -52.0,
+                "rollDeg": 9.0,
+                "gravityJitterRms": 0.56,
+                "inferredPosture": "in_hand",
+            },
+        }
+        # Phone placed flat on desk (including slight camera-bump rocking within flat threshold):
+        # keystroke similarity 0.74 > threshold 0.72, naive motion penalty drops it below 0.72, posture-gated preserves 0.74!
+        q_desk = {
+            **q_hand,
+            "recordId": "ev_m_q_desk",
+            "recordedAt": "2026-11-19T03:05:00Z",
+            "queryEnv": {"participantId": "P01", "keyboardType": "touch_phone", "posture": "desk_phone_flat", "detectedInputMode": "touch"},
+            "deviceMotion": {
+                "available": True,
+                "effectiveHz": 59.9,
+                "medianIntervalMs": 16.7,
+                "tapImpulseMean": 0.07,
+                "linearAccelRms": 0.05,
+                "gyroRms": 7.2,
+                "pitchDeg": -1.6,
+                "rollDeg": 176.0,
+                "gravityJitterRms": 0.61,
+                "inferredPosture": "in_hand",  # stale browser field overridden by physical rule -> on_desk_flat
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "motion_posture.jsonl"
+            p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [enr_hand, q_hand, q_desk]) + "\n", encoding="utf-8")
+            rep = analyze_jsonl_files([p], repo_root=REPO_ROOT)
+
+        tm = rep["touch_and_motion"]
+        self.assertEqual(tm["device_motion_audit"]["posture_inference_agreement"], 1.0)
+        self.assertGreater(
+            tm["sensor_fusion_ab"]["in_hand"]["keystroke_plus_motion_posture_gated"]["mean_top1_score"],
+            tm["sensor_fusion_ab"]["in_hand"]["keystroke_only"]["mean_top1_score"],
+        )
+        self.assertEqual(tm["sensor_fusion_ab"]["on_desk_flat"]["keystroke_plus_motion"]["genuine_accept_rate"], 0.0)
+        self.assertEqual(tm["sensor_fusion_ab"]["on_desk_flat"]["keystroke_plus_motion_posture_gated"]["genuine_accept_rate"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -302,7 +302,11 @@ export class DeviceMotionCollector {
   }
 
   _onMotion(e) {
-    const tMs = typeof e.timeStamp === 'number' && e.timeStamp > 0 ? e.timeStamp : performance.now();
+    const nowPerf = performance.now();
+    const tMs =
+      typeof e.timeStamp === 'number' && e.timeStamp > 0 && Math.abs(e.timeStamp - nowPerf) < 2000
+        ? e.timeStamp
+        : nowPerf;
     const acc = e.acceleration || {};
     const accG = e.accelerationIncludingGravity || {};
     const rot = e.rotationRate || {};
@@ -431,8 +435,11 @@ export class DeviceMotionCollector {
     const gyroRms = rmsNum(gyroMags);
     let inferredPosture = 'unknown';
     if (gravityJitterRms !== null) {
-      const flatTilt = pitchDeg !== null && Math.abs(pitchDeg) < 16 && (rollDeg === null || Math.abs(rollDeg) < 16 || Math.abs(Math.abs(rollDeg) - 180) < 16);
-      inferredPosture = gravityJitterRms < 0.12 && gyroRms < 4.0 && flatTilt ? 'on_desk_flat' : 'in_hand';
+      const flatTilt =
+        pitchDeg !== null &&
+        Math.abs(pitchDeg) < 12 &&
+        (rollDeg === null || Math.abs(rollDeg) < 12 || Math.abs(Math.abs(rollDeg) - 180) < 12);
+      inferredPosture = gravityJitterRms < 0.85 && gyroRms < 10.0 && flatTilt ? 'on_desk_flat' : 'in_hand';
     }
 
     return {
