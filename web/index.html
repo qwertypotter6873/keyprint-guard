@@ -512,9 +512,9 @@
           </div>
 
           <p class="viz-explain-note">
-            매번 전혀 다른 글자의 문장을 쳐도 <code>64-D</code> 임베딩 바코드를 나란히 세워보면
+            매번 전혀 다른 글자의 문장을 쳐도 길이 1로 정규화된 <code>64-D</code> 단위 초구면 바코드를 나란히 세워보면
             <strong>개인 고유의 불변 차원(세로 강조 열)</strong>이 반복해서 나타납니다.
-            여러 문장을 누적 평균·정규화(L2 Centroid)하면 글자 배열 때문에 생긴 일시적 노이즈는 상쇄되고 선명한 대표 프로필만 남습니다.
+            크기 변동을 없애고 리듬 방향(코사인 각도)만 남긴 뒤 여러 문장을 평균·정규화(L2 Centroid)하면, 글자 배열로 생긴 일시적 노이즈는 상쇄되고 과적합 없는 64차원 대표 프로필만 남습니다.
           </p>
 
           <div id="viz-step2-svg" class="viz-svg-stage"></div>
@@ -565,8 +565,8 @@
 
           <p class="viz-explain-note">
             작은 점(<code>○</code>)은 각 참가자가 <strong>서로 다른 문장</strong>을 쳤을 때의 개별 벡터이고,
-            큰 원(<code>●</code>)은 완성된 <strong>대표 프로필 중심점(Centroid)</strong>입니다.
-            동시 접속 방에 새 참가자가 등록되거나 새 문장을 치면(<code>★</code>) 지도 위에 실시간으로 반영됩니다.
+            큰 원(<code>●</code>)은 완성된 <strong>대표 프로필 중심점(Centroid)</strong>, 별표(<code>★</code>)는 방금 입력한 실시간 타건입니다.
+            사람이 보기 쉽도록 <code>64차원</code> 공간에서 상위 2개 축(<code>PC1</code>, <code>PC2</code>)만 뽑아 2D로 압축한 그림자이므로 지도에서 원이 겹쳐 보여도 실제 판정은 <strong>원본 64차원 전체의 코사인 유사도</strong>로 계산되어 명확히 구분됩니다(바깥 점선 원은 개별 샘플을 묶어 보여주는 보조 표시이며 점 좌표는 왜곡 없이 유지됩니다).
           </p>
 
           <div id="viz-verdict-banner" class="viz-verdict-banner is-preview" aria-live="polite">

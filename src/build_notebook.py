@@ -126,13 +126,13 @@ def create_notebook(nb_path: Path) -> None:
     cells = []
 
     cells.append(nbf.v4.new_markdown_cell(
-        "# 🔐 KeyPrint Guard & Arena: 타이핑 지문(Keystroke Dynamics) 기반 해커 침입 차단(1:1) 및 타자연습 인물 자동 식별(1:N) 공식 검증 노트북\n"
-        "- **학번 / 이름**: 201935607 김대현\n"
-        "- **노트북 역할 (Non-Retraining Canonical Verification)**:\n"
-        "  - 본 노트북은 재실행 시 가중치가 달라지는 중복 재학습을 수행하지 않고, 공식 파이프라인(`src/visualize_and_run.py`, `src/eval_password_calibration.py`, `src/eval_typing_style.py`)이 생성한 **정규 가중치(`.pt`, `.onnx`)·학습 에포크 로그(`histories`)·평가 리포트 JSON 3종**을 로드하여 **실시간 순방향 추론 재현성(`±1e-5`)과 전 구간 지표를 검증**합니다.\n"
-        "- **데이터셋**:\n"
-        "  1. **CMU Keystroke Dynamics Benchmark** (`20,400` 입력 시퀀스 = `51명 × 8세션 × 50회`, 총 `408`세션, 고정 암호 `.tie5Roanl`, 학술 공개)\n"
-        "  2. **KeyRecs Multi-Session Sentence & Fixed-Text Dataset** (Zenodo `10.5281/zenodo.7886742`, CC-BY 4.0, 원시 `99명 × 2세션` 자유 필사 `562,596` 데이터 라인 = 유효 전이 `562,398`행 + 세션 종단 타건 `198`행 → 무오타 비중첩 `25자` 문장 시퀀스 통과 `96명` + 고정 문자열 `vpwjkeurkb`)\n"
+        "# 🔐 KeyPrint Guard & Arena: 타이핑 생체 지문(Keystroke Dynamics) 기반 침입 차단(1:1) 및 인물 식별(1:N) 공식 검증 노트북\n"
+        "- **학번 / 이름**: `201935607` / **김대현**\n"
+        "- **노트북의 역할 (재학습 없는 정규 검증 · Non-Retraining Verification)**:\n"
+        "  - 실행할 때마다 가중치가 미세하게 달라지는 중복 재학습 대신, 공식 파이프라인(`src/visualize_and_run.py` 외)이 저장한 **정규 가중치(`.pt`, `.onnx`)·35에포크 학습 로그(`histories`)·평가 리포트 JSON**을 불러와 **실시간 순방향 추론 일치성(`±1e-5`)과 전체 지표를 검증**합니다.\n"
+        "- **검증 데이터셋**:\n"
+        "  1. **CMU Keystroke Dynamics Benchmark**: `51명 × 8세션 × 50회 = 20,400` 시퀀스 (고정 암호 `.tie5Roanl`, 학술 공개)\n"
+        "  2. **KeyRecs Multi-Session Dataset**: `99명 × 2세션` 원시 자유 필사 `562,596`행(유효 전이 `562,398`행 + 세션 종단 홀드 `198`행, 큰따옴표 `26`행 복구 완료) → 비중첩 `25자` 유효 문장 `96명 · 11,105`건 + 고정 문자열 `vpwjkeurkb` (CC-BY 4.0)\n"
         "---"
     ))
 
@@ -180,7 +180,7 @@ def create_notebook(nb_path: Path) -> None:
     cells.append(nbf.v4.new_markdown_cell(
         "## 2. 무손실 파싱 · 피험자 완전 분리 분할(`%` 비율) · 5단계 전처리 실루엣 검증\n"
         "- `KeyRecs-free-text.csv` 줄 단위 무손실 파서로 비이스케이프 큰따옴표(`\"`) `26`행과 세션 종단 타건 `198`행을 포함한 `562,596`개 원시 데이터 라인(`562,398` 전이 + `198` 종단 홀드, 손상 `0`행)을 전량 복구합니다.\n"
-        "- 원시 `UD = raw_DD - raw_H_curr`를 먼저 계산한 뒤 Train 백분위수 경계로 `H, DD, UD`를 독립 클리핑하며, 문장 청크는 **25키 비중첩 창(`stride=25`)**으로 추출합니다."
+        "- 원시 `UD = raw_DD - raw_H_curr`를 먼저 계산한 뒤 Train 백분위수 경계로 `H, DD, UD`를 독립 클리핑하며, 문장 청크는 **25키 비중첩 창**(`stride=25`)으로 추출합니다."
     ))
     cells.append(nbf.v4.new_code_cell(
         "with tempfile.TemporaryDirectory() as _tmp_proc:\n"
@@ -227,8 +227,8 @@ def create_notebook(nb_path: Path) -> None:
     ))
 
     cells.append(nbf.v4.new_markdown_cell(
-        "## 3. 공식 가중치 로드 · 실시간 순방향 추론 재현성(`±1e-5`) 검증 · 저장된 학습 곡선 확인\n"
-        "- 모델을 재학습하지 않고 `models/*.pt`를 로드하여 미학습 테스트셋(`splits['test']`)에 대해 순방향 추론을 수행한 뒤, `models/evaluation_report.json`에 기록된 공식 지표와 `1e-5` 이내로 완전 일치하는지 검증합니다."
+        "## 3. 공식 가중치 로드 · `64차원` 단위 초구면 추론 재현성(`±1e-5`) · 학습 곡선 확인\n"
+        "- 모델을 재학습하지 않고 `models/*.pt`를 불러와 미학습 Test 분할(`splits['test']`)의 `64차원` 단위 초구면(`‖z‖₂ = 1`) 임베딩을 추출한 뒤, `models/evaluation_report.json` 공식 지표와 `1e-5` 이내로 일치하는지 검증합니다."
     ))
     cells.append(nbf.v4.new_code_cell(
         "chan_mean = np.array(meta['channel_mean'], dtype=np.float32)\n"
@@ -308,7 +308,7 @@ def create_notebook(nb_path: Path) -> None:
     cells.append(nbf.v4.new_markdown_cell(
         "## 4. 통제된 베이스라인 비교 · 실측 타인(`1,600`) vs 합성 봇(`200`) 분리 · 1:N 인물 식별 비교\n"
         "- **과업 1 (1:1 검증)**: 동일 증강·동일 AS-Norm 채점을 부여한 `Vanilla1DCNN_Aug` / `Vanilla1DCNN_Aug_ASNorm` 통제 비교와, Validation 임계값에서의 실측 인간 침입자(`1,600`건) 대 매크로 봇(`200`건) 분리 성적을 함께 제시합니다.\n"
-        "- **과업 2 (1:N 식별)**: 초기 **3문장 단일질의 기준선(`k=3, q=1`)**과 실제 웹 서비스의 **5문장 등록 · 2문장 질의 배포 프로토콜(`k=5, q=2, open-set margin`)**을 명확히 구분해 비교합니다."
+        "- **과업 2 (1:N 식별)**: 초기 **3문장 단일질의 기준선**(`k=3, q=1`)과 실제 웹 서비스의 **5문장 등록 · 2문장 질의 배포 프로토콜**(`k=5, q=2, open-set margin`)을 명확히 구분해 비교합니다."
     ))
     cells.append(nbf.v4.new_code_cell(
         "model_order = [\n"
@@ -389,10 +389,10 @@ def create_notebook(nb_path: Path) -> None:
     ))
 
     cells.append(nbf.v4.new_markdown_cell(
-        "## 5. `§5.6~5.7` 비밀번호 전이 · Occurrence 분리 합성 · 배포 임계값 일치 · 문제 해결 절제 로그\n"
-        "- **선택 기록 확인**: `password_encoder_selection`의 실제 검증 선택 비용과 선택 결과를 아래에 출력합니다. 단일 인코더 비교와 최종 듀얼 배포 설정은 구분하며, 선택 결론을 고정 문구로 대신하지 않습니다.\n"
-        "- **디그래프 합성 표본 격리**: 각 피험자·문자열에서 세션 1의 등록용·본인 질의용 원시 키 이벤트를 먼저 분리하고 실제 교집합을 검사합니다.\n"
-        "- **대문자 습관 배포 임계값 일치**: 브라우저(`biometrics.js`)와 동일하게 `base_tau + tau_offset`에서 평가합니다."
+        "## 5. §5.6\\~5.7 비밀번호 전이 · 원시 키 이벤트 분리 합성 · 배포 임계값 일치 · 문제 해결 절제 로그\n"
+        "- **검증셋 기반 인코더·정책 선택**: `password_encoder_selection`의 검증 비용과 실제 선택 결과를 출력하며, 단일 인코더 비교와 최종 듀얼 배포 설정을 구분합니다.\n"
+        "- **디그래프 합성 표본 격리**: 각 피험자·문자열마다 동일 세션 내 등록용과 본인 질의용 원시 키 이벤트를 사전에 분리하고 교집합 `0`건을 확인합니다.\n"
+        "- **대문자 습관 임계값 일치**: 웹 엔진(`biometrics.js`)과 동일하게 `base_tau + tau_offset` 기준에서 평가합니다."
     ))
     cells.append(nbf.v4.new_code_cell(
         "print('=== [Validation 전용 인코더 선택 기록] ===')\n"
