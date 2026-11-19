@@ -565,14 +565,24 @@ def analyze_hold_calibration(
         if not is_cross:
             continue
 
+        vd_ref = q.get("verdict") or {}
+        q_thr = float(vd_ref.get("openSetThreshold") if vd_ref.get("openSetThreshold") is not None else arena_thr)
+        q_margin = float(vd_ref.get("marginThreshold") if vd_ref.get("marginThreshold") is not None else arena_margin)
+        q_beta = float(vd_ref.get("behaviorWeight") if vd_ref.get("behaviorWeight") is not None else beta_kb)
+
         for mode in modes:
             cand_scores: List[Tuple[float, str]] = []
             for cand in gallery:
                 e_dev = cand["enroll_dev"]
-                delta_prior = dev_enr_mean_sec.get(q_dev, 0.0) - dev_enr_mean_sec.get(e_dev, 0.0)
+                both_phys = (q_dev in PHYSICAL_KB_GROUPS) and (e_dev in PHYSICAL_KB_GROUPS)
+                delta_prior = (
+                    dev_enr_mean_sec[q_dev] - dev_enr_mean_sec[e_dev]
+                    if (both_phys and q_dev in dev_enr_mean_sec and e_dev in dev_enr_mean_sec)
+                    else 0.0
+                )
                 embs = []
                 for rc in raw_caps:
-                    if mode == "uncalibrated":
+                    if mode == "uncalibrated" or not both_phys:
                         cal_rc = rc
                     elif mode == "naive_h_only":
                         cal_rc = apply_hold_calibration(
@@ -600,8 +610,8 @@ def analyze_hold_calibration(
                 q_emb = np.sum(embs, axis=0)
                 q_emb = q_emb / (np.linalg.norm(q_emb) + 1e-8)
                 sim = as_norm_similarity(q_emb, cand, bundle["cohort_kb"], top_m=16)
-                if beta_kb > 0:
-                    sim = fuse(sim, cand["behavior_llr"], beta_kb)
+                if q_beta > 0:
+                    sim = fuse(sim, cand["behavior_llr"], q_beta)
                 cand_scores.append((sim, cand["id"]))
 
             if not cand_scores:
@@ -609,7 +619,7 @@ def analyze_hold_calibration(
             cand_scores.sort(key=lambda x: x[0], reverse=True)
             scores_desc = [s for s, _ in cand_scores]
             win_id = cand_scores[0][1]
-            accepted = _open_set_accept(scores_desc, arena_thr, arena_margin)
+            accepted = _open_set_accept(scores_desc, q_thr, q_margin)
             arena_eval_rows[mode].append(
                 {
                     "role": role,
@@ -680,10 +690,15 @@ def analyze_hold_calibration(
             tau_eff = prm["tau"] + (float(cm_cfg.get("tau_offset", 0.0)) if cap_llr_val != 0.0 else 0.0)
 
             e_hold_sec = float(ts.get("holdMs") or 90.0) / 1000.0
-            delta_prior = dev_enr_mean_sec.get(q_dev, 0.0) - dev_enr_mean_sec.get(e_dev, 0.0)
+            both_phys = (q_dev in PHYSICAL_KB_GROUPS) and (e_dev in PHYSICAL_KB_GROUPS)
+            delta_prior = (
+                dev_enr_mean_sec[q_dev] - dev_enr_mean_sec[e_dev]
+                if (both_phys and q_dev in dev_enr_mean_sec and e_dev in dev_enr_mean_sec)
+                else 0.0
+            )
 
             for mode in modes:
-                if mode == "uncalibrated":
+                if mode == "uncalibrated" or not both_phys:
                     cal_rc = rc
                 elif mode == "naive_h_only":
                     cal_rc = apply_hold_calibration(
