@@ -7,12 +7,13 @@ Clean-room 4-step gate (--verify-cleanroom, enabled by default):
           zero b"file://" in PDF,
           and 100% file-by-file SHA-256 parity on a fresh temporary directory extraction.
   Step 2: As-shipped Web & Parity gate BEFORE any Python script overwrites files:
-          `npm ci` -> parity check -> production build -> functional tests -> offline smoke
-          -> existing adversarial regression.
+          `npm ci` -> parity check -> sentence sampling -> production build -> functional tests
+          -> eval study E2E -> offline smoke -> existing adversarial regression.
   Step 3: Standalone Python reproducibility gate AFTER Step 2 inside the isolated temp dir
           (`cwd=extracted_dir`, `PYTHONPATH=extracted_dir/src`, `KEYPRINT_REUSE_WEIGHTS=1`):
-          re-runs `visualize_and_run.py`, `eval_password_calibration.py`, `eval_typing_style.py`
-          and asserts all reported numeric metrics match shipped JSON snapshots within 1e-4.
+          re-runs `visualize_and_run.py`, `eval_password_calibration.py`, `eval_typing_style.py`,
+          `eval_timestamp_sensitivity.py`, `eval_trial_sensitivity.py`, plus calibration/field-study
+          parity regression, and asserts all reported numeric metrics match shipped JSON snapshots within 1e-4.
   Step 4: Atomic `os.replace(tmp_zip, final_zip)` ONLY when Steps 1..3 all succeed.
 """
 
@@ -58,10 +59,13 @@ MANDATORY_ARCHIVE_FILES = [
     "data/raw/DSL-StrongPasswordData.csv",
     "data/raw/KeyRecs-free-text.csv",
     "data/raw/KeyRecs-fixed-text.csv",
+    "data/raw/FACT-korean-sample-4writers.json",
     "web/package-lock.json",
     "web/public/models/keyprint_net.onnx",
     "web/public/models/keyprint_net_password.onnx",
     "web/public/models/model_config.json",
+    "web/public/models/string_cohort_calibration.json",
+    "models/calibration_and_cross_device_study.json",
     "models/timestamp_sensitivity.json",
     "models/trial_sensitivity.json",
     "models/legacy/keyprint_net_17ch_published_dd.pt",
@@ -70,6 +74,7 @@ MANDATORY_ARCHIVE_FILES = [
     "web/ime-debug.html",
     "web/korean-study.html",
     "models/korean_fact_ab.json",
+    "research/cross-device-and-calibration/README.md",
     "research/korean-typing/README.md",
     "research/korean-typing/reproduce.py",
     "research/korean-typing/results.json",
@@ -153,7 +158,7 @@ def collect_archive_sources(root: Path, pdf_override: Path | None = None) -> dic
     add_file(root / ".github" / "workflows" / "deploy.yml")
 
     # 2. Raw & processed datasets
-    add_tree(root / "data" / "raw", suffixes=(".csv",))
+    add_tree(root / "data" / "raw", suffixes=(".csv", ".json"))
     add_tree(root / "data" / "processed")
 
     # 3. Python source & optional test suites
@@ -336,20 +341,32 @@ def step1_static_and_hash_gate(tmp_zip: Path, extracted_dir: Path, sources: dict
     )
 
 
-def step2_as_shipped_web_and_parity_gate(extracted_dir: Path) -> None:
+def step2_as_shipped_web_and_parity_gate(extracted_dir: Path, python_bin: Path | None = None) -> None:
     print("[Step 2/4] Running As-Shipped Web & Parity Gate (before any Python regeneration)...", flush=True)
     web_dir = extracted_dir / "web"
-    _run_checked(["npm", "ci"], cwd=web_dir, step_label="Step 2.1 npm-ci")
-    _run_checked(["node", "web/scripts/parity_check.mjs"], cwd=extracted_dir, step_label="Step 2.2 parity")
-    _run_checked(["npm", "run", "build"], cwd=web_dir, step_label="Step 2.3 build")
+    if python_bin is None:
+        venv_py = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python"
+        py_bin = venv_py if venv_py.exists() else Path(sys.executable)
+    else:
+        py_bin = python_bin
+    web_env = os.environ.copy()
+    py_dir = str(py_bin.absolute().parent)
+    web_env["PATH"] = f"{py_dir}{os.pathsep}{web_env.get('PATH', '')}"
+    web_env["PYTHONNOUSERSITE"] = "1"
+
+    _run_checked(["npm", "ci"], cwd=web_dir, env=web_env, step_label="Step 2.1 npm-ci")
+    _run_checked(["node", "web/scripts/parity_check.mjs"], cwd=extracted_dir, env=web_env, step_label="Step 2.2 parity")
+    _run_checked(["node", "scripts/sentence_sampling.mjs"], cwd=web_dir, env=web_env, step_label="Step 2.3 sentence-sampling")
+    _run_checked(["npm", "run", "build"], cwd=web_dir, env=web_env, step_label="Step 2.4 build")
     if list((web_dir / "dist").rglob("ime-debug.html")):
         raise AssertionError("IME diagnostic page must remain source-only, outside the production build")
-    _run_checked(["node", "scripts/functional_state.mjs"], cwd=web_dir, step_label="Step 2.4 state")
-    _run_checked(["node", "scripts/functional_browser.mjs"], cwd=web_dir, step_label="Step 2.5 browser")
-    _run_checked(["node", "scripts/offline_smoke.mjs"], cwd=web_dir, step_label="Step 2.6 smoke")
-    _run_checked(["node", "scripts/adversarial_regression.mjs"], cwd=web_dir, step_label="Step 2.7 adversarial")
+    _run_checked(["node", "scripts/functional_state.mjs"], cwd=web_dir, env=web_env, step_label="Step 2.5 state")
+    _run_checked(["node", "scripts/functional_browser.mjs"], cwd=web_dir, env=web_env, step_label="Step 2.6 browser")
+    _run_checked(["node", "scripts/eval_study_e2e.mjs"], cwd=web_dir, env=web_env, step_label="Step 2.7 eval-study-e2e")
+    _run_checked(["node", "scripts/offline_smoke.mjs"], cwd=web_dir, env=web_env, step_label="Step 2.8 smoke")
+    _run_checked(["node", "scripts/adversarial_regression.mjs"], cwd=web_dir, env=web_env, step_label="Step 2.9 adversarial")
     print(
-        "[Step 2/4] PASSED (npm ci + parity + build + functional state/browser + offline smoke + adversarial regression).",
+        "[Step 2/4] PASSED (npm ci + parity + sentence sampling + build + functional state/browser + eval study E2E + offline smoke + adversarial regression).",
         flush=True,
     )
 
@@ -486,6 +503,12 @@ def step3_python_reproducibility_gate(extracted_dir: Path, python_bin: Path) -> 
         env=clean_env,
         step_label="Step 3.5 eval_trial_sensitivity",
     )
+    _run_checked(
+        [str(python_bin), "-m", "unittest", "tests/test_calibration_and_field_study.py"],
+        cwd=extracted_dir,
+        env=clean_env,
+        step_label="Step 3.6 calibration_and_field_study_unit",
+    )
 
     repro_eval = json.loads(eval_path.read_text(encoding="utf-8"))
     repro_pw = json.loads(pw_path.read_text(encoding="utf-8"))
@@ -562,7 +585,7 @@ def build_zip(
                 extracted_dir = Path(tmp_dir_str)
                 step1_static_and_hash_gate(tmp_zip, extracted_dir, sources)
                 if verify_cleanroom and not static_only:
-                    step2_as_shipped_web_and_parity_gate(extracted_dir)
+                    step2_as_shipped_web_and_parity_gate(extracted_dir, python_bin=python_bin)
                     step3_python_reproducibility_gate(extracted_dir, python_bin)
 
         print(f"[Step 4/4] Atomically promoting {tmp_zip.name} -> {final_zip}", flush=True)
