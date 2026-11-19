@@ -15,7 +15,9 @@ import torch
 from sklearn.metrics import f1_score, roc_auc_score
 
 from behavior_profile import BehaviorModel, Event, merge, summarize
+from evaluation_protocol import balanced_impostor_indices, paired_person_auc_ci
 from capture_sim import (
+    RecorderSim,
     as_norm_similarity,
     build_input_tensor,
     fuse,
@@ -23,6 +25,20 @@ from capture_sim import (
     simulate_captures,
 )
 from keyboard_layout import CMU_PASSWORD_CODES, pairs_from_codes
+from preprocessing import (
+    KEYRECS_FIXED_KEY_BLOCK,
+    N_CHANNELS,
+    SentenceSplitData,
+    apply_channel_scaler,
+    extract_sequences,
+    read_keyrecs_fixed_timings,
+)
+from train_and_evaluate import compute_eer, encode_sequences, evaluate_1toN_identification_embeddings
+
+SENTENCE_MODEL_CANDIDATES = ("keyprint_17ch", "vanilla_17ch_aug")
+CMU_BROWSER_SAMPLE_PASSWORD = ".tie5Roanl"
+ARENA_RULE_GRID_START = 0.40
+ARENA_CALIBRATION_DRAWS = 80
 
 
 # ---------------------------------------------------------------------------------------
@@ -60,6 +76,17 @@ def stroke_events(holds: Sequence[float], dds: Sequence[float], codes: Sequence[
 
 def cmu_behavior_stats(holds: np.ndarray, dds: np.ndarray) -> List[Dict]:
     return [summarize(stroke_events(h, d, CMU_PASSWORD_CODES)) for h, d in zip(holds, dds)]
+
+
+def cmu_browser_password_capture(holds: Sequence[float], dds: Sequence[float]) -> Dict:
+    """Convert a full CMU row to the password recorder's 10 characters and 9 transitions."""
+    if len(holds) != len(CMU_PASSWORD_CODES) or len(dds) != len(holds) - 1:
+        raise ValueError("Expected a complete CMU stroke including terminal Enter")
+    recorder = RecorderSim()
+    times = np.concatenate([[0.0], np.cumsum(dds[:-1], dtype=np.float64)])
+    for code, char, time, hold in zip(CMU_PASSWORD_CODES[:-1], CMU_BROWSER_SAMPLE_PASSWORD, times, holds[:-1]):
+        recorder.feed(code, char, float(time), float(hold))
+    return recorder.extract()
 
 
 def flat_to_hdu(flat: np.ndarray, m: int = 10) -> Tuple[np.ndarray, np.ndarray]:
@@ -137,6 +164,21 @@ def embed_bank(bank, model, device, in_ch: int, key: str) -> None:
     embs = encode_variable(model, [bank[p][s][i]["tensor"] for p, s, i in flat], device, in_ch)
     for (p, s, i), e in zip(flat, embs):
         bank[p][s][i][key] = e
+
+
+def evaluate_clean_sentence_cross_session(split: SentenceSplitData, model, device, cohort: np.ndarray) -> Dict:
+    """Identical 25-character Session 1 enrolment / Session 2 queries and AS-Norm for both encoders."""
+    embeddings = encode_sequences(model, split.seq_scaled[:, :N_CHANNELS], device)
+    metrics, _ = evaluate_1toN_identification_embeddings(
+        embeddings, split.subject_ids, split.sessions, split.chunk_ids, split.subjects,
+        k_shot=5, cross_session=True, cohort=cohort, t_ranges=split.t_ranges, key_idx_ranges=split.key_idx_ranges,
+    )
+    return metrics
+
+
+def select_sentence_encoder(validation: Dict[str, Dict]) -> str:
+    """Rank by clean 25-character cross-session Top-1 on Validation; retain KeyPrintNet on ties."""
+    return max(SENTENCE_MODEL_CANDIDATES, key=lambda name: validation[name]["top1_accuracy"])
 
 
 def eval_web_identification(
@@ -350,8 +392,6 @@ def dd_cv(caps: Sequence[Dict]) -> float:
 # Password encoder choice: does the score transfer to passwords the encoder never trained on?
 # ---------------------------------------------------------------------------------------
 def _verification_metrics(y: np.ndarray, s: np.ndarray, threshold: float) -> Dict[str, float]:
-    from train_and_evaluate import compute_eer  # local import: train_and_evaluate is heavier
-
     far = float(((s >= threshold) & (y == 0)).sum() / max(1, (y == 0).sum()))
     frr = float(((s < threshold) & (y == 1)).sum() / max(1, (y == 1).sum()))
     return {
@@ -366,21 +406,6 @@ def _verification_metrics(y: np.ndarray, s: np.ndarray, threshold: float) -> Dic
     }
 
 
-def _paired_auc_diff_ci(y: np.ndarray, s_a: np.ndarray, s_b: np.ndarray, n_boot: int = 1000, seed: int = 0) -> Dict[str, float]:
-    rng = np.random.default_rng(seed)
-    diffs = []
-    for _ in range(n_boot):
-        i = rng.integers(0, len(y), len(y))
-        if y[i].min() == y[i].max():
-            continue
-        diffs.append(roc_auc_score(y[i], s_a[i]) - roc_auc_score(y[i], s_b[i]))
-    return {
-        "mean": round(float(np.mean(diffs)), 4),
-        "ci95_low": round(float(np.percentile(diffs, 2.5)), 4),
-        "ci95_high": round(float(np.percentile(diffs, 97.5)), 4),
-    }
-
-
 def eval_password_transfer(
     fixed_csv,
     raw_sessions: Dict[Tuple[str, int], Sequence],
@@ -390,6 +415,8 @@ def eval_password_transfer(
     std: np.ndarray,
     encoders: Dict[str, Tuple[torch.nn.Module, int, np.ndarray, float]],
     device,
+    *,
+    fixed_interpretation: str,
     seed: int = 0,
     min_word_len: int = 5,
 ) -> Dict:
@@ -403,19 +430,10 @@ def eval_password_transfer(
     * repeated_words_unseen — words (>= min_word_len letters) an unseen person typed cleanly
       >= 4 times in free text: a fixed string never trained as a password, like a user's own
       password. Enroll = first 3 session-1 occurrences, genuine = session-2 (else later) ones,
-      impostors = up to 12 occurrences of the same word by other people.
+      impostors = an equal quota (up to 2) from every eligible other person.
     """
-    import pandas as pd
-
     from behavior_profile import kind_of
     from keyboard_layout import code_for_label, key_channel_matrix
-    from preprocessing import (
-        KEYRECS_DD_COLS,
-        KEYRECS_FIXED_KEY_BLOCK,
-        KEYRECS_HOLD_COLS,
-        apply_channel_scaler,
-        extract_sequences,
-    )
 
     rng = np.random.default_rng(seed)
     names = list(encoders)
@@ -424,27 +442,25 @@ def eval_password_transfer(
         model, in_ch, _, _ = encoders[name]
         return encode_variable(model, list(seq), device, in_ch)
 
-    def _score_groups(seq, groups: List[Tuple[List[int], List[int], List[int]]]) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    def _score_groups(seq, groups, sample_people):
         embs = {n: _enc(n, seq) for n in names}
         y, scores = [], {n: [] for n in names}
+        targets, queries = [], []
         for enroll, gen, imp in groups:
             tmpls = {n: make_template(embs[n][enroll]) for n in names}
             for idxs, lab in ((gen, 1), (imp, 0)):
                 for i in idxs:
                     y.append(lab)
+                    targets.append(sample_people[enroll[0]])
+                    queries.append(sample_people[i])
                     for n in names:
                         scores[n].append(as_norm_similarity(embs[n][i], tmpls[n], encoders[n][2], 12))
-        return np.asarray(y), {n: np.asarray(v) for n, v in scores.items()}
+        return np.asarray(y), {n: np.asarray(v) for n, v in scores.items()}, targets, queries
 
     out: Dict[str, Dict] = {}
 
     # 1) KeyRecs fixed text, cross-session
-    df = pd.read_csv(fixed_csv)
-    df.columns = [c.strip() for c in df.columns]
-    df = df[df["participant"].isin(participants)].dropna(subset=KEYRECS_HOLD_COLS + KEYRECS_DD_COLS).reset_index(drop=True)
-    raw_h = df[KEYRECS_HOLD_COLS].values.astype(np.float32)
-    raw_d = df[KEYRECS_DD_COLS].values.astype(np.float32)
-    raw_u = (raw_d - raw_h[:, :-1]).astype(np.float32)
+    df, raw_h, raw_d, raw_u = read_keyrecs_fixed_timings(fixed_csv, participants, fixed_interpretation)
     h = np.clip(raw_h, *bounds["H"]).astype(np.float32)
     d = np.clip(raw_d, *bounds["DD"]).astype(np.float32)
     u = np.clip(raw_u, *bounds["UD"]).astype(np.float32)
@@ -463,10 +479,10 @@ def eval_password_transfer(
                 cand = np.where((P == q) & (S == 2))[0]
                 imp.extend(rng.choice(cand, size=min(10, len(cand)), replace=False).tolist())
         groups.append((enroll, gen, imp))
-    y, sc = _score_groups(seq, groups)
+    y, sc, targets, queries = _score_groups(seq, groups, P)
     out["keyrecs_fixed_cross_session"] = {n: _verification_metrics(y, sc[n], encoders[n][3]) for n in names}
     if len(names) >= 2:
-        out["keyrecs_fixed_cross_session"]["auc_diff_first_minus_second"] = _paired_auc_diff_ci(y, sc[names[0]], sc[names[1]], seed=seed)
+        out["keyrecs_fixed_cross_session"]["auc_diff_first_minus_second"] = paired_person_auc_ci(y, sc[names[0]], sc[names[1]], targets, queries, seed=seed)
 
     # 2) Repeated words of unseen people (content never trained as a fixed password)
     occ: Dict[str, Dict[str, Dict[int, List]]] = defaultdict(lambda: defaultdict(lambda: {1: [], 2: []}))
@@ -489,7 +505,7 @@ def eval_password_transfer(
                     continue
                 else:
                     ok = False
-    seqs, groups, words = [], [], []
+    seqs, groups, words, sample_people = [], [], [], []
     for w, per in occ.items():
         enrolled = [p for p, dd_ in per.items() if len(dd_[1]) >= 3 and len(dd_[1]) + len(dd_[2]) >= 4]
         if len(enrolled) < 3 or len(per) < 4:
@@ -505,23 +521,28 @@ def eval_password_transfer(
                     uu = np.clip(raw_u, *bounds["UD"]).astype(np.float32)
                     seqs.append(apply_channel_scaler(extract_sequences(hh[None], dc[None], uu[None], kb[None]), mean, std)[0])
                     index[(p, s, k)] = len(seqs) - 1
+                    sample_people.append(p)
         used = 0
         for p in enrolled:
             s1 = [index[(p, 1, k)] for k in range(len(per[p][1]))]
             gen = [index[(p, 2, k)] for k in range(len(per[p][2]))] or s1[3:]
             if not gen:
                 continue
-            imp = [i for (q, _, _), i in index.items() if q != p][:12]
+            imp = balanced_impostor_indices(index, p, w, seed=seed)
             groups.append((s1[:3], gen, imp))
             used += 1
         if used:
             words.append({"word": w, "enrolled_people": used})
     if groups:
-        y, sc = _score_groups(seqs, groups)
+        y, sc, targets, queries = _score_groups(seqs, groups, sample_people)
         res = {n: _verification_metrics(y, sc[n], encoders[n][3]) for n in names}
         if len(names) >= 2:
-            res["auc_diff_first_minus_second"] = _paired_auc_diff_ci(y, sc[names[0]], sc[names[1]], seed=seed)
+            res["auc_diff_first_minus_second"] = paired_person_auc_ci(y, sc[names[0]], sc[names[1]], targets, queries, seed=seed)
         res["words"] = words
+        from collections import Counter
+        res["sampling"] = {"rule": "equal_quota_all_eligible_other_people", "seed": seed,
+                           "impostor_trials_by_person": dict(Counter(q for q, label in zip(queries, y) if label == 0)),
+                           "target_word_templates": len(groups)}
         out["repeated_words_unseen"] = res
     return out
 
@@ -571,39 +592,113 @@ def open_set_matrix(bank, emb_key: str, cohort: np.ndarray, behavior_model: Opti
     return {"S": S, "person": np.array(q_person), "session": np.array(q_session), "people": people}
 
 
-def open_set_eval(mat: Dict, gallery: int, threshold: float, margin: float, n_draw: int = 300, seed: int = 11) -> Dict[str, float]:
-    """Random galleries of `gallery` registered people; everyone else is an unregistered typist."""
+def _open_set_draws(mat: Dict, gallery: int, n_draw: int, seed: int) -> Tuple[np.ndarray, ...]:
     S, P = mat["S"], mat["person"]
     n = len(mat["people"])
     rng = np.random.default_rng(seed)
-    tp = mis = fa = n_reg = n_out = 0
+    best, gaps, registered, correct = [], [], [], []
     for _ in range(n_draw):
         reg = rng.choice(n, size=min(gallery, n - 1), replace=False)
         sub = S[:, reg]
         order = np.argsort(-sub, axis=1)
         s1 = sub[np.arange(len(sub)), order[:, 0]]
         s2 = sub[np.arange(len(sub)), order[:, 1]] if sub.shape[1] > 1 else np.full(len(sub), -np.inf)
-        acc = (s1 >= threshold) & (s1 - s2 >= margin)
-        is_reg = np.isin(P, reg)
-        correct = reg[order[:, 0]] == P
-        tp += int(np.sum(acc & is_reg & correct)); mis += int(np.sum(acc & is_reg & ~correct)); n_reg += int(is_reg.sum())
-        fa += int(np.sum(acc & ~is_reg)); n_out += int((~is_reg).sum())
-    return {"correct_accept": round(tp / max(n_reg, 1), 4), "misidentified": round(mis / max(n_reg, 1), 4),
-            "outsider_accepted": round(fa / max(n_out, 1), 4)}
+        best.append(s1)
+        gaps.append(s1 - s2)
+        registered.append(np.isin(P, reg))
+        correct.append(reg[order[:, 0]] == P)
+    return tuple(np.concatenate(items) for items in (best, gaps, registered, correct))
+
+
+def _open_set_metrics(draws: Tuple[np.ndarray, ...], threshold: float, margin: float) -> Dict[str, float]:
+    scores, gaps, registered, correct = draws
+    accepted = (scores >= threshold) & (gaps >= margin)
+    n_reg = max(int(registered.sum()), 1)
+    n_out = max(len(registered) - int(registered.sum()), 1)
+    return {
+        "correct_accept": round(int((accepted & registered & correct).sum()) / n_reg, 4),
+        "misidentified": round(int((accepted & registered & ~correct).sum()) / n_reg, 4),
+        "outsider_accepted": round(int((accepted & ~registered).sum()) / n_out, 4),
+    }
+
+
+def open_set_eval(mat: Dict, gallery: int, threshold: float, margin: float, n_draw: int = 300, seed: int = 11) -> Dict[str, float]:
+    """Random galleries of `gallery` registered people; everyone else is an unregistered typist."""
+    return _open_set_metrics(_open_set_draws(mat, gallery, n_draw, seed), threshold, margin)
 
 
 def tune_open_set_rule(mat: Dict, gallery: int, target_correct_accept: float,
                        margins: Sequence[float] = (0.0, 0.03, 0.05, 0.08, 0.12)) -> Dict[str, float]:
     """Lowest outsider acceptance on Validation while keeping correct-accept >= target."""
     best = None
-    for t in np.linspace(0.40, 0.98, 59):
+    draws = _open_set_draws(mat, gallery, ARENA_CALIBRATION_DRAWS, seed=11)
+    for t in np.round(np.linspace(ARENA_RULE_GRID_START, 0.98, 59), 4):
         for mg in margins:
-            r = open_set_eval(mat, gallery, float(t), mg, n_draw=80)
+            r = _open_set_metrics(draws, float(t), mg)
             if r["correct_accept"] >= target_correct_accept and (best is None or r["outsider_accepted"] < best[0]):
-                best = (r["outsider_accepted"], float(round(t, 4)), mg)
+                best = (r["outsider_accepted"], float(t), mg)
     if best is None:
         return {"threshold": 0.5, "margin": 0.0}
     return {"threshold": best[1], "margin": best[2]}
+
+
+def calibrate_sentence_arena(val_bank, cohorts: Dict[str, np.ndarray], behavior_model: BehaviorModel,
+                             k_enroll: int, n_query: int, gallery: int) -> Dict:
+    """Fit each candidate on the same Validation captures, five-person draws and acceptance target."""
+    candidates, matrices = {}, {}
+    for name, cohort in cohorts.items():
+        beta, beta_grid = tune_beta_identification(val_bank, name, cohort, behavior_model)
+        baseline = calibrate_open_set_threshold(val_bank, name, cohort, behavior_model, beta)
+        legacy_mat = open_set_matrix(val_bank, name, cohort, behavior_model, beta, 3, 1)
+        baseline_rates = open_set_eval(legacy_mat, gallery, baseline["threshold"], 0.0, n_draw=ARENA_CALIBRATION_DRAWS)
+        matrices[name] = open_set_matrix(val_bank, name, cohort, behavior_model, beta, k_enroll, n_query)
+        max_correct_accept = open_set_eval(
+            matrices[name], gallery, ARENA_RULE_GRID_START, 0.0, n_draw=ARENA_CALIBRATION_DRAWS,
+        )["correct_accept"]
+        candidates[name] = {
+            "beta": beta, "beta_grid": beta_grid, "baseline_rule": baseline,
+            "validation_3plus1": baseline_rates,
+            "max_validation_correct_accept_5plus2": max_correct_accept,
+        }
+
+    baseline_min = min(c["validation_3plus1"]["correct_accept"] for c in candidates.values())
+    attainable_min = min(c["max_validation_correct_accept_5plus2"] for c in candidates.values())
+    target = min(baseline_min, attainable_min)
+    for name, c in candidates.items():
+        rule = tune_open_set_rule(matrices[name], gallery, target)
+        c["rule"] = rule
+        c["validation_5plus2"] = open_set_eval(matrices[name], gallery, n_draw=ARENA_CALIBRATION_DRAWS, **rule)
+        if c["validation_5plus2"]["correct_accept"] < target:
+            raise ValueError(f"Arena Validation calibration missed the shared target for {name}")
+    return {
+        "validation_target_correct_accept": target,
+        "min_baseline_3plus1_correct_accept": baseline_min,
+        "min_attainable_5plus2_correct_accept": attainable_min,
+        "gallery": gallery,
+        "validation_gallery_draws": ARENA_CALIBRATION_DRAWS,
+        "gallery_draw_seed": 11,
+        "candidates": candidates,
+    }
+
+
+def evaluate_sentence_arena(test_bank, name: str, cohort: np.ndarray, behavior_model: BehaviorModel,
+                            calibration: Dict, k_enroll: int, n_query: int, galleries: Tuple[int, ...]) -> Dict:
+    """Apply frozen Validation rules to Test, using paired draws for every candidate."""
+    c = calibration["candidates"][name]
+    legacy_mat = open_set_matrix(test_bank, name, cohort, behavior_model, c["beta"], 3, 1)
+    deployed_mat = open_set_matrix(test_bank, name, cohort, behavior_model, c["beta"], k_enroll, n_query)
+    return {
+        "rule": c["rule"],
+        "validation_target_correct_accept": calibration["validation_target_correct_accept"],
+        "validation_calibration": c["validation_5plus2"],
+        **{
+            f"gallery_{g}": {
+                "single_sentence_enroll3": open_set_eval(legacy_mat, g, c["baseline_rule"]["threshold"], 0.0),
+                "two_sentences_enroll5_margin": open_set_eval(deployed_mat, g, **c["rule"]),
+            }
+            for g in galleries
+        },
+    }
 
 
 def sentence_add_check(val_bank, test_bank, emb_key: str, cohort: np.ndarray, behavior_model: Optional[BehaviorModel],

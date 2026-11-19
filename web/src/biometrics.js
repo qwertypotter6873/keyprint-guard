@@ -1,4 +1,4 @@
-import * as ort from 'onnxruntime-web';
+import * as ort from 'onnxruntime-web/wasm';
 import {
   attemptCapitalMethod,
   behaviorLlr,
@@ -217,12 +217,14 @@ export class KeyPrintEngine {
   constructor() {
     this.session = null; // 17-channel encoder: typing-practice sentences (key identity + touch-trained)
     this.passwordSession = null; // timing-only encoder: user-chosen passwords (content-agnostic)
+    this.passwordAuxSession = null; // dedicated 17-channel session when the sentence encoder differs
     this.config = null;
     this.loadTimeMs = 0;
     this.schemaVersion = SCHEMA_VERSION;
     this.preprocessVersion = DEFAULT_PREPROCESS_VERSION;
     this.modelHash = null;
     this.computedModelHash = null;
+    this.inferenceQueue = Promise.resolve();
   }
 
   async init(modelUrl = './models/keyprint_net.onnx', configUrl = './models/model_config.json') {
@@ -244,20 +246,24 @@ export class KeyPrintEngine {
     this.config = cfgResp;
 
     const pm = this.config.password_model;
-    let buf9 = null;
-    if (pm?.file) {
-      const pwUrl = new URL(pm.file, new URL(configUrl, baseHref)).href;
-      buf9 = await fetch(pwUrl).then((r) => {
+    const aux = this.config.password_aux_model;
+    const modelBase = new URL(configUrl, baseHref);
+    const loadPasswordModel = async (entry) => {
+      if (!entry?.file) return null;
+      const response = await fetch(new URL(entry.file, modelBase).href).then((r) => {
         if (!r.ok) throw new Error(`비밀번호 인코더 로드 실패: HTTP ${r.status}`);
         return r.arrayBuffer();
       });
-    }
+      return new Uint8Array(response);
+    };
+    const [bytes9, bytesAux] = await Promise.all([loadPasswordModel(pm), loadPasswordModel(aux)]);
 
     const bytes17 = new Uint8Array(buf17);
-    const bytes9 = buf9 ? new Uint8Array(buf9) : null;
     const sha17 = await sha256Hex(bytes17);
     const sha9 = bytes9 ? await sha256Hex(bytes9) : '';
-    const computedHash = (await sha256Hex(`${sha17}:${sha9}`)).slice(0, 16);
+    const shas = [sha17, sha9];
+    if (bytesAux) shas.push(await sha256Hex(bytesAux));
+    const computedHash = (await sha256Hex(shas.join(':'))).slice(0, 16);
 
     // Integrity guard against stale/corrupt cached ONNX weights vs model_config.json.
     // Note: modelHash & preprocessVersion are embedding-space compatibility guards, NOT ownership auth.
@@ -273,15 +279,15 @@ export class KeyPrintEngine {
     this.modelHash = this.config.model_hash || computedHash;
 
     this.session = await ort.InferenceSession.create(bytes17, sessionOpts);
-    if (bytes9) {
-      this.passwordSession = await ort.InferenceSession.create(bytes9, sessionOpts);
-    }
+    this.passwordSession = bytes9 ? await ort.InferenceSession.create(bytes9, sessionOpts) : null;
+    this.passwordAuxSession = bytesAux ? await ort.InferenceSession.create(bytesAux, sessionOpts) : null;
 
     const nCh = this.config.in_channels || 9;
-    await this.session.run({ keystroke_seq: new ort.Tensor('float32', new Float32Array(nCh * 10), [1, nCh, 10]) });
-    if (this.passwordSession) {
-      const pCh = pm.in_channels;
-      await this.passwordSession.run({ keystroke_seq: new ort.Tensor('float32', new Float32Array(pCh * 10), [1, pCh, 10]) });
+    for (const [session, channels] of [[this.session, nCh], [this.passwordSession, pm?.in_channels],
+      [this.passwordAuxSession, aux?.in_channels]]) {
+      if (session) {
+        await session.run({ keystroke_seq: new ort.Tensor('float32', new Float32Array(channels * 10), [1, channels, 10]) });
+      }
     }
     this.loadTimeMs = Math.round((performance.now() - t0) * 10) / 10;
     return this.config;
@@ -289,7 +295,10 @@ export class KeyPrintEngine {
 
   async _run(session, tensorData, nCh, m) {
     const inputTensor = new ort.Tensor('float32', tensorData, [1, nCh, m]);
-    const results = await session.run({ keystroke_seq: inputTensor });
+    // ORT WASM sessions share runtime state. Serialize every run, including live previews.
+    const run = this.inferenceQueue.then(() => session.run({ keystroke_seq: inputTensor }));
+    this.inferenceQueue = run.catch(() => {});
+    const results = await run;
     const rawEmb = Array.from(results.biometric_embedding.data);
     const norm = Math.hypot(...rawEmb) || 1e-8;
     return rawEmb.map((v) => v / norm);
@@ -310,6 +319,9 @@ export class KeyPrintEngine {
     if ((domain === 'password' || domain === 'guard') && this.passwordSession) {
       const pCh = this.config.password_model.in_channels;
       embedding = await this._run(this.passwordSession, tensorData.slice(0, pCh * m), pCh, m);
+    } else if (domain === 'password_aux' && this.passwordAuxSession) {
+      const pCh = this.config.password_aux_model.in_channels;
+      embedding = await this._run(this.passwordAuxSession, tensorData.slice(0, pCh * m), pCh, m);
     } else {
       embedding = await this._run(this.session, tensorData, nCh, m);
     }
@@ -317,14 +329,17 @@ export class KeyPrintEngine {
     return { embedding, latencyMs, cleanStroke };
   }
 
-  /** Both domain embeddings (the principles map can switch between sentence and password space). */
+  /** The sentence and timing embeddings plus the 17-channel password embedding used for dual scoring. */
   async embedAll(stroke) {
     const sentence = await this.embedStroke(stroke, { domain: 'sentence' });
     const password = this.passwordSession ? await this.embedStroke(stroke, { domain: 'password' }) : sentence;
+    const passwordAux = this.passwordAuxSession ? await this.embedStroke(stroke, { domain: 'password_aux' }) : sentence;
     return {
       sentence: sentence.embedding,
       password: password.embedding,
-      latencyMs: Math.round((sentence.latencyMs + (this.passwordSession ? password.latencyMs : 0)) * 100) / 100,
+      passwordAux: passwordAux.embedding,
+      latencyMs: Math.round((sentence.latencyMs + (this.passwordSession ? password.latencyMs : 0)
+        + (this.passwordAuxSession ? passwordAux.latencyMs : 0)) * 100) / 100,
     };
   }
 
@@ -427,7 +442,7 @@ export class KeyPrintEngine {
         accepted: r.similarity >= thr,
         threshold: thr,
         // template adaptation only on a confident accept (guards against an impostor drifting in)
-        adapt: r.similarity >= thr && r.z >= prm.tau + (dual.adapt_margin ?? 1.0),
+        adapt: dual.adapt_enabled !== false && r.similarity >= thr && r.z >= prm.tau + (dual.adapt_margin ?? 1.0),
       };
     }
 

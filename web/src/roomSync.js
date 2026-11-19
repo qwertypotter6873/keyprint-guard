@@ -5,6 +5,9 @@ const DEFAULT_BROKERS = [
   'wss://broker.emqx.io:8084/mqtt',
   'wss://broker.hivemq.com:8884/mqtt',
 ];
+const MQTT_CONNECT_MS = 4500;
+const MQTT_RETRY_MS = 4000;
+const MQTT_MAX_RETRY_MS = 30000;
 
 // v4: Frozen stitch/tensor preprocessing + dual-encoder hash & concrete profile schema isolation.
 // Profiles and room events carry { schemaVersion, preprocessVersion, modelHash } across MQTT,
@@ -45,7 +48,8 @@ function sanitizeVec64(v) {
     copy[i] = x;
     sumSq += x * x;
   }
-  if (Math.sqrt(sumSq) <= 1e-6) return null;
+  const norm = Math.sqrt(sumSq);
+  if (!Number.isFinite(norm) || Math.abs(norm - 1) > 0.01) return null;
   return copy;
 }
 
@@ -292,6 +296,9 @@ export function validateProfileSchema(
     if (typeof updatedAt !== 'number' || !Number.isFinite(updatedAt) || updatedAt < 0) {
       return { ok: false, reason: 'INVALID_UPDATED_AT' };
     }
+    if (profile.revisionId !== undefined && (typeof profile.revisionId !== 'string' || !ID_RE.test(profile.revisionId))) {
+      return { ok: false, reason: 'INVALID_REVISION_ID' };
+    }
 
     const pSchema = profile.schemaVersion === undefined && canStampSample ? schemaVersion : profile.schemaVersion;
     const pPreproc =
@@ -353,6 +360,7 @@ export function validateProfileSchema(
         isSample: profile.isSample,
         createdAt,
         updatedAt,
+        ...(profile.revisionId === undefined ? {} : { revisionId: profile.revisionId }),
         schemaVersion: pSchema,
         preprocessVersion: pPreproc,
         modelHash: pHash,
@@ -416,6 +424,16 @@ function finiteTs(v) {
   return Number.isFinite(n) && n >= 0 ? n : Date.now();
 }
 
+const revisionIdOf = (profile) => profile.revisionId || 'legacy';
+
+function compareProfileRevisions(a, b) {
+  const order = a.updatedAt - b.updatedAt;
+  if (order) return order;
+  const aId = revisionIdOf(a);
+  const bId = revisionIdOf(b);
+  return aId === bId ? 0 : aId > bId ? 1 : -1;
+}
+
 /**
  * Multi-user real-time profile store synchronized across:
  * 1) Multiple devices / laptops simultaneously via MQTT-over-WSS retained topics
@@ -434,6 +452,7 @@ export class RoomProfileSync {
     preprocessVersion = null,
     modelHash = null,
     brokers = null,
+    openMqtt = mqtt.connect,
   } = {}) {
     this.onChange = onChange;
     this.onStatusChange = onStatusChange;
@@ -442,18 +461,28 @@ export class RoomProfileSync {
     this.preprocessVersion = preprocessVersion;
     this.modelHash = modelHash;
     this.customBrokers = brokers;
+    this.openMqtt = openMqtt;
 
     this.clientId = `kp_${Math.random().toString(36).slice(2, 10)}`;
-    this.roomCode = 'GACHON';
+    this.roomCode = 'LOCAL';
+    this.shared = false;
+    this.pendingUpdates = new Set();
     this.profiles = new Map(); // id -> validated profile object
     this.tombstones = new Map(); // id -> deleted timestamp
     this.peers = new Map(); // clientId -> timestamp
     this.client = null;
     this.bc = null;
+    this.session = null;
+    this.storageListener = null;
     this.heartbeatTimer = null;
-    this.failoverTimer = null;
-    this.brokerIdx = 0;
-    this.status = 'connecting'; // 'connecting' | 'online' | 'local'
+    this.connectTimer = null;
+    this.retryTimer = null;
+    this.retryDelay = MQTT_RETRY_MS;
+    this.mqttReady = false;
+    this.inFlightProfiles = new Set();
+    this.retainedRevisions = new Map();
+    this.retainedDeletionTimes = new Map();
+    this.status = 'local'; // 'connecting' | 'online' | 'local'
     this.compatSkipCount = 0;
   }
 
@@ -500,9 +529,14 @@ export class RoomProfileSync {
   }
 
   setCompatibility({ schemaVersion = SCHEMA_VERSION, preprocessVersion, modelHash } = {}) {
+    const previous = this._compatEnvelope();
     this.schemaVersion = schemaVersion;
     if (preprocessVersion) this.preprocessVersion = preprocessVersion;
     if (modelHash) this.modelHash = modelHash;
+    if (this.shared && this.session && !this._isCompatibleEnvelope(previous)) {
+      this.connect(this.roomCode, { shared: true });
+      return;
+    }
 
     // Re-validate any already-loaded profiles against the updated compatibility tuple
     let pruned = false;
@@ -523,13 +557,16 @@ export class RoomProfileSync {
     }
   }
 
-  connect(roomCode) {
+  connect(roomCode, { shared = false } = {}) {
     this.disconnect();
-    this.roomCode = sanitizeRoomCode(roomCode);
+    this.shared = Boolean(shared);
+    this.roomCode = this.shared ? sanitizeRoomCode(roomCode) : 'LOCAL';
+    this.session = {};
+    this.retryDelay = MQTT_RETRY_MS;
     this.compatSkipCount = 0;
 
     try {
-      if (typeof localStorage !== 'undefined') {
+      if (this.shared && typeof localStorage !== 'undefined') {
         localStorage.setItem('keyprint_last_room', this.roomCode);
       }
     } catch {
@@ -539,7 +576,8 @@ export class RoomProfileSync {
     if (typeof window !== 'undefined' && window.location && window.history?.replaceState) {
       try {
         const url = new URL(window.location.href);
-        url.searchParams.set('room', this.roomCode);
+        if (this.shared) url.searchParams.set('room', this.roomCode);
+        else url.searchParams.delete('room');
         window.history.replaceState({}, '', url.toString());
       } catch {
         // Ignore URL update errors
@@ -548,50 +586,77 @@ export class RoomProfileSync {
 
     this.profiles.clear();
     this.tombstones.clear();
+    this.pendingUpdates.clear();
     this.peers.clear();
     this.peers.set(this.clientId, Date.now());
 
-    this._loadFromLocalStorage();
+    if (this.shared) {
+      this._loadSharedStorage();
+      this._listenToSharedStorage();
+    } else {
+      this._loadFromLocalStorage();
+    }
     this._setupBroadcastChannel();
-    this._connectMqtt(0);
+    if (this.shared) this._connectMqtt(0);
+    else this._setStatus('local');
     this._emitChange();
   }
 
   disconnect() {
+    this.session = null;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    if (this.storageListener) {
+      window.removeEventListener('storage', this.storageListener);
+      this.storageListener = null;
+    }
+    const channel = this.bc;
+    this.bc = null;
+    channel?.close();
+    this._closeMqtt({ announceDeparture: true });
+  }
+
+  _closeMqtt({ announceDeparture = false } = {}) {
+    const client = this.client;
+    this.client = null;
+    this.mqttReady = false;
+    clearTimeout(this.connectTimer);
+    this.connectTimer = null;
+    this.inFlightProfiles.clear();
+    this.retainedRevisions.clear();
+    this.retainedDeletionTimes.clear();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
-    if (this.failoverTimer) {
-      clearTimeout(this.failoverTimer);
-      this.failoverTimer = null;
-    }
-    if (this.bc) {
+    if (!client) return;
+    if (announceDeparture && client.connected) {
       try {
-        this.bc.close();
-      } catch {
-        // Ignore
-      }
-      this.bc = null;
+        client.publish(this._peerTopic(this.clientId), '', { qos: 0, retain: true });
+      } catch { /* The broker will also clear presence from the connection's will. */ }
     }
-    if (this.client) {
-      try {
-        const peerTopic = this._peerTopic(this.clientId);
-        this.client.publish(peerTopic, '', { qos: 0, retain: true });
-        this.client.end(true);
-      } catch {
-        // Ignore cleanup errors
-      }
-      this.client = null;
-    }
+    try {
+      client.end(true);
+    } catch { /* Ignore cleanup errors from a closed transport. */ }
   }
 
   _storageKey() {
-    return `keyprint_mvp_v4_room_${this.roomCode}`;
+    return this.shared ? `keyprint_mvp_v4_room_${this.roomCode}` : 'keyprint_mvp_v4_local';
   }
 
   _profileTopic(id = '+') {
     return `${TOPIC_NS}/room/${this.roomCode}/profiles/${id}`;
+  }
+
+  _profileRevisionTopic(profile) {
+    return profile
+      ? `${this._profileTopic(profile.id)}/${profile.updatedAt}/${revisionIdOf(profile)}`
+      : `${this._profileTopic()}/+/+`;
+  }
+
+  _deletionTopic(id = '+', ts = '+') {
+    // Timestamp in the retained topic prevents an older offline delete from replacing a newer one.
+    return `${TOPIC_NS}/room/${this.roomCode}/deletions/${id}/${ts}`;
   }
 
   _eventTopic() {
@@ -667,19 +732,27 @@ export class RoomProfileSync {
       hadInvalid = true;
     }
 
+    for (const [id, ts] of this.tombstones) {
+      if ((this.profiles.get(id)?.updatedAt ?? Infinity) <= ts) this.profiles.delete(id);
+    }
+    for (const id of Array.isArray(parsed.pendingUpdates) ? parsed.pendingUpdates : []) {
+      if (typeof id === 'string' && this.profiles.has(id)) this.pendingUpdates.add(id);
+    }
     if (hadInvalid) {
       this._saveToLocalStorage();
     }
+    return true;
   }
 
   _saveToLocalStorage() {
-    if (!this.preprocessVersion || !this.modelHash) return;
+    if (this.shared || !this.preprocessVersion || !this.modelHash) return;
     try {
       if (typeof localStorage === 'undefined') return;
       const payload = {
         ...this._compatEnvelope(),
         profiles: Array.from(this.profiles.values()),
         tombstones: Object.fromEntries(this.tombstones.entries()),
+        pendingUpdates: [...this.pendingUpdates],
       };
       localStorage.setItem(this._storageKey(), JSON.stringify(payload));
     } catch {
@@ -687,11 +760,155 @@ export class RoomProfileSync {
     }
   }
 
+  _recordsPrefix() {
+    const compatibility = JSON.stringify([this.schemaVersion, this.preprocessVersion, this.modelHash]);
+    return `${this._storageKey()}_records_${encodeURIComponent(compatibility)}/`;
+  }
+
+  _recordKey(record) {
+    if (record.type === 'upsert') {
+      const p = record.profile;
+      return `${this._recordsPrefix()}${p.id}/upsert/${p.updatedAt}/${revisionIdOf(p)}`;
+    }
+    return `${this._recordsPrefix()}${record.id}/delete/${record.ts}`;
+  }
+
+  _recordKeys(prefix) {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(prefix)) keys.push(key);
+    }
+    return keys;
+  }
+
+  _persistRecord(record) {
+    if (!this.shared || !this.preprocessVersion || !this.modelHash) return false;
+    try {
+      const key = this._recordKey(record);
+      if (localStorage.getItem(key) !== null) return true;
+      localStorage.setItem(key, JSON.stringify(record));
+      this._compactRecords(record.profile?.id ?? record.id);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  _compactRecords(id) {
+    // Different revisions never overwrite each other. Remove earlier revisions once newer state is durable.
+    const prefix = `${this._recordsPrefix()}${id}/`;
+    const records = this._recordKeys(prefix).map((key) => {
+      const [kind, timestamp, revisionId] = key.slice(prefix.length).split('/');
+      return { key, kind, updatedAt: Number(timestamp), revisionId };
+    }).filter(({ updatedAt }) => Number.isFinite(updatedAt));
+    let latestProfile = null;
+    let latestDelete = null;
+    for (const record of records) {
+      if (record.kind === 'upsert' && (!latestProfile || compareProfileRevisions(record, latestProfile) > 0)) latestProfile = record;
+      if (record.kind === 'delete' && (!latestDelete || record.updatedAt > latestDelete.updatedAt)) latestDelete = record;
+    }
+    if ((latestProfile?.updatedAt ?? Infinity) <= (latestDelete?.updatedAt ?? -1)) latestProfile = null;
+    for (const record of records) {
+      if (record !== latestProfile && record !== latestDelete) localStorage.removeItem(record.key);
+    }
+  }
+
+  _loadSharedStorage() {
+    if (!this.preprocessVersion || !this.modelHash) return;
+    // Upgrade existing v4 room snapshots once all their valid records have been copied.
+    if (this._loadFromLocalStorage()) {
+      const records = [...this.profiles.values()].map((profile) => ({
+        type: 'upsert', profile, pending: this.pendingUpdates.has(profile.id),
+      }));
+      for (const [id, ts] of this.tombstones) records.push({ type: 'delete', id, ts });
+      if (records.every((record) => this._persistRecord(record))) {
+        try { localStorage.removeItem(this._storageKey()); } catch { /* Keep the legacy copy until writable. */ }
+      }
+    }
+
+    try {
+      for (const key of this._recordKeys(this._recordsPrefix())) {
+        this._applyStoredRecord(key, localStorage.getItem(key), { emit: false });
+      }
+    } catch { /* The room also works without storage. */ }
+  }
+
+  _applyStoredRecord(key, raw, { emit = true } = {}) {
+    let record;
+    try { record = JSON.parse(raw); } catch { return; }
+    if (!isSafePlainObject(record)) return;
+    if (record.type === 'upsert' && isSafePlainObject(record.profile) && this._recordKey(record) === key) {
+      this._mergeIncomingProfile(record.profile, 'storage', { pending: Boolean(record.pending), persist: false, emit });
+      if (emit && record.pending) this._publishPendingProfile(record.profile.id);
+    } else if (record.type === 'delete' && typeof record.id === 'string' && typeof record.ts === 'number' &&
+        Number.isFinite(record.ts) && record.ts >= 0 && this._recordKey(record) === key) {
+      const applied = this._applyDelete(record.id, record.ts, { persist: false, emit });
+      if (emit && applied && record.pending) this._publishDeletion(record.id, record.ts);
+    }
+  }
+
+  _listenToSharedStorage() {
+    if (typeof window === 'undefined') return;
+    const session = this.session;
+    this.storageListener = (event) => {
+      if (this.session !== session || !event.key?.startsWith(this._recordsPrefix())) return;
+      if (event.newValue !== null) {
+        this._applyStoredRecord(event.key, event.newValue);
+        return;
+      }
+      let record;
+      try { record = JSON.parse(event.oldValue); } catch { return; }
+      const current = this.profiles.get(record?.profile?.id);
+      if (current?.isSample && this._recordKey({ type: 'upsert', profile: current }) === event.key) {
+        this.profiles.delete(current.id);
+        this._emitChange();
+      }
+    };
+    window.addEventListener('storage', this.storageListener);
+  }
+
+  _readPendingProfile(profile) {
+    try {
+      const key = this._recordKey({ type: 'upsert', profile });
+      const raw = localStorage.getItem(key);
+      return raw === null ? null : Boolean(JSON.parse(raw)?.pending);
+    } catch {
+      return null;
+    }
+  }
+
+  _acknowledgeProfile(profile) {
+    try {
+      const key = this._recordKey({ type: 'upsert', profile });
+      const record = JSON.parse(localStorage.getItem(key));
+      if (record?.pending) {
+        localStorage.setItem(key, JSON.stringify({ ...record, pending: false }));
+        this._compactRecords(profile.id);
+      }
+    } catch { /* A storage failure leaves that revision safe to retry. */ }
+    this._acceptProfileAcknowledgment(profile);
+    this._postBroadcast({ type: 'published', id: profile.id, updatedAt: profile.updatedAt, revisionId: revisionIdOf(profile) });
+  }
+
+  _acceptProfileAcknowledgment(profile) {
+    const current = this.profiles.get(profile.id);
+    if (current && compareProfileRevisions(current, profile) === 0) this.pendingUpdates.delete(profile.id);
+  }
+
+  _postBroadcast(message) {
+    try {
+      this.bc?.postMessage({ ...this._compatEnvelope(), ...message });
+    } catch { /* Storage and MQTT can still be used. */ }
+  }
+
   _setupBroadcastChannel() {
     if (typeof BroadcastChannel === 'undefined') return;
     try {
-      this.bc = new BroadcastChannel(`keyprint_bc_v4_${this.roomCode}`);
-      this.bc.onmessage = (ev) => {
+      const channel = new BroadcastChannel(this.shared ? `keyprint_bc_v4_${this.roomCode}` : 'keyprint_bc_v4_local');
+      this.bc = channel;
+      channel.onmessage = (ev) => {
+        if (this.bc !== channel) return;
         const msg = ev?.data;
         if (!isSafePlainObject(msg)) return;
         if (!this._isCompatibleEnvelope(msg)) {
@@ -699,9 +916,14 @@ export class RoomProfileSync {
           return;
         }
         if (msg.type === 'upsert' && msg.profile) {
-          this._mergeIncomingProfile(msg.profile, 'broadcast');
+          const pending = this.shared && msg.pending ? this._readPendingProfile(msg.profile) ?? true : undefined;
+          this._mergeIncomingProfile(msg.profile, 'broadcast', { pending });
+          if (pending) this._publishPendingProfile(msg.profile.id);
         } else if (msg.type === 'delete' && typeof msg.id === 'string' && ID_RE.test(msg.id)) {
-          this._applyDelete(msg.id, finiteTs(msg.ts));
+          const ts = finiteTs(msg.ts);
+          if (this._applyDelete(msg.id, ts) && msg.pending) this._publishDeletion(msg.id, ts);
+        } else if (msg.type === 'published' && Number.isFinite(msg.updatedAt)) {
+          this._acceptProfileAcknowledgment(msg);
         } else if (msg.type === 'clear_all') {
           this._applyClearAll(finiteTs(msg.ts));
         }
@@ -711,24 +933,25 @@ export class RoomProfileSync {
     }
   }
 
-  _connectMqtt(brokerIndex) {
+  _connectMqtt(brokerIndex, session = this.session) {
+    if (!session || this.session !== session || !this.shared) return;
     const brokers = this._brokers();
     if (brokers.length === 0) {
       this._setStatus('local');
       return;
     }
-    this.brokerIdx = brokerIndex % brokers.length;
-    const brokerUrl = brokers[this.brokerIdx];
+    brokerIndex %= brokers.length;
     this._setStatus('connecting');
+    if (this.session !== session) return;
 
     const myPeerTopic = this._peerTopic(this.clientId);
     let client;
     try {
-      client = mqtt.connect(brokerUrl, {
+      client = this.openMqtt(brokers[brokerIndex], {
         clientId: `${this.clientId}_${Math.random().toString(36).slice(2, 6)}`,
         clean: true,
-        connectTimeout: 4500,
-        reconnectPeriod: 4000,
+        connectTimeout: MQTT_CONNECT_MS,
+        reconnectPeriod: 0, // One retry loop handles both startup and post-connect failures.
         will: {
           topic: myPeerTopic,
           payload: '',
@@ -737,126 +960,173 @@ export class RoomProfileSync {
         },
       });
     } catch {
-      // Synchronous WebSocket throw (e.g. CSP / sandbox / blocked WS): fall back cleanly without crashing!
-      if (brokerIndex + 1 < brokers.length) {
-        this._connectMqtt(brokerIndex + 1);
-      } else {
-        this.client = null;
-        this._setStatus('local');
-      }
+      this._scheduleRetry(session, brokerIndex, brokers.length);
       return;
     }
     this.client = client;
 
-    let connectedOnce = false;
-    if (this.failoverTimer) clearTimeout(this.failoverTimer);
-    this.failoverTimer = setTimeout(() => {
-      if (!connectedOnce && this.client === client) {
-        try {
-          client.end(true);
-        } catch {
-          // ignore
-        }
-        if (brokerIndex + 1 < brokers.length) {
-          this._connectMqtt(brokerIndex + 1);
-        } else {
-          this._setStatus('local');
-        }
-      }
-    }, 4800);
+    const isCurrent = () => this.session === session && this.client === client;
+    const failed = () => {
+      if (!isCurrent()) return;
+      this._closeMqtt();
+      this._scheduleRetry(session, brokerIndex, brokers.length);
+    };
+    this.connectTimer = setTimeout(failed, MQTT_CONNECT_MS + 500);
 
     client.on('connect', () => {
-      if (this.client !== client) return;
-      connectedOnce = true;
-      if (this.failoverTimer) {
-        clearTimeout(this.failoverTimer);
-        this.failoverTimer = null;
-      }
-      this._setStatus('online');
-
-      client.subscribe(
-        [this._profileTopic('+'), this._eventTopic(), this._peerTopic('+')],
-        { qos: 1 },
-        () => {
-          // Re-broadcast any locally created valid non-sample profiles so room stays converged
-          for (const p of this.profiles.values()) {
-            if (!p.isSample && this._isCompatibleEnvelope(p)) {
-              client.publish(this._profileTopic(p.id), JSON.stringify(p), { qos: 1, retain: true });
+      if (!isCurrent()) return;
+      try {
+        client.subscribe(
+          [this._profileTopic(), this._profileRevisionTopic(), this._deletionTopic(), this._eventTopic(), this._peerTopic()],
+          { qos: 1 },
+          (err, grants) => {
+            if (!isCurrent()) return;
+            if (err || (Array.isArray(grants) && grants.some(({ qos }) => qos >= 128))) {
+              failed();
+              return;
             }
+            clearTimeout(this.connectTimer);
+            this.connectTimer = null;
+            this.retryDelay = MQTT_RETRY_MS;
+            this.mqttReady = true;
+            this._setStatus('online');
+            if (!isCurrent()) return;
+            this._flushMqtt();
+            for (const id of this.retainedRevisions.keys()) this._pruneRetainedRevisions(id);
+            if (isCurrent()) this.heartbeatTimer = setInterval(() => this._flushMqtt(), 18000);
           }
-          this._publishPresence();
-        }
-      );
-
-      if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = setInterval(() => this._publishPresence(), 18000);
+        );
+      } catch {
+        failed();
+      }
     });
 
-    client.on('message', (topic, buf) => {
-      if (this.client !== client) return;
-      const text = buf ? buf.toString() : '';
+    client.on('message', (topic, buf, packet) => {
+      if (isCurrent()) this._onMqttMessage(topic, buf?.toString() || '', packet);
+    });
+    client.on('close', failed);
+    client.on('offline', failed);
+    client.on('error', failed);
+  }
 
-      if (topic.startsWith(`${TOPIC_NS}/room/${this.roomCode}/peers/`)) {
-        const cid = topic.split('/').pop();
-        if (!cid || !ID_RE.test(cid)) return;
-        if (!text) {
-          if (cid !== this.clientId) this.peers.delete(cid);
-        } else {
-          try {
-            const data = JSON.parse(text);
-            if (isSafePlainObject(data)) {
-              this.peers.set(cid, finiteTs(data.ts));
-            }
-          } catch {
-            // ignore
-          }
-        }
-        this._emitStatus();
-        return;
-      }
+  _scheduleRetry(session, brokerIndex, brokerCount) {
+    if (this.session !== session) return;
+    const lastBroker = brokerIndex + 1 >= brokerCount;
+    const delay = lastBroker ? this.retryDelay : 0;
+    if (lastBroker) this.retryDelay = Math.min(this.retryDelay * 2, MQTT_MAX_RETRY_MS);
+    this.peers.clear();
+    this.peers.set(this.clientId, Date.now());
+    this._setStatus('local');
+    if (this.session !== session) return;
+    this.retryTimer = setTimeout(() => {
+      if (this.session !== session) return;
+      this.retryTimer = null;
+      this._connectMqtt(lastBroker ? 0 : brokerIndex + 1, session);
+    }, delay);
+  }
 
-      if (topic === this._eventTopic()) {
-        if (!text) return;
+  _onMqttMessage(topic, text, packet) {
+    const client = this.client;
+    const prefix = `${TOPIC_NS}/room/${this.roomCode}/`;
+    if (!topic.startsWith(prefix)) return;
+    const [kind, id, timestamp, revisionId, ...extra] = topic.slice(prefix.length).split('/');
+    if (extra.length > 0) return;
+    if (kind === 'peers' && ID_RE.test(id || '') && timestamp === undefined) {
+      if (!text) {
+        if (id !== this.clientId) this.peers.delete(id);
+      } else {
         try {
-          const ev = JSON.parse(text);
-          if (!isSafePlainObject(ev)) return;
-          if (!this._isCompatibleEnvelope(ev)) {
-            this._notifyCompatibilitySkip('mqtt_event', ev);
-            return;
+          const data = JSON.parse(text);
+          if (isSafePlainObject(data) && this._isCompatibleEnvelope(data) && data.cid === id) {
+            this.peers.set(id, finiteTs(data.ts));
           }
-          if (ev.type === 'delete' && typeof ev.id === 'string' && ID_RE.test(ev.id)) {
-            this._applyDelete(ev.id, finiteTs(ev.ts));
-          } else if (ev.type === 'clear_all') {
-            this._applyClearAll(finiteTs(ev.ts));
+        } catch { /* Ignore malformed presence messages. */ }
+      }
+      this._emitStatus();
+      return;
+    }
+
+    if (!text) return;
+    try {
+      const payload = JSON.parse(text);
+      if (!isSafePlainObject(payload)) return;
+      if (kind === 'deletions' && revisionId === undefined) {
+        if (this._isCompatibleEnvelope(payload) && payload.type === 'delete' && payload.id === id &&
+            String(payload.ts) === timestamp && Number.isFinite(payload.ts) && payload.ts >= 0) {
+          this._applyDelete(id, payload.ts);
+          if (this.client === client && packet?.retain) this._rememberRetainedDeletion(id, payload.ts);
+        }
+      } else if (topic === this._eventTopic()) {
+        if (!this._isCompatibleEnvelope(payload)) {
+          this._notifyCompatibilitySkip('mqtt_event', payload);
+        } else if (payload.type === 'delete') {
+          this._applyDelete(payload.id, finiteTs(payload.ts));
+        } else if (payload.type === 'clear_all') {
+          this._applyClearAll(finiteTs(payload.ts));
+        }
+      } else if (kind === 'profiles' && payload.id === id) {
+        const profile = this._validateIncomingProfile(payload, 'mqtt');
+        if (!profile) return;
+        const versioned = revisionId !== undefined;
+        if (timestamp !== undefined && (!versioned || this._profileRevisionTopic(profile) !== topic)) return;
+        this._acceptProfile(profile);
+        if (this.client === client && versioned) this._rememberRetainedRevision(profile, Boolean(packet?.retain));
+      }
+    } catch { /* Ignore malformed MQTT messages. */ }
+  }
+
+  _rememberRetainedDeletion(id, ts) {
+    this.retainedDeletionTimes.set(id, Math.max(this.retainedDeletionTimes.get(id) ?? -1, ts));
+    this._pruneRetainedRevisions(id);
+  }
+
+  _rememberRetainedRevision(profile, confirmed) {
+    const revisions = this.retainedRevisions.get(profile.id) || new Map();
+    const topic = this._profileRevisionTopic(profile);
+    const revision = revisions.get(topic) || { updatedAt: profile.updatedAt, revisionId: revisionIdOf(profile), clearing: false };
+    revision.confirmed ||= confirmed;
+    revisions.set(topic, revision);
+    this.retainedRevisions.set(profile.id, revisions);
+    this._pruneRetainedRevisions(profile.id);
+  }
+
+  _flushMqtt() {
+    for (const [id, ts] of this.tombstones) {
+      if (ts > (this.retainedDeletionTimes.get(id) ?? -1)) this._publishDeletion(id, ts);
+    }
+    for (const id of this.pendingUpdates) this._publishPendingProfile(id);
+    this._publishPresence();
+  }
+
+  _pruneRetainedRevisions(id) {
+    const client = this.client;
+    const revisions = this.retainedRevisions.get(id);
+    if (!this.mqttReady || !client?.connected || !revisions) return;
+    const deletedAt = this.retainedDeletionTimes.get(id) ?? -1;
+    let latest = null;
+    for (const revision of revisions.values()) {
+      if (revision.confirmed && revision.updatedAt > deletedAt && (!latest || compareProfileRevisions(revision, latest) > 0)) {
+        latest = revision;
+      }
+    }
+    for (const [topic, revision] of revisions) {
+      const obsolete = revision.updatedAt <= deletedAt || (latest && compareProfileRevisions(revision, latest) < 0);
+      if (!obsolete || revision.clearing) continue;
+      // An immutable revision topic cannot contain a newer profile by the time we clear it.
+      revision.clearing = true;
+      try {
+        client.publish(topic, '', { qos: 1, retain: true }, (err) => {
+          if (this.client !== client) return;
+          revision.clearing = false;
+          if (!err && revisions.get(topic) === revision) {
+            revisions.delete(topic);
+            if (revisions.size === 0) this.retainedRevisions.delete(id);
           }
-        } catch {
-          // ignore malformed event JSON
-        }
-        return;
+        });
+      } catch {
+        revision.clearing = false;
       }
-
-      if (topic.startsWith(`${TOPIC_NS}/room/${this.roomCode}/profiles/`)) {
-        const pid = topic.split('/').pop();
-        if (!pid || !ID_RE.test(pid)) return;
-        // Empty payload is only broker retained-state cleanup; live deletes require a versioned event on _eventTopic().
-        if (!text) return;
-        try {
-          const profile = JSON.parse(text);
-          if (!isSafePlainObject(profile) || profile.id !== pid) return;
-          this._mergeIncomingProfile(profile, 'mqtt');
-        } catch {
-          // ignore malformed profile JSON
-        }
-      }
-    });
-
-    client.on('offline', () => {
-      if (this.client === client) this._setStatus('local');
-    });
-
-    client.on('error', () => {
-      // Handled by failoverTimer / offline event
-    });
+    }
   }
 
   _publishPresence() {
@@ -890,6 +1160,7 @@ export class RoomProfileSync {
     if (this.onStatusChange) {
       this.onStatusChange({
         status: this.status,
+        shared: this.shared,
         roomCode: this.roomCode,
         peerCount: Math.max(1, this.peers.size),
         profileCount: this.profiles.size,
@@ -906,11 +1177,11 @@ export class RoomProfileSync {
     }
   }
 
-  _mergeIncomingProfile(incoming, source = 'remote') {
-    if (!isSafePlainObject(incoming)) return false;
+  _validateIncomingProfile(incoming, source) {
+    if (!isSafePlainObject(incoming)) return null;
     if (!this._isCompatibleEnvelope(incoming)) {
       this._notifyCompatibilitySkip(source, incoming);
-      return false;
+      return null;
     }
 
     const validated = validateProfileSchema(incoming, this._compatEnvelope());
@@ -918,55 +1189,105 @@ export class RoomProfileSync {
       if (validated.reason === 'VERSION_MISMATCH') {
         this._notifyCompatibilitySkip(source, incoming);
       }
-      return false;
+      return null;
     }
-    const cleanIncoming = validated.profile;
+    return validated.profile;
+  }
 
-    const delTs = this.tombstones.get(cleanIncoming.id) || 0;
-    if (cleanIncoming.updatedAt <= delTs) return false;
+  _mergeIncomingProfile(incoming, source = 'remote', options) {
+    const profile = this._validateIncomingProfile(incoming, source);
+    return profile ? this._acceptProfile(profile, options) : false;
+  }
 
-    const existing = this.profiles.get(cleanIncoming.id);
-    if (existing && existing.updatedAt > cleanIncoming.updatedAt) {
-      return false;
+  _acceptProfile(profile, { pending, persist = true, emit = true } = {}) {
+    const id = profile.id;
+    if (profile.updatedAt <= (this.tombstones.get(id) ?? -1)) return false;
+
+    const existing = this.profiles.get(id);
+    if (existing) {
+      const order = compareProfileRevisions(profile, existing);
+      if (order < 0) return false;
+      if (order === 0) {
+        if (pending === true && !profile.isSample) this.pendingUpdates.add(id);
+        if (pending === false) this.pendingUpdates.delete(id);
+        return false;
+      }
     }
 
-    const mergedCandidate = existing
+    const updated = existing && !profile.revisionId
       ? {
           ...existing,
-          ...cleanIncoming,
-          password: cleanIncoming.password ?? existing.password ?? null,
-          arena: {
-            ...(existing.arena || {}),
-            ...(cleanIncoming.arena || {}),
-          },
+          ...profile,
+          revisionId: undefined,
+          password: profile.password ?? existing.password ?? null,
+          arena: { ...existing.arena, ...profile.arena },
         }
-      : cleanIncoming;
+      : profile;
 
-    const mergedCheck = validateProfileSchema(mergedCandidate, this._compatEnvelope());
-    if (!mergedCheck.ok) return false;
-
-    this.profiles.set(mergedCheck.profile.id, mergedCheck.profile);
-    this._emitChange();
+    this.profiles.set(id, updated);
+    if (pending && !updated.isSample) this.pendingUpdates.add(id);
+    else this.pendingUpdates.delete(id);
+    if (persist) this._persistRecord({ type: 'upsert', profile: updated, pending: Boolean(pending) });
+    if (emit) this._emitChange();
     return true;
   }
 
-  _applyDelete(id, ts) {
-    if (typeof id !== 'string' || !ID_RE.test(id)) return;
-    this.tombstones.set(id, finiteTs(ts));
-    if (this.profiles.delete(id)) {
-      this._emitChange();
-    } else {
-      this._saveToLocalStorage();
-    }
+  _applyDelete(id, ts, { pending = false, persist = true, emit = true } = {}) {
+    if (typeof id !== 'string' || !ID_RE.test(id)) return false;
+    const cleanTs = finiteTs(ts);
+    if (cleanTs <= (this.tombstones.get(id) ?? -1)) return false;
+    this.tombstones.set(id, cleanTs);
+    if (persist) this._persistRecord({ type: 'delete', id, ts: cleanTs, pending });
+    const current = this.profiles.get(id);
+    if (current && current.updatedAt <= cleanTs) {
+      this.profiles.delete(id);
+      this.pendingUpdates.delete(id);
+      if (emit) this._emitChange();
+    } else if (emit) this._saveToLocalStorage();
+    return true;
   }
 
   _applyClearAll(ts) {
-    const cleanTs = finiteTs(ts);
-    for (const id of this.profiles.keys()) {
-      this.tombstones.set(id, cleanTs);
+    for (const id of [...this.profiles.keys()]) this._applyDelete(id, ts);
+  }
+
+  _publishDeletion(id, ts) {
+    const client = this.client;
+    if (!this.shared || !this.mqttReady || !client?.connected) return;
+    const ev = { ...this._compatEnvelope(), type: 'delete', id, ts };
+    const payload = JSON.stringify(ev);
+    try {
+      client.publish(this._deletionTopic(id, ts), payload, { qos: 1, retain: true }, (err) => {
+        if (!err && this.client === client) this._rememberRetainedDeletion(id, ts);
+      });
+      client.publish(this._eventTopic(), payload, { qos: 1 });
+    } catch { /* The persisted tombstone is replayed after reconnection. */ }
+  }
+
+  _publishPendingProfile(id) {
+    const p = this.profiles.get(id);
+    const client = this.client;
+    if (!this.shared || !this.mqttReady || !client?.connected || !p || p.isSample || !this.pendingUpdates.has(id)) return;
+    if (p.updatedAt <= (this.tombstones.get(id) ?? -1)) return;
+    const topic = this._profileRevisionTopic(p);
+    if (this.inFlightProfiles.has(topic)) return;
+    if (this._readPendingProfile(p) === false) {
+      this.pendingUpdates.delete(id);
+      return;
     }
-    this.profiles.clear();
-    this._emitChange();
+    this.inFlightProfiles.add(topic);
+    try {
+      client.publish(topic, JSON.stringify(p), { qos: 1, retain: true }, (err) => {
+        if (this.client !== client) return;
+        this.inFlightProfiles.delete(topic);
+        if (!err) {
+          this._acknowledgeProfile(p);
+          this._rememberRetainedRevision(p, true);
+        }
+      });
+    } catch {
+      this.inFlightProfiles.delete(topic);
+    }
   }
 
   getProfiles() {
@@ -988,12 +1309,14 @@ export class RoomProfileSync {
   }
 
   upsertProfile(profile) {
-    const now = Date.now();
+    const existing = this.profiles.get(profile?.id);
+    const now = Math.max(Date.now(), (existing?.updatedAt || 0) + 1, (this.tombstones.get(profile?.id) || 0) + 1);
     const candidate = {
       ...profile,
       ...this._compatEnvelope(),
       createdAt: typeof profile?.createdAt === 'number' && Number.isFinite(profile.createdAt) ? profile.createdAt : now,
       updatedAt: now,
+      ...(this.shared ? { revisionId: this.clientId } : {}),
     };
     const check = validateProfileSchema(candidate, this._compatEnvelope());
     if (!check.ok) {
@@ -1001,76 +1324,32 @@ export class RoomProfileSync {
     }
     const updated = check.profile;
 
-    this.tombstones.delete(updated.id);
+    if (updated.updatedAt <= (this.tombstones.get(updated.id) || 0)) return null;
+    const pending = this.shared && !updated.isSample;
     this.profiles.set(updated.id, updated);
+    if (pending) this.pendingUpdates.add(updated.id);
+    this._persistRecord({ type: 'upsert', profile: updated, pending });
     this._emitChange();
-
-    if (this.bc) {
-      try {
-        this.bc.postMessage({ ...this._compatEnvelope(), type: 'upsert', profile: updated });
-      } catch {
-        // ignore
-      }
-    }
-    if (!updated.isSample && this.client && this.client.connected) {
-      try {
-        this.client.publish(this._profileTopic(updated.id), JSON.stringify(updated), {
-          qos: 1,
-          retain: true,
-        });
-      } catch {
-        // ignore
-      }
-    }
+    this._postBroadcast({ type: 'upsert', profile: updated, pending });
+    this._publishPendingProfile(updated.id);
     return updated;
   }
 
   deleteProfile(id) {
     if (typeof id !== 'string' || !ID_RE.test(id)) return;
-    const now = Date.now();
-    this._applyDelete(id, now);
-    const evPayload = { ...this._compatEnvelope(), type: 'delete', id, ts: now };
-    if (this.bc) {
-      try {
-        this.bc.postMessage(evPayload);
-      } catch {
-        // ignore
-      }
+    if (this.profiles.get(id)?.isSample) {
+      this._removeSample(this.profiles.get(id));
+      this._emitChange();
+      return;
     }
-    if (this.client && this.client.connected) {
-      try {
-        this.client.publish(this._profileTopic(id), '', { qos: 1, retain: true });
-        this.client.publish(this._eventTopic(), JSON.stringify(evPayload), { qos: 1 });
-      } catch {
-        // ignore
-      }
-    }
+    const now = Math.max(Date.now(), (this.profiles.get(id)?.updatedAt || 0) + 1, (this.tombstones.get(id) || 0) + 1);
+    this._applyDelete(id, now, { pending: this.shared });
+    this._postBroadcast({ type: 'delete', id, ts: now, pending: this.shared });
+    this._publishDeletion(id, now);
   }
 
   clearAllProfiles() {
-    const now = Date.now();
-    const idsToClear = Array.from(this.profiles.values())
-      .filter((p) => !p.isSample)
-      .map((p) => p.id);
-    this._applyClearAll(now);
-    const evPayload = { ...this._compatEnvelope(), type: 'clear_all', ts: now };
-    if (this.bc) {
-      try {
-        this.bc.postMessage(evPayload);
-      } catch {
-        // ignore
-      }
-    }
-    if (this.client && this.client.connected) {
-      try {
-        for (const id of idsToClear) {
-          this.client.publish(this._profileTopic(id), '', { qos: 1, retain: true });
-        }
-        this.client.publish(this._eventTopic(), JSON.stringify(evPayload), { qos: 1 });
-      } catch {
-        // ignore
-      }
-    }
+    for (const id of [...this.profiles.keys()]) this.deleteProfile(id);
   }
 
   loadSamples(sampleProfiles) {
@@ -1083,15 +1362,16 @@ export class RoomProfileSync {
         ...this._compatEnvelope(),
         isSample: true,
         createdAt: now,
-        updatedAt: now,
+        updatedAt: Math.max(now, (this.profiles.get(sp.id)?.updatedAt || 0) + 1, (this.tombstones.get(sp.id) || 0) + 1),
+        ...(this.shared ? { revisionId: this.clientId } : {}),
       };
       const check = validateProfileSchema(candidate, {
         ...this._compatEnvelope(),
         allowUnstampedSample: true,
       });
       if (check.ok) {
-        this.tombstones.delete(check.profile.id);
         this.profiles.set(check.profile.id, check.profile);
+        this._persistRecord({ type: 'upsert', profile: check.profile, pending: false });
         added = true;
       }
     }
@@ -1100,13 +1380,22 @@ export class RoomProfileSync {
 
   removeSamples() {
     let changed = false;
-    for (const [id, p] of this.profiles.entries()) {
+    for (const p of this.profiles.values()) {
       if (p.isSample) {
-        this.profiles.delete(id);
+        this._removeSample(p);
         changed = true;
       }
     }
     if (changed) this._emitChange();
+  }
+
+  _removeSample(profile) {
+    this.profiles.delete(profile.id);
+    if (this.shared) {
+      try {
+        localStorage.removeItem(this._recordKey({ type: 'upsert', profile }));
+      } catch { /* Sample state can still be updated in memory. */ }
+    }
   }
 
   hasSamples() {
@@ -1117,7 +1406,7 @@ export class RoomProfileSync {
   }
 
   getShareUrl() {
-    if (typeof window === 'undefined' || !window.location) return '';
+    if (!this.shared || typeof window === 'undefined' || !window.location) return '';
     const url = new URL(window.location.href);
     url.searchParams.set('room', this.roomCode);
     return url.toString();

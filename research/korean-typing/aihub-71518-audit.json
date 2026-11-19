@@ -1,0 +1,43 @@
+{
+  "source": "AI Hub 71518, Korean subject / keyboard sensor only, locally downloaded TS.zip and VS.zip",
+  "comparison": "Exact ordered lists of (timestamp, action, key) per stage across all stages. For the conservative view, drop every record in a duplicate group. Counts and median keystrokes describe STAGE_BASE only.",
+  "split": {
+    "TS": {
+      "records": 8572,
+      "pseudonymous_students": 786,
+      "students_on_multiple_KST_dates": 28,
+      "median_base_keydowns_per_record": 52.0,
+      "students_with_at_least_seven_records_of_at_least_76_base_keydowns": 116
+    },
+    "VS": {
+      "records": 1105,
+      "pseudonymous_students": 79,
+      "students_on_multiple_KST_dates": 4,
+      "median_base_keydowns_per_record": 52,
+      "students_with_at_least_seven_records_of_at_least_76_base_keydowns": 19
+    }
+  },
+  "student_ids_shared_across_splits": 0,
+  "combined": {
+    "records": 9677,
+    "pseudonymous_students": 865,
+    "students_on_multiple_KST_dates": 32,
+    "median_base_keydowns_per_record": 52,
+    "students_with_at_least_seven_records_of_at_least_76_base_keydowns": 135
+  },
+  "distinct_duplicated_signals": 59,
+  "duplicate_groups_with_multiple_student_ids": 59,
+  "all_records_in_duplicate_groups": 319,
+  "distinct_signals_present_in_both_splits": 37,
+  "affected_records_present_in_both_splits": {
+    "TS": 150,
+    "VS": 57
+  },
+  "excluding_all_members_of_duplicate_groups": {
+    "records": 9358,
+    "pseudonymous_students": 849,
+    "students_on_multiple_KST_dates": 0,
+    "median_base_keydowns_per_record": 51.0,
+    "students_with_at_least_seven_records_of_at_least_76_base_keydowns": 125
+  }
+}

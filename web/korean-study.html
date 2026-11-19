@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AI Hub의 당일 국어 응답과 FACT의 한국어·영어 타건으로 KeyPrint의 작성자 순위와 수락 기준을 평가했습니다.">
+  <title>한국어 타건 평가 · KeyPrint</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./src/style.css">
+  <link rel="stylesheet" href="./src/study.css">
+</head>
+<body>
+  <main class="study">
+    <nav class="study-home" aria-label="데모"><a href="./?lang=ko"><span aria-hidden="true">←</span> 한국어 타자연습</a></nav>
+    <article class="surface-card">
+      <header class="study-header">
+        <h1>한국어 타건 평가</h1>
+        <p class="study-lead">스마트기기로 한국어를 입력한 사람이 후보 5명에 있을 때, KeyPrint가 그 사람을 1위로 찾을 수 있는지 살펴봤습니다. 작성자가 등록하지 않았을 때의 오수락도 별도로 측정했습니다.</p>
+        <nav aria-label="연구 내용" class="study-index">
+          <ul>
+            <li><a href="#aihub">AI Hub 당일 평가</a></li>
+            <li><a href="#fact">FACT 한·영 비교</a></li>
+            <li><a href="#acceptance">수락 기준</a></li>
+            <li><a href="#decision">데모에 적용한 판단</a></li>
+          </ul>
+        </nav>
+      </header>
+      <section id="aihub" aria-labelledby="aihub-title">
+        <h2 id="aihub-title">AI Hub에서 확인한 당일 한국어 순위</h2>
+        <p>국어 학습 문제에 답한 학생들의 스마트기기 기록을 사용했습니다. 같은 날 서로 다른 문항 5개로 등록하고 뒤의 2개를 한 질의로 묶었습니다. 답변당 처음 40타에서 키를 누른 사이의 실측 시간만 사용했습니다.</p>
+        <table>
+          <caption>독립 VS 46명 · 가능한 5인 후보 조합의 학생별 평균</caption>
+          <thead><tr><th scope="col">지표</th><th scope="col">기존 공개본</th><th scope="col">PR #5</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">작성자가 1위</th><td>61.27%</td><td>58.61%</td></tr>
+            <tr><th scope="row">작성자로 수락</th><td>53.41%</td><td>12.75%</td></tr>
+            <tr><th scope="row">다른 사람으로 수락</th><td>35.92%</td><td>0.60%</td></tr>
+            <tr><th scope="row">판별 보류</th><td>10.66%</td><td>86.65%</td></tr>
+            <tr><th scope="row">미등록자를 등록자로 수락</th><td>72.47%</td><td>12.70%</td></tr>
+          </tbody>
+        </table>
+        <p>1위 비율은 수락 기준을 적용하기 전 순위입니다. PR의 1위 정답률 차이는 −2.66%p였고, 학생 단위 95% 구간은 −11.74%p에서 +6.81%p였습니다. 등록자와 미등록자의 수락률은 각 집단의 전체 질의를 기준으로 계산했습니다.</p>
+        <p>국어 키보드 기록 9,677건·865명에서 완전히 같은 이벤트가 담긴 59개 그룹, 319건을 모두 제외했습니다. 9,358건·849명이 남았고, 서로 다른 날짜에 기록이 남은 학생은 0명이었습니다. 76타 기준을 적용하면 같은 날 7문항 조건을 충족한 VS가 46명에서 4명으로 줄었습니다. <a href="https://github.com/qwertypotter6873/keyprint-guard/blob/963e62c9c32b928d502e457542270677c5e4a97d/research/korean-typing/README.md#2-ai-hub-자료-확인과-중복-제거">데이터 확인 과정</a></p>
+      </section>
+      <section id="fact" aria-labelledby="results-title">
+        <h2 id="results-title">FACT 스마트폰 한국어·영어 비교</h2>
+        <p>Galaxy S8에서 한국어와 영어를 모두 입력한 같은 50명의 공개 자료입니다. 언어마다 기존 연구의 등록·시험 분할을 따르고, 키를 누른 사이의 실측 시간만 같은 조건으로 평가했습니다. 공개 부록에는 입력 날짜와 지문 ID가 없습니다.</p>
+        <!-- korean-results:start -->
+
+        <p>각 기록에서 처음 76타를 사용했습니다. 데모의 한국어 문장을 두벌식으로 칠 때 필요한 타수의 중앙값입니다. 한국어 입력자 50명을 5명씩 나누고, 각자 5개 기록으로 등록했습니다. 별도 시험 기록을 2개씩 묶은 250건에서 작성자를 찾았습니다. 같은 입력을 작성자가 없는 다른 5명에게 비교해 미등록자 수락도 250건에서 측정했습니다.</p>
+        <table aria-label="후보 다섯 명에서 측정한 작성자 식별">
+          <thead><tr><th scope="col">5인 후보 기준</th><th scope="col">기존 공개본</th><th scope="col">PR #5</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">작성자가 1위</th><td>70.8% (177건)</td><td>74.8% (187건)</td></tr>
+            <tr><th scope="row">작성자로 수락</th><td>70.4% (176건)</td><td>7.6% (19건)</td></tr>
+            <tr><th scope="row">다른 사람으로 수락</th><td>29.2% (73건)</td><td>0.0% (0건)</td></tr>
+            <tr><th scope="row">미등록 가능성 판정에서 보류</th><td>0.4% (1건)</td><td>92.4% (231건)</td></tr>
+            <tr><th scope="row">미등록자를 등록자로 수락</th><td>87.6% (219건)</td><td>13.2% (33건)</td></tr>
+          </tbody>
+        </table>
+        <p>보류 여부와 관계없이 작성자가 1위였던 비율의 차이는 +4.0%p입니다. 참가자 단위로 재표집한 95% 구간은 -2.8%p에서 +10.8%p로, 순위 정확도가 개선됐다고 단정하기 어렵습니다. 미등록자도 고려하는 터치 판정에서는 1위 리듬 점수가 78점 이상이고 2위보다 12점 이상 앞서야 수락합니다. 기존 공개본의 두 기준은 100점 척도로 각각 73점, 0점 차이였습니다. PR 보류 231건 중 230건은 1위 점수를 통과했지만 2위와의 차이가 작았습니다.</p>
+        <p>후보를 50명으로 늘리면 1위 정답률은 기존 25.2%, PR 26.8%였고, PR의 미등록 가능성 판정은 250/250건을 보류했습니다. 5명 후보에서 평균 약 235타인 원래 기록 전체를 사용하면 1위 정답률은 기존 84.0%, PR 85.6%였습니다.</p>
+
+<!-- korean-results:end -->
+        <p>같은 참가자의 영어 기록에서는 1위 정답률이 기존 75.2%, PR 72.0%였습니다. PR의 정답 수락은 10.4%, 등록자 오인식은 0.4%, 미등록자 오수락은 4.4%였습니다. <a href="https://github.com/qwertypotter6873/keyprint-guard/blob/963e62c9c32b928d502e457542270677c5e4a97d/research/korean-typing/fact-en-ko-comparison.json">FACT 한국어·영어 전체 집계</a></p>
+      </section>
+      <section id="acceptance" aria-labelledby="acceptance-title">
+        <h2 id="acceptance-title">수락과 오수락의 변화</h2>
+        <p>PR은 영문 터치 모사 Validation의 정답 수락률 하한 20.66%를 적용해 1위 점수 0.78과 1·2위 간격 0.12를 선택했습니다. AI Hub VS의 등록자 질의 중 83.43%는 점수를 통과하고도 간격에서 보류됐습니다.</p>
+        <p>1위 점수 하한을 0.78로 두고 간격을 0.12부터 0.00까지 13개 값으로 시험했습니다. 1위 정답률은 58.61%로 같았으며, 간격을 낮추면 아래와 같이 수락이 늘었습니다.</p>
+        <figure>
+          <img src="./src/assets/margin-sweep.png" width="1522" height="892" alt="최소 점수 차이가 낮아지면서 정답 수락과 두 종류의 오수락이 함께 증가하는 AI Hub VS 그래프" loading="lazy">
+          <figcaption>AI Hub VS 46명 · 첫 40타 · 후보 5명</figcaption>
+        </figure>
+        <table>
+          <caption>1위 점수 하한 0.78에서 수락률 예시</caption>
+          <thead><tr><th scope="col">최소 간격</th><th scope="col">정답 수락</th><th scope="col">등록자 오인식</th><th scope="col">미등록자 오수락</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">0.12</th><td>12.75%</td><td>0.60%</td><td>12.70%</td></tr>
+            <tr><th scope="row">0.06</th><td>23.42%</td><td>3.13%</td><td>27.46%</td></tr>
+            <tr><th scope="row">0.00</th><td>55.87%</td><td>40.90%</td><td>81.55%</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section id="decision" aria-labelledby="decision-title">
+        <h2 id="decision-title">데모에 적용한 판단</h2>
+        <p>후보가 2명 이상이면 화면에 <strong>예상 작성자 1위</strong>와 <strong>판정 수락</strong> 또는 <strong>판정 보류</strong>를 함께 표시합니다. 미등록자도 타이핑할 수 있는 상황에서 수락 기준을 완화하면 오수락이 늘어, PR의 기준을 유지했습니다. 후보가 1명일 때는 그 사람과 1:1로 리듬을 비교합니다.</p>
+        <p>같은 인코더로 정규화 전 점수와 가중치를 학습한 점수도 비교했습니다. AI Hub 주 평가에서 각각 60.30%, 62.05%를 1위에 올렸습니다. 다른 조건에서는 우열이 달랐고 수락 기준을 적용하지 않은 순위 실험이므로, 데모에는 기존 PR의 정규화 점수를 사용합니다. <a href="https://github.com/qwertypotter6873/keyprint-guard/blob/963e62c9c32b928d502e457542270677c5e4a97d/research/korean-typing/ranking-pilot.json">순위 점수 실험</a></p>
+        <p>측정 범위는 스마트기기에서의 실제 누름 간격입니다. PC 두벌식, 브라우저의 한글 조합, 다른 날의 입력은 별도 평가가 필요합니다.</p>
+      </section>
+      <section aria-labelledby="sources-title">
+        <h2 id="sources-title">연구 기록과 자료</h2>
+        <ul class="study-links">
+          <li><a href="https://github.com/qwertypotter6873/keyprint-guard/tree/963e62c9c32b928d502e457542270677c5e4a97d/research/korean-typing">자료 탐색·평가 방법·재현 코드와 집계</a></li>
+          <li><a href="https://www.aihub.or.kr/aihubdata/data/view.do?currMenu=115&amp;dataSetSn=71518&amp;topMenu=100">AI Hub 71518 데이터 설명</a></li>
+          <li><a href="https://doi.org/10.1016/j.patcog.2020.107556">FACT 논문과 공개 부록</a></li>
+        </ul>
+      </section>
+    </article>
+  </main>
+</body>
+</html>

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -44,59 +45,50 @@ from capture_sim import (
     export_parity_fixture,
     extract_naive_unrepaired_stroke,
     fuse,
+    js_event_script,
     make_template,
     ms_rounded,
 )
 from feature_eval import (
+    CMU_BROWSER_SAMPLE_PASSWORD,
+    SENTENCE_MODEL_CANDIDATES,
     attach_tensors,
     build_capture_bank,
-    calibrate_open_set_threshold,
+    calibrate_sentence_arena,
     capture_stats,
     cmu_behavior_stats,
+    cmu_browser_password_capture,
     dd_cv,
     embed_bank,
     encode_variable,
     eval_password_transfer,
     eval_web_identification,
+    evaluate_clean_sentence_cross_session,
+    evaluate_sentence_arena,
     fixed_stroke_capture,
     flat_to_hdu,
-    open_set_eval,
-    open_set_matrix,
     score_trials,
+    select_sentence_encoder,
     sentence_add_check,
     stroke_payload,
     template_payload,
-    tune_beta_identification,
     tune_beta_password,
-    tune_open_set_rule,
 )
 from keyboard_layout import CMU_PASSWORD_CODES, export_layout_for_web, pairs_from_codes
 from models import KeyPrintNet, ScaledManhattanDetector, Vanilla1DCNN
+from model_comparison import comparison_with_control
 from password_synth import (
-    CALIB_LENGTHS,
     DISPLAY_SLOPE,
     adaptation_eval,
-    calibrate_by_length,
-    calibrate_dual,
-    capital_fusion,
     capital_llr,
-    capital_method_rates,
-    capital_trials,
-    choose_strings,
-    digraph_tables,
-    evaluate_lengths,
-    evaluate_strings,
     params_for_length,
-    person_speed,
-    string_trials,
-    strings_of_length,
-    synthesis_metadata,
+    password_rng,
+    run_password_synthesis,
+    select_adaptation_policy,
 )
 from preprocessing import (
     CHANNEL_NAMES,
     DIGRAPH_LABELS,
-    KEYRECS_DD_COLS,
-    KEYRECS_HOLD_COLS,
     N_CHANNELS,
     N_TIMING_CHANNELS,
     SEED,
@@ -106,12 +98,17 @@ from preprocessing import (
     extract_sequences,
     get_feature_columns,
     prepare_full_pipeline,
+    prefix_sequences,
+    read_keyrecs_fixed_timings,
+    CMU_KEY_BLOCK,
     touchify_timings,
 )
 from train_and_evaluate import (
     KEYPRINT_DEFAULT_EPOCHS,
     VANILLA_DEFAULT_EPOCHS,
+    TEST_BOT_SEED,
     build_verification_trials,
+    checkpoint_training_recipe,
     compute_cohort_centroids,
     compute_eer,
     configure_korean_matplotlib,
@@ -137,6 +134,7 @@ SAMPLE_PROFILE_TIMESTAMP = 1700000000000
 WEB_CAPTURE_CHARS = 68  # average length of the web app's practice sentences
 ARENA_ENROLL_SENTENCES = 5  # typing practice: sentences per profile
 ARENA_QUERY_SENTENCES = 2  # typing practice: sentences typed before "who is typing?" is answered
+ARENA_SELECTION_GALLERY = 5
 PASSWORD_FRR_TARGET = 0.10  # dual password score: tau = Validation genuine quantile
 PASSWORD_MIN_LENGTH = 12  # new accounts: longer passwords carry more rhythm evidence (README section 5.7)
 REUSE_WEIGHTS = os.environ.get("KEYPRINT_REUSE_WEIGHTS") == "1"
@@ -145,10 +143,8 @@ VANILLA_EPOCHS = int(_SMOKE_EPOCHS) if _SMOKE_EPOCHS else VANILLA_DEFAULT_EPOCHS
 KEYPRINT_EPOCHS = int(_SMOKE_EPOCHS) if _SMOKE_EPOCHS else KEYPRINT_DEFAULT_EPOCHS
 
 
-def safe_export_onnx(model: KeyPrintNet, onnx_path: Path, web_onnx_path: Path, in_channels: int = N_CHANNELS) -> Dict:
-    cpu_model = KeyPrintNet(in_channels=in_channels, hidden_channels=80, embed_dim=64, dropout=0.0)
-    cpu_model.load_state_dict(model.cpu().state_dict())
-    cpu_model.eval()
+def safe_export_onnx(model: torch.nn.Module, onnx_path: Path, web_onnx_path: Path, in_channels: int = N_CHANNELS) -> Dict:
+    cpu_model = model.cpu().eval()
 
     dummy = torch.randn(1, in_channels, 10, dtype=torch.float32)
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,7 +169,8 @@ def safe_export_onnx(model: KeyPrintNet, onnx_path: Path, web_onnx_path: Path, i
     loaded = onnx.load(str(onnx_path))
     onnx.checker.check_model(loaded)
     onnx.save_model(loaded, str(onnx_path), save_as_external_data=False)
-    shutil.copy2(onnx_path, web_onnx_path)
+    if onnx_path != web_onnx_path:
+        shutil.copy2(onnx_path, web_onnx_path)
 
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     max_diffs = {}
@@ -216,7 +213,7 @@ def compute_troubleshooting_ablations(
     chan_std: np.ndarray,
     touch_hold: float,
     legacy_model: KeyPrintNet,
-    keyprint_model: KeyPrintNet,
+    sentence_model: torch.nn.Module,
     cohort_l: np.ndarray,
     sent_cohort: np.ndarray,
     behavior_model,
@@ -323,7 +320,7 @@ def compute_troubleshooting_ablations(
                         naive_tensors.append((nt, ncap["behavior"]))
 
     naive_embs = (
-        encode_variable(keyprint_model, [x[0] for x in naive_tensors], device, N_CHANNELS)
+        encode_variable(sentence_model, [x[0] for x in naive_tensors], device, N_CHANNELS)
         if naive_tensors
         else np.zeros((0, 64), dtype=np.float32)
     )
@@ -541,6 +538,7 @@ def plot_fig3_roc_det_kshot(
         "ScaledManhattan (통계 베이스라인)": "#64748B",
         "Vanilla1DCNN (딥러닝 베이스라인)": "#F59E0B",
         "KeyPrintNet (제안 모델)": "#2563EB",
+        "Vanilla + Aug + AS-Norm (통제)": "#059669",
     }
 
     ax = axes[0]
@@ -561,7 +559,7 @@ def plot_fig3_roc_det_kshot(
     ax.grid(alpha=0.25, linestyle="--")
 
     ax = axes[1]
-    yt_kp, ys_kp, m_kp = list(roc_data.values())[2]
+    yt_kp, ys_kp, m_kp = roc_data["KeyPrintNet (제안 모델)"]
     fpr, tpr, thresh = roc_curve(yt_kp, ys_kp)
     fnr = 1.0 - tpr
     valid = np.isfinite(thresh)
@@ -587,7 +585,7 @@ def plot_fig3_roc_det_kshot(
     l1 = ax.plot(ks, f1s, "-o", color="#2563EB", lw=2.3, markersize=7, label="Test Macro F1 ↑")
     l2 = ax2.plot(ks, eers, "--s", color="#EF4444", lw=2.1, markersize=6, label="Test EER (%) ↓")
     ax.axvline(5, color="#10B981", linestyle=":", lw=1.6)
-    ax.text(5.15, min(f1s) + 0.005, "웹 기본 채택\n(K=5회 등록)", color="#047857", fontsize=9, fontweight="bold")
+    ax.text(5.15, min(f1s) + 0.005, "벤치마크 기본\n(K=5회 등록)", color="#047857", fontsize=9, fontweight="bold")
     ax.set_xticks(ks)
     ax.set_xlabel("초기 타건 지문 등록 횟수 (K-Shot Enrollment)")
     ax.set_ylabel("Macro F1-Score", color="#2563EB")
@@ -605,8 +603,9 @@ def plot_fig3_roc_det_kshot(
 def plot_fig4_confusion_matrices(
     roc_data: Dict[str, Tuple[np.ndarray, np.ndarray, Dict]], fig_dir: Path
 ) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(15.6, 4.5))
-    cmaps = ["Greys", "Oranges", "Blues"]
+    fig, axes = plt.subplots(2, 2, figsize=(12.0, 9.5))
+    axes = axes.ravel()
+    cmaps = ["Greys", "Oranges", "Blues", "Greens"]
 
     for ax, (name, (yt, ys, m)), cmap in zip(axes, roc_data.items(), cmaps):
         yp = (ys >= m["threshold"]).astype(np.int64)
@@ -928,21 +927,21 @@ def plot_fig8_feature_upgrade(
     _bars(
         axes[0],
         [
-            ("같은 날 다른 문장", [pick(kb["legacy_9ch"], "same_session"), pick(kb["keyprint_17ch"], "same_session"), pick(kb["keyprint_17ch_behavior"], "same_session")]),
-            ("다른 날 다른 글", [pick(kb["legacy_9ch"], "cross_session"), pick(kb["keyprint_17ch"], "cross_session"), pick(kb["keyprint_17ch_behavior"], "cross_session")]),
+            ("동일 세션 다른 문장", [pick(kb["legacy_9ch"], "same_session"), pick(kb["keyprint_17ch"], "same_session"), pick(kb["keyprint_17ch_behavior"], "same_session")]),
+            ("타 세션 다른 글", [pick(kb["legacy_9ch"], "cross_session"), pick(kb["keyprint_17ch"], "cross_session"), pick(kb["keyprint_17ch_behavior"], "cross_session")]),
         ],
-        ["기존 9채널", "17채널 (키 위치)", "17채널 + 행동 프로필"],
+        ["9채널 (타이밍)", "17채널 (키 위치·누름 측정 여부 추가)", "17채널 + 행동 프로필"],
         f"(a) 키보드 문장 입력 {n_way}인 식별 (웹 캡처 재현, 3문장 등록)",
         chance=100.0 / n_way,
     )
     _bars(
         axes[1],
         [
-            ("같은 날 다른 문장", [pick(tc["legacy_9ch_imputed_holds"], "same_session"), pick(tc["keyprint_17ch"], "same_session"), pick(tc["keyprint_17ch_behavior"], "same_session")]),
-            ("다른 날 다른 글", [pick(tc["legacy_9ch_imputed_holds"], "cross_session"), pick(tc["keyprint_17ch"], "cross_session"), pick(tc["keyprint_17ch_behavior"], "cross_session")]),
+            ("동일 세션 다른 문장", [pick(tc["legacy_9ch_imputed_holds"], "same_session"), pick(tc["keyprint_17ch"], "same_session"), pick(tc["keyprint_17ch_behavior"], "same_session")]),
+            ("타 세션 다른 글", [pick(tc["legacy_9ch_imputed_holds"], "cross_session"), pick(tc["keyprint_17ch"], "cross_session"), pick(tc["keyprint_17ch_behavior"], "cross_session")]),
         ],
-        ["기존 9채널 (누름시간 대체)", "17채널 (터치 학습)", "17채널 + 행동 프로필"],
-        f"(b) 터치 키보드 시뮬레이션 {n_way}인 식별 (누름 시간 없음)",
+        ["9채널 (타이밍)", "17채널 (키 위치·누름 측정 여부 추가)", "17채널 + 행동 프로필"],
+        f"(b) 터치 키보드 시뮬레이션 {n_way}인 식별 (두 모델 모두 터치 증강 18%)",
         chance=100.0 / n_way,
     )
     pt = password_transfer
@@ -950,11 +949,11 @@ def plot_fig8_feature_upgrade(
         axes[2],
         [
             ("CMU\n(학습한 암호)", [password_1to1["legacy_9ch"]["roc_auc"] * 100, password_1to1["keyprint_17ch"]["roc_auc"] * 100]),
-            ("KeyRecs 고정문\n(다른 날)", [pt["keyrecs_fixed_cross_session"]["legacy_9ch"]["roc_auc"] * 100, pt["keyrecs_fixed_cross_session"]["keyprint_17ch"]["roc_auc"] * 100]),
-            ("반복 단어\n(미학습 문자열)", [pt["repeated_words_unseen"]["legacy_9ch"]["roc_auc"] * 100, pt["repeated_words_unseen"]["keyprint_17ch"]["roc_auc"] * 100]),
+            ("KeyRecs 고정문\n(타 세션)", [pt["keyrecs_fixed_cross_session"]["legacy_9ch"]["roc_auc"] * 100, pt["keyrecs_fixed_cross_session"]["keyprint_17ch"]["roc_auc"] * 100]),
+            ("반복 단어\n(단어→암호 전이)", [pt["repeated_words_unseen"]["legacy_9ch"]["roc_auc"] * 100, pt["repeated_words_unseen"]["keyprint_17ch"]["roc_auc"] * 100]),
             ("터치\n(CMU 시뮬)", [password_touch["legacy_9ch_imputed_holds"]["roc_auc"] * 100, password_touch["keyprint_17ch"]["roc_auc"] * 100]),
         ],
-        ["기존 9채널 (비밀번호 배포 모델)", "17채널"],
+        ["9채널 (타이밍)", "17채널"],
         "(c) 1:1 비밀번호 인증 ROC-AUC — 암호 내용별",
         ylabel="ROC-AUC (%) ↑",
     )
@@ -1139,7 +1138,7 @@ def main() -> None:
     t0 = time.time()
     set_all_seeds(SEED)
     chosen_font = configure_korean_matplotlib()
-    device = get_device()
+    device = torch.device(os.environ["KEYPRINT_DEVICE"]) if os.environ.get("KEYPRINT_DEVICE") else get_device()
     gpu_name = torch.cuda.get_device_name(0) if device.type == "cuda" else str(device)
     print(f"=== KeyPrint Guard & Arena Pipeline | Device: {device} ({gpu_name}) | Font: {chosen_font} ===")
 
@@ -1161,6 +1160,7 @@ def main() -> None:
     kr_fixed_train = meta.pop("_keyrecs_fixed_train", None)
     meta.pop("_keyrecs_runs", None)
     kr_subjs = meta.pop("_keyrecs_splits_subjs", None)
+    keyrecs_fixed_interpretation = meta["keyrecs_fixed_timestamps"]["selected_interpretation"]
 
     sent_train = sentence_splits.get("train")
     sent_val = sentence_splits.get("val")
@@ -1197,7 +1197,24 @@ def main() -> None:
     )
 
     val_trials = build_verification_trials(splits["val"], chan_mean, chan_std, k_shot=5, seed=SEED)
-    test_trials = build_verification_trials(splits["test"], chan_mean, chan_std, k_shot=5, seed=SEED)
+    test_trials = build_verification_trials(splits["test"], chan_mean, chan_std, k_shot=5, seed=SEED, bot_seed=TEST_BOT_SEED)
+
+    val_bot_hashes = {hashlib.sha256(row.tobytes()).hexdigest() for row in val_trials["bot_flat"]}
+    test_bot_hashes = {hashlib.sha256(row.tobytes()).hexdigest() for row in test_trials["bot_flat"]}
+    assert val_bot_hashes.isdisjoint(test_bot_hashes), "Validation/Test bot inputs overlap"
+    bot_split_audit = {"validation_seed": SEED, "test_seed": TEST_BOT_SEED,
+                       "shared_raw_bot_inputs": len(val_bot_hashes & test_bot_hashes),
+                       "validation_preserved": True, "human_trial_rng_seed": SEED}
+
+    def _prefix(split, length):
+        kb = split.key_blocks if isinstance(split, SentenceSplitData) else split.key_block
+        return prefix_sequences(split.raw_holds, split.raw_dds, split.raw_uds, kb,
+                                length, bounds, chan_mean, chan_std)
+
+    def _bot_prefix(trials, length):
+        h, d = flat_to_hdu(trials["bot_flat"])
+        u = np.stack([trials["bot_flat"][:, 3*k+2] for k in range(d.shape[1])], axis=1)
+        return prefix_sequences(h, d, u, CMU_KEY_BLOCK, length, bounds, chan_mean, chan_std)
 
     # 1. Baseline 1: Statistical Scaled Manhattan Detector
     manhattan = ScaledManhattanDetector(shrinkage=0.35).fit_prior(
@@ -1216,10 +1233,23 @@ def main() -> None:
         if (REUSE_WEIGHTS and report_path.exists())
         else None
     )
+    training_recipe = checkpoint_training_recipe(keyrecs_fixed_interpretation, VANILLA_EPOCHS, KEYPRINT_EPOCHS)
+    previous_provenance = (prev_report or {}).get("provenance", {})
+    if REUSE_WEIGHTS and previous_provenance.get("training_recipe") != training_recipe:
+        raise ValueError("Saved checkpoints require a matching KeyRecs timing and augmentation training recipe")
+
+    def reuse_checkpoint(path: Path) -> bool:
+        if not REUSE_WEIGHTS:
+            return False
+        rel = str(path.relative_to(out_root))
+        expected = previous_provenance.get("artifact_sha256", {}).get(rel)
+        if not path.is_file() or expected != _file_sha256(path):
+            raise ValueError(f"Saved checkpoint does not match the training report: {rel}")
+        return True
 
     # 2a. Baseline 2: Scratch Vanilla 1D-CNN (same dual-corpus Train, no augmentation, no AS-Norm)
     vanilla_pt = models_dir / "vanilla_1dcnn.pt"
-    if REUSE_WEIGHTS and vanilla_pt.exists():
+    if reuse_checkpoint(vanilla_pt):
         vanilla_model = Vanilla1DCNN(in_channels=splits["train"].seq_scaled.shape[1], embed_dim=64)
         vanilla_model.load_state_dict(torch.load(vanilla_pt, map_location="cpu", weights_only=True))
         vanilla_model.to(device).eval()
@@ -1257,7 +1287,7 @@ def main() -> None:
 
     # 2b. Controlled Vanilla1DCNN_Aug (+Same Dual-Corpus & Augmentation Recipe) & Vanilla1DCNN_Aug_ASNorm
     vanilla_aug_pt = models_dir / "vanilla_1dcnn_aug.pt"
-    if REUSE_WEIGHTS and vanilla_aug_pt.exists():
+    if reuse_checkpoint(vanilla_aug_pt):
         vanilla_aug_model = Vanilla1DCNN(in_channels=splits["train"].seq_scaled.shape[1], embed_dim=64)
         vanilla_aug_model.load_state_dict(torch.load(vanilla_aug_pt, map_location="cpu", weights_only=True))
         vanilla_aug_model.to(device).eval()
@@ -1311,7 +1341,7 @@ def main() -> None:
 
     # 3a. Proposed Sentence Encoder: KeyPrintNet 17ch (from scratch unless REUSE_WEIGHTS and .pt exists)
     kp17_pt = models_dir / "keyprint_net.pt"
-    if REUSE_WEIGHTS and kp17_pt.exists():
+    if reuse_checkpoint(kp17_pt):
         keyprint_model = KeyPrintNet(in_channels=N_CHANNELS, hidden_channels=80, embed_dim=64, dropout=0.18)
         keyprint_model.load_state_dict(torch.load(kp17_pt, map_location="cpu", weights_only=True))
         keyprint_model.to(device).eval()
@@ -1361,7 +1391,7 @@ def main() -> None:
     # 3b. Proposed Content-Agnostic Password Encoder: KeyPrintNet 9ch (trained from scratch on channels 0..8!)
     L9 = N_TIMING_CHANNELS
     kp9_pt = models_dir / "legacy" / "keyprint_net_9ch.pt"
-    if REUSE_WEIGHTS and kp9_pt.exists():
+    if reuse_checkpoint(kp9_pt):
         legacy_model = KeyPrintNet(in_channels=L9, hidden_channels=80, embed_dim=64, dropout=0.18)
         legacy_model.load_state_dict(torch.load(kp9_pt, map_location="cpu", weights_only=True))
         legacy_model.to(device).eval()
@@ -1385,7 +1415,7 @@ def main() -> None:
             sentence_val=sent_val,
             tag="KeyPrintNet_9ch",
             in_channels=L9,
-            touch_prob=0.0,
+            touch_prob=TOUCH_PROB,
             touch_hold=touch_hold,
         )
         kp9_pt.parent.mkdir(parents=True, exist_ok=True)
@@ -1407,6 +1437,68 @@ def main() -> None:
         test_emb_l, test_bot_l, test_trials, thresh_l, cohort=cohort_l, single_centroid=False
     )
     print(f"[Result 1:1] KeyPrintNet 9ch Test: {metrics_legacy}")
+
+    # Select the Arena encoder on Validation before scoring either candidate on sentence Test data.
+    sentence_models = dict(zip(SENTENCE_MODEL_CANDIDATES, (keyprint_model, vanilla_aug_model)))
+    sentence_cohorts = {
+        name: compute_cohort_centroids(encode_sequences(model, sent_train.seq_scaled, device), sent_train.subject_ids)
+        for name, model in sentence_models.items()
+    }
+    clean_sentence_validation = {
+        name: evaluate_clean_sentence_cross_session(sent_val, model, device, sentence_cohorts[name])
+        for name, model in sentence_models.items()
+    }
+    sentence_encoder = select_sentence_encoder(clean_sentence_validation)
+    sentence_model = sentence_models[sentence_encoder]
+    deployed_model_version = MODEL_VERSION if sentence_encoder == "keyprint_17ch" else "vanilla17-touch-behavior-v4"
+    sent_cohort = sentence_cohorts[sentence_encoder]
+    sent_cohort_k = sentence_cohorts["keyprint_17ch"]
+    sent_va_cohort = sentence_cohorts["vanilla_17ch_aug"]
+    print(f"[Arena model selection] Validation 25-char cross-session Top-1: {clean_sentence_validation} | {sentence_encoder}")
+
+    raw_sessions = {
+        k: ms_rounded(v) for k, v in load_keyrecs_sessions(root / "data" / "raw" / "KeyRecs-free-text.csv").items()
+    }
+    behavior_model = fit_behavior_model(
+        {k: to_events(v) for k, v in raw_sessions.items()}, kr_subjs["train"], window=70
+    )
+    print(f"[Behavior] fitted {len(behavior_model.params)} scored features on {len(kr_subjs['train'])} Train people")
+
+    def _touch_seq(raw_holds, raw_dds, key_block):
+        c_dds = np.clip(raw_dds, *bounds["DD"]).astype(np.float32)
+        h_t, u_t = touchify_timings(raw_holds, raw_dds, touch_hold, bounds)
+        seq = extract_sequences(h_t, c_dds, u_t, key_block, np.zeros(len(c_dds), dtype=np.float32))
+        return apply_channel_scaler(seq, chan_mean, chan_std)
+
+    sent_train_touch = _touch_seq(sent_train.raw_holds, sent_train.raw_dds, sent_train.key_blocks)
+    sentence_touch_cohorts = {
+        name: compute_cohort_centroids(encode_sequences(model, sent_train_touch, device), sent_train.subject_ids)
+        for name, model in sentence_models.items()
+    }
+    sent_cohort_touch = sentence_touch_cohorts[sentence_encoder]
+
+    def _sentence_capture_bank(split, touch):
+        bank = build_capture_bank(raw_sessions, kr_subjs[split], touch=touch, target_chars=WEB_CAPTURE_CHARS)
+        attach_tensors(bank, bounds, touch_hold, chan_mean, chan_std)
+        for name, model in sentence_models.items():
+            embed_bank(bank, model, device, N_CHANNELS, name)
+        for sessions in bank.values():
+            for captures in sessions.values():
+                for cap in captures:
+                    cap["emb"] = cap[sentence_encoder]
+        return bank
+
+    banks = {"val": _sentence_capture_bank("val", False), "val_touch": _sentence_capture_bank("val", True)}
+    arena_calibration_kb = calibrate_sentence_arena(
+        banks["val"], sentence_cohorts, behavior_model,
+        ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES, ARENA_SELECTION_GALLERY,
+    )
+    arena_calibration_touch = calibrate_sentence_arena(
+        banks["val_touch"], sentence_touch_cohorts, behavior_model,
+        ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES, ARENA_SELECTION_GALLERY,
+    )
+    kb_chosen = arena_calibration_kb["candidates"][sentence_encoder]
+    touch_chosen = arena_calibration_touch["candidates"][sentence_encoder]
 
     # 4. Task 2 Evaluation: 1:N Multi-User Typing-Practice Identification ("Who Is Typing?")
     id_cmu_m = evaluate_1toN_identification_manhattan(
@@ -1483,8 +1575,10 @@ def main() -> None:
     sent_len_curve = []
     sent_id_summary = {}
     if sent_test is not None and sent_train is not None:
-        sent_tr_emb = encode_sequences(keyprint_model, sent_train.seq_scaled, device)
-        sent_cohort = compute_cohort_centroids(sent_tr_emb, sent_train.subject_ids)
+        clean_sentence_test = {
+            name: evaluate_clean_sentence_cross_session(sent_test, model, device, sentence_cohorts[name])
+            for name, model in sentence_models.items()
+        }
 
         sent_man = ScaledManhattanDetector(shrinkage=0.35).fit_prior(sent_train.raw_flat, sent_train.subject_ids)
         sent_id_m = evaluate_1toN_identification_manhattan(
@@ -1511,9 +1605,6 @@ def main() -> None:
             key_idx_ranges=sent_test.key_idx_ranges,
         )
         sent_emb_va = encode_sequences(vanilla_aug_model, sent_test.seq_scaled, device)
-        sent_va_cohort = compute_cohort_centroids(
-            encode_sequences(vanilla_aug_model, sent_train.seq_scaled, device), sent_train.subject_ids
-        )
         sent_id_va, _ = evaluate_1toN_identification_embeddings(
             sent_emb_va,
             sent_test.subject_ids,
@@ -1547,22 +1638,11 @@ def main() -> None:
             sent_test.subjects,
             k_shot=5,
             cross_session=False,
-            cohort=sent_cohort,
+            cohort=sent_cohort_k,
             t_ranges=sent_test.t_ranges,
             key_idx_ranges=sent_test.key_idx_ranges,
         )
-        sent_id_k_cross, _ = evaluate_1toN_identification_embeddings(
-            sent_emb_k,
-            sent_test.subject_ids,
-            sent_test.sessions,
-            sent_test.chunk_ids,
-            sent_test.subjects,
-            k_shot=5,
-            cross_session=True,
-            cohort=sent_cohort,
-            t_ranges=sent_test.t_ranges,
-            key_idx_ranges=sent_test.key_idx_ranges,
-        )
+        sent_id_k_cross = clean_sentence_test["keyprint_17ch"]
         sent_cohort_legacy = compute_cohort_centroids(
             encode_sequences(legacy_model, sent_train.seq_scaled[:, :L9], device), sent_train.subject_ids
         )
@@ -1587,6 +1667,7 @@ def main() -> None:
             "Vanilla1DCNN_same_session": sent_id_v,
             "Vanilla1DCNN_Aug_same_session": sent_id_va,
             "Vanilla1DCNN_Aug_ASNorm_same_session": sent_id_va_as,
+            "Vanilla1DCNN_Aug_ASNorm_cross_session_different_essay": clean_sentence_test["vanilla_17ch_aug"],
             "KeyPrintNet_same_session": sent_id_k_same,
             "KeyPrintNet_cross_session_different_essay": sent_id_k_cross,
             "Legacy9ch_same_session": sent_id_l["same_session"],
@@ -1595,9 +1676,9 @@ def main() -> None:
         print(f"[Result 1:N English Sentence 18-Way Identification] {sent_id_summary}")
 
         for sub_l in [8, 12, 18, 24]:
-            tr_l = encode_sequences(keyprint_model, sent_train.seq_scaled[:, :, :sub_l], device)
+            tr_l = encode_sequences(keyprint_model, _prefix(sent_train, sub_l), device)
             coh_l = compute_cohort_centroids(tr_l, sent_train.subject_ids)
-            te_l = encode_sequences(keyprint_model, sent_test.seq_scaled[:, :, :sub_l], device)
+            te_l = encode_sequences(keyprint_model, _prefix(sent_test, sub_l), device)
             m_same, _ = evaluate_1toN_identification_embeddings(
                 te_l,
                 sent_test.subject_ids,
@@ -1639,7 +1720,7 @@ def main() -> None:
         splits["val"], chan_mean, chan_std, k_shot=5, seed=SEED, session1_only_enroll=True
     )
     drift_test_trials = build_verification_trials(
-        splits["test"], chan_mean, chan_std, k_shot=5, seed=SEED, session1_only_enroll=True
+        splits["test"], chan_mean, chan_std, k_shot=5, seed=SEED, session1_only_enroll=True, bot_seed=TEST_BOT_SEED
     )
 
     yvm_d, svm_d = score_manhattan_trials(manhattan, splits["val"], drift_val_trials)
@@ -1677,7 +1758,7 @@ def main() -> None:
     kshot_results = []
     for k_s in [1, 3, 5, 10]:
         kt_val = build_verification_trials(splits["val"], chan_mean, chan_std, k_shot=k_s, seed=SEED)
-        kt_test = build_verification_trials(splits["test"], chan_mean, chan_std, k_shot=k_s, seed=SEED)
+        kt_test = build_verification_trials(splits["test"], chan_mean, chan_std, k_shot=k_s, seed=SEED, bot_seed=TEST_BOT_SEED)
         yv_ks, sv_ks, _ = score_embedding_trials(val_emb_k, val_bot_k, kt_val, cohort=cohort_k)
         t_ks = find_optimal_val_threshold(yv_ks, sv_ks)
         yt_ks, st_ks, _ = score_embedding_trials(test_emb_k, test_bot_k, kt_test, cohort=cohort_k)
@@ -1686,34 +1767,21 @@ def main() -> None:
 
     varlen_results = {}
     for seq_l in [6, 8, 10]:
-        tr_l = encode_sequences(keyprint_model, splits["train"].seq_scaled[:, :, :seq_l], device)
+        tr_l = encode_sequences(keyprint_model, _prefix(splits["train"], seq_l), device)
         coh_l = compute_cohort_centroids(tr_l, splits["train"].subject_ids)
-        ve_l = encode_sequences(keyprint_model, splits["val"].seq_scaled[:, :, :seq_l], device)
-        vb_l = encode_sequences(keyprint_model, val_trials["bot_seq"][:, :, :seq_l], device)
+        ve_l = encode_sequences(keyprint_model, _prefix(splits["val"], seq_l), device)
+        vb_l = encode_sequences(keyprint_model, _bot_prefix(val_trials, seq_l), device)
         yv_l, sv_l, _ = score_embedding_trials(ve_l, vb_l, val_trials, cohort=coh_l)
         t_l = find_optimal_val_threshold(yv_l, sv_l)
 
-        te_l = encode_sequences(keyprint_model, splits["test"].seq_scaled[:, :, :seq_l], device)
-        tb_l = encode_sequences(keyprint_model, test_trials["bot_seq"][:, :, :seq_l], device)
+        te_l = encode_sequences(keyprint_model, _prefix(splits["test"], seq_l), device)
+        tb_l = encode_sequences(keyprint_model, _bot_prefix(test_trials, seq_l), device)
         yt_l, st_l, _ = score_embedding_trials(te_l, tb_l, test_trials, cohort=coh_l)
         varlen_results[f"digraphs_{seq_l}"] = summarize_metrics(yt_l, st_l, t_l)
 
 
     # 6b. Key identity, touch input & behavioural profile — evaluated exactly like the web app
-    _, hold_cols_b, dd_cols_b, ud_cols_b = get_feature_columns()
-    raw_sessions = {
-        k: ms_rounded(v) for k, v in load_keyrecs_sessions(root / "data" / "raw" / "KeyRecs-free-text.csv").items()
-    }
-    behavior_model = fit_behavior_model(
-        {k: to_events(v) for k, v in raw_sessions.items()}, kr_subjs["train"], window=70
-    )
-    print(f"[Behavior] fitted {len(behavior_model.params)} scored features on {len(kr_subjs['train'])} Train people")
-
-    def _touch_seq(raw_holds, raw_dds, key_block):
-        c_dds = np.clip(raw_dds, *bounds["DD"]).astype(np.float32)
-        h_t, u_t = touchify_timings(raw_holds, raw_dds, touch_hold, bounds)
-        seq = extract_sequences(h_t, c_dds, u_t, key_block, np.zeros(len(c_dds), dtype=np.float32))
-        return apply_channel_scaler(seq, chan_mean, chan_std)
+    _, hold_cols_b, dd_cols_b, _ = get_feature_columns()
 
     # Cohorts used by AS-Norm (keyboard + touch variants, password + sentence domains)
     cmu_tr_h = splits["train"].raw_holds
@@ -1722,25 +1790,14 @@ def main() -> None:
         encode_sequences(keyprint_model, _touch_seq(cmu_tr_h, cmu_tr_d, splits["train"].key_block), device),
         splits["train"].subject_ids,
     )
-    sent_train_touch = _touch_seq(sent_train.raw_holds, sent_train.raw_dds, sent_train.key_blocks)
-    sent_cohort_touch = compute_cohort_centroids(
-        encode_sequences(keyprint_model, sent_train_touch, device), sent_train.subject_ids
-    )
     sent_cohort_legacy_touch = compute_cohort_centroids(
         encode_sequences(legacy_model, sent_train_touch[:, :L9], device), sent_train.subject_ids
     )
 
     # Browser-equivalent capture banks replayed from raw KeyRecs streams (real typos + Backspace)
-    banks = {
-        "val": build_capture_bank(raw_sessions, kr_subjs["val"], touch=False, target_chars=WEB_CAPTURE_CHARS),
-        "test": build_capture_bank(raw_sessions, kr_subjs["test"], touch=False, target_chars=WEB_CAPTURE_CHARS),
-        "val_touch": build_capture_bank(raw_sessions, kr_subjs["val"], touch=True, target_chars=WEB_CAPTURE_CHARS),
-        "test_touch": build_capture_bank(raw_sessions, kr_subjs["test"], touch=True, target_chars=WEB_CAPTURE_CHARS),
-    }
-    for bank in banks.values():
-        attach_tensors(bank, bounds, touch_hold, chan_mean, chan_std)
-        embed_bank(bank, keyprint_model, device, N_CHANNELS, "emb")
-        embed_bank(bank, legacy_model, device, L9, "emb_legacy")
+    banks.update(test=_sentence_capture_bank("test", False), test_touch=_sentence_capture_bank("test", True))
+    for name in ("test", "test_touch"):
+        embed_bank(banks[name], legacy_model, device, L9, "emb_legacy")
 
     # CMU password strokes: only pause rhythm is observable (no typos/modifiers recorded)
     def _cmu_stats(split):
@@ -1759,8 +1816,8 @@ def main() -> None:
     )
 
     # Fusion weights are calibrated per domain on Validation data only (same code, same features)
-    beta_kb, grid_kb = tune_beta_identification(banks["val"], "emb", sent_cohort, behavior_model)
-    beta_touch, grid_touch = tune_beta_identification(banks["val_touch"], "emb", sent_cohort_touch, behavior_model)
+    beta_kb, grid_kb = kb_chosen["beta"], kb_chosen["beta_grid"]
+    beta_touch, grid_touch = touch_chosen["beta"], touch_chosen["beta_grid"]
     beta_pw, grid_pw = tune_beta_password(cmu_val_args, behavior_model)
     betas = {"password": beta_pw, "sentence_keyboard": beta_kb, "sentence_touch": beta_touch}
     beta_grid = {"password": grid_pw, "sentence_keyboard": grid_kb, "sentence_touch": grid_touch}
@@ -1821,6 +1878,7 @@ def main() -> None:
         chan_std,
         enc_candidates,
         device,
+        fixed_interpretation=keyrecs_fixed_interpretation,
         seed=SEED,
     )
     password_transfer = eval_password_transfer(
@@ -1832,6 +1890,7 @@ def main() -> None:
         chan_std,
         enc_candidates,
         device,
+        fixed_interpretation=keyrecs_fixed_interpretation,
         seed=SEED,
     )
     # Choose PASSWORD_ENCODER strictly from Validation (unseen-content FAR drift + Validation touch EER)
@@ -1853,131 +1912,89 @@ def main() -> None:
     }
     print(f"[Password transfer] val={password_transfer_val} | test={password_transfer} | selection={password_encoder_selection}")
 
-    open_set = calibrate_open_set_threshold(banks["val"], "emb", sent_cohort, behavior_model, beta_kb)
-    open_set_touch = calibrate_open_set_threshold(banks["val_touch"], "emb", sent_cohort_touch, behavior_model, beta_touch)
+    open_set = kb_chosen["baseline_rule"]
+    open_set_touch = touch_chosen["baseline_rule"]
     print(f"[Arena] open-set threshold on Validation: keyboard={open_set} touch={open_set_touch}")
 
     # 6c. Deployed protocols that reject more impostors (README section 5.6)
-    pw_rng = np.random.default_rng(SEED)
-    pw_tabs = digraph_tables(raw_sessions, kr_subjs["val"] + kr_subjs["test"])
-    pw_people = {sp: [p for p in kr_subjs[sp] if (p, 1) in pw_tabs and (p, 2) in pw_tabs] for sp in ("val", "test")}
-    non_test_vocab = kr_subjs["train"] + kr_subjs["val"]
-    pw_strings = {
-        "val": choose_strings(raw_sessions, pw_tabs, pw_people["val"], 30, 30, pw_rng, vocab_people=non_test_vocab)
-    }
-    pw_strings["test"] = choose_strings(
-        raw_sessions,
-        pw_tabs,
-        pw_people["test"],
-        30,
-        30,
-        pw_rng,
-        exclude=set(pw_strings["val"]["word"] + pw_strings["val"]["random"]),
-        vocab_people=non_test_vocab,
-    )
     emb9 = lambda T: encode_variable(legacy_model, list(T), device, L9)  # noqa: E731
     emb17 = lambda T: encode_variable(keyprint_model, list(T), device, N_CHANNELS)  # noqa: E731
     pw_cohorts = {"kb": cohort_l, "touch": cohort_l_touch}
-    pw_deployed_thr = {"kb": metrics_legacy["threshold"], "touch": password_touch["legacy_9ch_imputed_holds"]["threshold"]}
-    pw_rows = {
-        sp: string_trials(
-            raw_sessions, pw_tabs, pw_people[sp], pw_strings[sp], emb9, emb17, bounds, chan_mean, chan_std,
-            touch_hold, pw_cohorts, pw_rng
-        )
-        for sp in ("val", "test")
-    }
-    pw_synth_meta = {
-        sp: synthesis_metadata(pw_tabs, pw_people[sp], pw_strings[sp], pw_rows[sp])
-        for sp in ("val", "test")
-    }
-    pw_dual = calibrate_dual(pw_rows["val"], PASSWORD_FRR_TARGET)
-    pw_speed = person_speed(pw_tabs, pw_people["val"] + pw_people["test"])
-    pw_string_eval = evaluate_strings(pw_rows["test"], pw_dual, pw_deployed_thr, pw_speed)
-    print(f"[Password strings] dual calibration {pw_dual} | test {pw_string_eval} | meta={pw_synth_meta}")
-
-    # (a2) Length-aware calibration fitted strictly on Validation strings
-    used = set(pw_strings["val"]["word"] + pw_strings["val"]["random"] + pw_strings["test"]["word"] + pw_strings["test"]["random"])
-    pw_len_strings = {"val": {}, "test": {}}
-    pw_len_rows = {"val": {}, "test": {}}
-    for sp, lengths in (("val", CALIB_LENGTHS), ("test", (8, 12, 16, 20))):
-        for L in lengths:
-            ws = strings_of_length(pw_tabs, pw_people[sp], L, 15, pw_rng, exclude=used)
-            used |= set(ws)
-            pw_len_strings[sp][L] = ws
-            pw_len_rows[sp][L] = string_trials(
-                raw_sessions, pw_tabs, pw_people[sp], {"random": ws}, emb9, emb17, bounds, chan_mean,
-                chan_std, touch_hold, pw_cohorts, pw_rng
-            )
-    pw_len_table = calibrate_by_length(pw_len_rows["val"], PASSWORD_FRR_TARGET)
-    pw_len_eval = evaluate_lengths(pw_len_rows["test"], pw_dual, pw_len_table)
-    print(f"[Password length] table {pw_len_table} | test {pw_len_eval}")
-
-    # (a3) Capital letters: Shift vs CapsLock habit evaluated at exact deployed `base_tau + tau_offset`
-    cap_rates = capital_method_rates(raw_sessions)
-    caps_share = float(np.mean([cap_rates[(p, 1)] for p in kr_subjs["train"] if (p, 1) in cap_rates]))
-    prm12 = params_for_length(pw_len_table, PASSWORD_MIN_LENGTH, "kb")
-    cap_rows = {
-        sp: capital_trials(
-            pw_tabs, cap_rates, pw_people[sp], PASSWORD_MIN_LENGTH, n, emb9, emb17, bounds, chan_mean, chan_std,
-            touch_hold, prm12, pw_rng
-        )
-        for sp, n in (("val", 12), ("test", 15))
-    }
-    pw_capital = capital_fusion(cap_rows["val"], cap_rows["test"], caps_share, base_tau=prm12["tau"])
-    both_days = [p for p in kr_subjs["train"] + kr_subjs["val"] + kr_subjs["test"] if (p, 1) in cap_rates and (p, 2) in cap_rates]
-    pw_capital["habit_same_across_days"] = round(float(np.mean([(cap_rates[(p, 1)] > 0.5) == (cap_rates[(p, 2)] > 0.5) for p in both_days])), 4)
-    pw_capital["people_mostly_capslock"] = int(sum(1 for p in both_days if cap_rates[(p, 1)] > 0.5))
-    pw_capital["people_with_capitals"] = len(both_days)
-    print(f"[Password capitals] {pw_capital}")
+    pw_deployed_thr = {"kb": round(float(thresh_l), 4), "touch": password_touch_val["legacy_9ch_imputed_holds"]["threshold"]}
+    pw_protocol = run_password_synthesis(
+        raw_sessions, kr_subjs, emb9, emb17, bounds, chan_mean, chan_std, touch_hold, pw_cohorts, pw_deployed_thr,
+        seed=SEED, frr_target=PASSWORD_FRR_TARGET, min_length=PASSWORD_MIN_LENGTH,
+    )
+    pw_strings = pw_protocol["password_user_strings"]
+    pw_dual = pw_strings["dual_calibration"]
+    pw_length = pw_protocol["password_length_calibration"]
+    pw_len_table = pw_length["table"]
+    pw_capital = pw_protocol["password_capital_method"]
+    print(f"[Password strings] dual calibration {pw_dual} | test {pw_strings['test']}")
+    print(f"[Password length] table {pw_len_table} | test {pw_length['test']}")
+    print(f"[Password capitals] weight={pw_capital['weight']} offset={pw_capital['tau_offset']} | test {pw_capital['test_with']}")
 
     # (b) Template adaptation: pass UNCLIPPED raw holds & DD intervals so raw UD is computed before clipping!
-    kf = pd.read_csv(root / "data" / "raw" / "KeyRecs-fixed-text.csv")
-    kf.columns = [c.strip() for c in kf.columns]
-    kf = kf.dropna(subset=KEYRECS_HOLD_COLS + KEYRECS_DD_COLS).reset_index(drop=True)
-    kf["rep"] = kf.groupby(["participant", "session"]).cumcount()
     adapt_margins = (0.0, 0.5, 1.0, 1.5)
-    pw_adapt = {}
-    for sp in ("val", "test"):
-        sub = kf[kf["participant"].isin(kr_subjs[sp])].reset_index(drop=True)
-        raw_hh = sub[KEYRECS_HOLD_COLS].values.astype(np.float32)
-        raw_dd = sub[KEYRECS_DD_COLS].values.astype(np.float32)
-        pw_adapt[sp] = {
+
+    def adapt_split(sp):
+        sub, raw_hh, raw_dd, _ = read_keyrecs_fixed_timings(
+            root / "data" / "raw" / "KeyRecs-fixed-text.csv", kr_subjs[sp], keyrecs_fixed_interpretation,
+        )
+        reps = sub["repetition"].to_numpy() - 1
+        return {
             mode: adaptation_eval(
-                raw_hh, raw_dd, sub["participant"].values, sub["session"].values, sub["rep"].values, "vpwjkeurkb",
+                raw_hh, raw_dd, sub["participant"].values, sub["session"].values, reps, "vpwjkeurkb",
                 emb9, emb17, bounds, chan_mean, chan_std, touch_hold, pw_dual, pw_deployed_thr, pw_cohorts,
-                adapt_margins, np.random.default_rng(SEED), mode
+                adapt_margins, password_rng(SEED, sp, "adaptation_queries"), mode,
             )
             for mode in ("kb", "touch")
         }
 
-    def _adapt_cost(r):
-        frr = np.mean([v for k, v in r.items() if k.startswith("frr_")])
-        return 0.5 * (frr + r["far"])
+    pw_adapt = {"val": adapt_split("val")}
+    adapt_policy, adapt_costs = select_adaptation_policy(pw_adapt["val"], adapt_margins)
+    adapt_enabled = adapt_policy != "dual_no_adapt"
+    adapt_margin = float(adapt_policy.rsplit("_", 1)[1]) if adapt_enabled else 1.5
+    pw_adapt["test"] = adapt_split("test")
+    print(f"[Password adaptation] Validation policy={adapt_policy}, costs={adapt_costs} | test {pw_adapt['test']}")
 
-    adapt_margin = min(adapt_margins, key=lambda mg: sum(_adapt_cost(pw_adapt["val"][md][f"dual_adapt_margin_{mg:g}"]) for md in ("kb", "touch")))
-    print(f"[Password adaptation] margin chosen on Validation = {adapt_margin} | test {pw_adapt['test']}")
-
-    # (c) Typing practice: 5 enrolment sentences, 2 query sentences, threshold + top1-top2 margin
-    arena_protocol = {}
-    for dev, vb, tb, coh, bta, old_thr in (
-        ("keyboard", banks["val"], banks["test"], sent_cohort, beta_kb, open_set["threshold"]),
-        ("touch", banks["val_touch"], banks["test_touch"], sent_cohort_touch, beta_touch, open_set_touch["threshold"]),
-    ):
-        mats = {
-            (sp, k, q): open_set_matrix(b, "emb", coh, behavior_model, bta, k, q)
-            for sp, b in (("val", vb), ("test", tb))
-            for k, q in ((3, 1), (ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES))
-        }
-        old_val = open_set_eval(mats[("val", 3, 1)], 5, old_thr, 0.0)
-        rule = tune_open_set_rule(mats[("val", ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES)], 5, old_val["correct_accept"])
-        arena_protocol[dev] = {"rule": rule, "validation_target_correct_accept": old_val["correct_accept"]}
-        for g in (3, 5, 10):
-            arena_protocol[dev][f"gallery_{g}"] = {
-                "single_sentence_enroll3": open_set_eval(mats[("test", 3, 1)], g, old_thr, 0.0),
-                "two_sentences_enroll5_margin": open_set_eval(
-                    mats[("test", ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES)], g, rule["threshold"], rule["margin"]
-                ),
-            }
+    # (c) Apply the frozen Arena rules to paired Test captures and gallery draws.
+    arena_keyboard_test = {
+        name: evaluate_sentence_arena(
+            banks["test"], name, cohort, behavior_model, arena_calibration_kb,
+            ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES, (3, 5, 10) if name == sentence_encoder else (5,),
+        )
+        for name, cohort in sentence_cohorts.items()
+    }
+    arena_protocol = {
+        "keyboard": arena_keyboard_test[sentence_encoder],
+        "touch": evaluate_sentence_arena(
+            banks["test_touch"], sentence_encoder, sent_cohort_touch, behavior_model, arena_calibration_touch,
+            ARENA_ENROLL_SENTENCES, ARENA_QUERY_SENTENCES, (3, 5, 10),
+        ),
+    }
+    sentence_model_selection = {
+        "selection_split": "val_only",
+        "selection_metric": "clean_25_char_cross_session_top1_accuracy",
+        "tie_priority": list(SENTENCE_MODEL_CANDIDATES),
+        "chosen_encoder": sentence_encoder,
+        "clean_25_char_cross_session": {
+            "enroll_session": 1, "enroll_chars": 25, "enroll_samples": 5, "query_session": 2,
+            "scoring": "AS-Norm with each encoder's KeyRecs free-text Train cohort",
+            "validation": clean_sentence_validation,
+            "test": clean_sentence_test,
+        },
+        "web_68_char_keyboard": {
+            "capture_characters": WEB_CAPTURE_CHARS,
+            "enroll_captures": ARENA_ENROLL_SENTENCES,
+            "query_captures": ARENA_QUERY_SENTENCES,
+            "query_sessions": [1, 2],
+            "validation_target_rule": "minimum candidate 3+1 correct-accept, capped at the minimum attainable 5+2 correct-accept",
+            "validation": arena_calibration_kb,
+            "test_gallery_draws": 300,
+            "test": arena_keyboard_test,
+        },
+    }
     print(f"[Arena protocol] {arena_protocol}")
 
     # (d) Extra practice on an existing profile: 1:1 gate calibrated on Validation
@@ -1991,15 +2008,24 @@ def main() -> None:
     web_identification = {
         "keyboard": {
             "legacy_9ch": eval_web_identification(banks["test"], "emb_legacy", sent_cohort_legacy),
-            "keyprint_17ch": eval_web_identification(banks["test"], "emb", sent_cohort),
-            "keyprint_17ch_behavior": eval_web_identification(banks["test"], "emb", sent_cohort, 16, behavior_model, beta_kb),
+            "keyprint_17ch": eval_web_identification(banks["test"], "keyprint_17ch", sent_cohort_k),
+            "keyprint_17ch_behavior": eval_web_identification(
+                banks["test"], "keyprint_17ch", sent_cohort_k, 16, behavior_model,
+                arena_calibration_kb["candidates"]["keyprint_17ch"]["beta"],
+            ),
             "behavior_only": eval_web_identification(banks["test"], "emb", sent_cohort, 16, behavior_model, 1.0, behavior_only=True),
         },
         "touch": {
             "legacy_9ch_imputed_holds": eval_web_identification(banks["test_touch"], "emb_legacy", sent_cohort_legacy_touch),
-            "keyprint_17ch": eval_web_identification(banks["test_touch"], "emb", sent_cohort_touch),
-            "keyprint_17ch_behavior": eval_web_identification(banks["test_touch"], "emb", sent_cohort_touch, 16, behavior_model, beta_touch),
-            "keyprint_17ch_behavior_keyboard_beta": eval_web_identification(banks["test_touch"], "emb", sent_cohort_touch, 16, behavior_model, beta_kb),
+            "keyprint_17ch": eval_web_identification(banks["test_touch"], "keyprint_17ch", sentence_touch_cohorts["keyprint_17ch"]),
+            "keyprint_17ch_behavior": eval_web_identification(
+                banks["test_touch"], "keyprint_17ch", sentence_touch_cohorts["keyprint_17ch"], 16, behavior_model,
+                arena_calibration_touch["candidates"]["keyprint_17ch"]["beta"],
+            ),
+            "keyprint_17ch_behavior_keyboard_beta": eval_web_identification(
+                banks["test_touch"], "keyprint_17ch", sentence_touch_cohorts["keyprint_17ch"], 16, behavior_model,
+                arena_calibration_kb["candidates"]["keyprint_17ch"]["beta"],
+            ),
         },
     }
     print(f"[Result 1:N web-faithful captures] {web_identification}")
@@ -2012,7 +2038,7 @@ def main() -> None:
         chan_std,
         touch_hold,
         legacy_model,
-        keyprint_model,
+        sentence_model,
         cohort_l,
         sent_cohort,
         behavior_model,
@@ -2022,14 +2048,21 @@ def main() -> None:
     )
     print(f"[Troubleshooting Ablations] {troubleshooting_ablations}")
 
-    # 7. Export ONNX FIRST so we compute sha17, sha9, and model_hash before stamping web profiles & config!
+    # 7. Export the selected sentence encoder and both password encoders before stamping profiles.
+    sentence_onnx_path = web_models_dir / "keyprint_net.onnx"
+    password_aux_onnx_path = web_models_dir / "keyprint_net_password_aux.onnx" if sentence_encoder != "keyprint_17ch" else None
     onnx_info = safe_export_onnx(
         keyprint_model,
         models_dir / "keyprint_net.onnx",
-        web_models_dir / "keyprint_net.onnx",
+        password_aux_onnx_path or sentence_onnx_path,
         in_channels=N_CHANNELS,
     )
     keyprint_model.to(device)
+    if password_aux_onnx_path is None:
+        sentence_onnx_info = onnx_info
+    else:
+        sentence_onnx_info = safe_export_onnx(sentence_model, sentence_onnx_path, sentence_onnx_path, in_channels=N_CHANNELS)
+        sentence_model.to(device)
     password_onnx_info = safe_export_onnx(
         legacy_model,
         models_dir / "legacy" / "keyprint_net_9ch.onnx",
@@ -2038,10 +2071,14 @@ def main() -> None:
     )
     legacy_model.to(device)
 
-    sha17 = _file_sha256(web_models_dir / "keyprint_net.onnx")
+    sha17 = _file_sha256(sentence_onnx_path)
     sha9 = _file_sha256(web_models_dir / "keyprint_net_password.onnx")
-    model_hash = hashlib.sha256(f"{sha17}:{sha9}".encode("utf-8")).hexdigest()[:16]
-    onnx_info["sha256"] = sha17
+    onnx_shas = {"sentence_17ch": sha17, "password_9ch": sha9}
+    if password_aux_onnx_path is not None:
+        onnx_shas["password_17ch"] = _file_sha256(password_aux_onnx_path)
+    model_hash = hashlib.sha256(":".join(onnx_shas.values()).encode("utf-8")).hexdigest()[:16]
+    onnx_info["sha256"] = onnx_shas.get("password_17ch", sha17)
+    sentence_onnx_info["sha256"] = sha17
     password_onnx_info["sha256"] = sha9
 
     # Real sample profiles for the web app (stamped with schema v4 + modelHash)
@@ -2066,24 +2103,53 @@ def main() -> None:
                 "rollover": float(np.mean([x["rolloverPct"] for x in st])),
                 "cv": dd_cv(sess[1][:ARENA_ENROLL_SENTENCES]),
             }
-    test_df = splits["test"].df
+    cmu_test = splits["test"]
+
+    def _browser_recordings(indices):
+        for i in indices:
+            raw_h, raw_d = cmu_test.raw_holds[i], cmu_test.raw_dds[i]
+            # The recorder submits on Enter keydown, so every character keyup must have arrived.
+            downs = np.concatenate([[0.0], np.cumsum(raw_d, dtype=np.float64)])
+            if np.any(downs[:-1] + raw_h[:-1] > downs[-1]):
+                continue
+            cap = cmu_browser_password_capture(raw_h, raw_d)
+            if cap["clean_digraphs"] != len(CMU_BROWSER_SAMPLE_PASSWORD) - 1 or not all(cap["hold_valid"]):
+                continue
+            cap["tensor"] = build_input_tensor(cap, bounds, touch_hold, chan_mean, chan_std)
+            yield int(i), cap
+
+    def _sample_password_fixture(recording):
+        i, cap = recording
+        holds, dd = cmu_test.raw_holds[i], cmu_test.raw_dds[i]
+        times = 0.1 + np.concatenate([[0.0], np.cumsum(dd, dtype=np.float64)])
+        chars = zip(CMU_BROWSER_SAMPLE_PASSWORD, times[:-1], holds[:-1])
+        script = js_event_script(list(chars), touch=False)
+        enter = round(float(times[-1] * 1000), 3)
+        script.append({"type": "keydown", "code": "Enter", "key": "Enter", "t": enter})
+        return {
+            "session": int(cmu_test.sessions[i]), "rep": int(cmu_test.reps[i]),
+            "script": script,
+            "stroke": {**stroke_payload(cap), "behavior": cap["behavior"]},
+            "tensor": np.round(cap["tensor"], 6).tolist(),
+        }
+
     cmu_cands, cmu_rows = {}, {}
-    for uid, subj in enumerate(splits["test"].subjects):
-        idx = np.where((splits["test"].subject_ids == uid) & (splits["test"].sessions == 1) & (splits["test"].reps <= 5))[0]
-        g_idx = np.where((splits["test"].subject_ids == uid) & (splits["test"].sessions == 6) & (splits["test"].reps == 10))[0]
-        if len(idx) < 5 or len(g_idx) == 0:
+    for uid, subj in enumerate(cmu_test.subjects):
+        same_person = cmu_test.subject_ids == uid
+        idx = np.flatnonzero(same_person & (cmu_test.sessions == 1))
+        g_idx = np.flatnonzero(same_person & (cmu_test.sessions == 6) & (cmu_test.reps >= 10))
+        enroll = list(islice(_browser_recordings(idx), 5))
+        genuine = next(_browser_recordings(g_idx), None)
+        if len(enroll) < 5 or genuine is None:
             continue
-        caps = [
-            fixed_stroke_capture(test_df.iloc[i][hold_cols_b], test_df.iloc[i][dd_cols_b], test_df.iloc[i][ud_cols_b], CMU_PASSWORD_CODES)
-            for i in idx
-        ]
+        caps = [cap for _, cap in enroll]
         st = [capture_stats(c) for c in caps]
         cmu_cands[subj] = {
             "cpm": float(np.mean([x["cpm"] for x in st])),
             "rollover": float(np.mean([x["rolloverPct"] for x in st])),
             "cv": dd_cv(caps),
         }
-        cmu_rows[subj] = (idx, int(g_idx[0]), caps)
+        cmu_rows[subj] = (enroll, genuine)
 
     sample_meta = [
         ("서연 (샘플·고속연타)", "#2563eb"),
@@ -2092,6 +2158,7 @@ def main() -> None:
         ("현우 (샘플·롤오버형)", "#7c3aed"),
     ]
     mvp_sample_profiles = []
+    sample_password_cases = []
     for (name, color), kr_id, cmu_id in zip(sample_meta, _pick(kr_cands), _pick(cmu_cands)):
         e_caps = banks["test"][kr_id][1][:ARENA_ENROLL_SENTENCES]
         beh = None
@@ -2101,19 +2168,25 @@ def main() -> None:
         q_cap = banks["test"][kr_id][2][1]
         arena_tmpl["testQueryStroke"] = {**stroke_payload(q_cap), "behavior": q_cap["behavior"]}
 
-        idx, g_i, caps = cmu_rows[cmu_id]
+        enroll, genuine = cmu_rows[cmu_id]
+        caps = [cap for _, cap in enroll]
+        tensors = [cap["tensor"] for cap in caps] + [genuine[1]["tensor"]]
+        sample_emb9 = encode_variable(legacy_model, tensors, device, L9)
+        sample_emb17 = encode_variable(keyprint_model, tensors, device, N_CHANNELS)
         pw_beh = None
-        for i in idx:
-            pw_beh = merge(pw_beh, test_stats_cmu[i])
-        pw_tmpl = template_payload(test_emb_l[idx], caps, pw_beh)
-        pw_tmpl["target"] = ".tie5Roanl"
-        t17 = template_payload(test_emb_k[idx], caps, pw_beh)
+        for cap in caps:
+            pw_beh = merge(pw_beh, cap["behavior"])
+        pw_tmpl = template_payload(sample_emb9[:-1], caps, pw_beh)
+        pw_tmpl["target"] = CMU_BROWSER_SAMPLE_PASSWORD
+        t17 = template_payload(sample_emb17[:-1], caps, pw_beh)
         pw_tmpl["enc17"] = {"centroid": t17["centroid"], "exemplars": t17["exemplars"]}
-        g_row = test_df.iloc[g_i]
-        pw_tmpl["testGenuineStroke"] = {
-            **stroke_payload(fixed_stroke_capture(g_row[hold_cols_b], g_row[dd_cols_b], g_row[ud_cols_b], CMU_PASSWORD_CODES)),
-            "behavior": test_stats_cmu[g_i],
-        }
+        genuine_fixture = _sample_password_fixture(genuine)
+        pw_tmpl["testGenuineStroke"] = genuine_fixture["stroke"]
+        sample_password_cases.append({
+            "id": f"sample_{kr_id}", "cmu_subject": cmu_id, "password": CMU_BROWSER_SAMPLE_PASSWORD,
+            "enrollment": [_sample_password_fixture(recording) for recording in enroll],
+            "genuine_query": {**genuine_fixture, "embedding9": sample_emb9[-1].tolist(), "embedding17": sample_emb17[-1].tolist()},
+        })
         mvp_sample_profiles.append(
             {
                 "id": f"sample_{kr_id}",
@@ -2123,7 +2196,7 @@ def main() -> None:
                 "schemaVersion": SCHEMA_VERSION,
                 "preprocessVersion": PREPROCESS_VERSION,
                 "modelHash": model_hash,
-                "modelVersion": MODEL_VERSION,
+                "modelVersion": deployed_model_version,
                 "createdAt": SAMPLE_PROFILE_TIMESTAMP,
                 "updatedAt": SAMPLE_PROFILE_TIMESTAMP,
                 "source": {"keyrecs_participant": kr_id, "cmu_subject": cmu_id},
@@ -2147,6 +2220,7 @@ def main() -> None:
         dual_params=pw_dual,
         display_slope=DISPLAY_SLOPE,
         extra={
+            "sample_password_cases": sample_password_cases,
             "length_cases": [
                 {"length": L, "mode": md, "expected": params_for_length(pw_len_table, L, md)}
                 for L in (6, 9, 12, 13, 17, 20, 30)
@@ -2167,13 +2241,18 @@ def main() -> None:
     )
 
     feature_upgrade = {
-        "model_version": MODEL_VERSION,
+        "model_version": deployed_model_version,
         "schema_version": SCHEMA_VERSION,
         "preprocess_version": PREPROCESS_VERSION,
         "model_hash": model_hash,
         "channels": CHANNEL_NAMES,
         "touch_hold_impute_sec": touch_hold,
         "touch_train_prob": TOUCH_PROB,
+        "channel_input_ablation": {
+            "encoders": ["legacy_9ch", "keyprint_17ch"],
+            "matched_touch_probability": TOUCH_PROB,
+            "input_difference": "17ch adds seven key-geometry channels and measured-hold validity",
+        },
         "behavior_beta": betas,
         "behavior_beta_grid": beta_grid,
         "behavior_params": behavior_model.to_json(),
@@ -2188,7 +2267,8 @@ def main() -> None:
         "password_transfer_val": password_transfer_val,
         "password_transfer_other_content": password_transfer,
         "password_encoder_selection": password_encoder_selection,
-        "password_encoder_deployed": PASSWORD_ENCODER,
+        "single_encoder_comparison_choice": PASSWORD_ENCODER,
+        "password_encoder_deployed": "dual_9ch_17ch",
         "cmu_10way": {"legacy_9ch": id_cmu_l, "keyprint_17ch": id_cmu_k},
         "keyrecs_clean_chunks_18way": {
             "legacy_9ch": sent_id_l,
@@ -2200,23 +2280,20 @@ def main() -> None:
         "web_faithful_identification": web_identification,
         "arena_open_set": {"keyboard": open_set, "touch": open_set_touch},
         "web_capture_chars": WEB_CAPTURE_CHARS,
-        "password_user_strings": {
-            "strings": pw_strings,
-            "synthesis_metadata": pw_synth_meta,
-            "frr_target": PASSWORD_FRR_TARGET,
-            "dual_calibration": pw_dual,
-            "test": pw_string_eval,
-        },
-        "password_adaptation": {"margins": list(adapt_margins), "chosen_margin": adapt_margin, **pw_adapt},
-        "password_capital_method": pw_capital,
-        "password_length_calibration": {
-            "min_length": PASSWORD_MIN_LENGTH,
-            "table": pw_len_table,
-            "strings": {sp: {str(L): v for L, v in d.items()} for sp, d in pw_len_strings.items()},
-            "test": pw_len_eval,
-        },
+        **pw_protocol,
+        "password_adaptation": {"margins": list(adapt_margins), "chosen_margin": adapt_margin,
+                                "enabled": adapt_enabled, "chosen_policy": adapt_policy,
+                                "validation_policy_costs": adapt_costs, "selection_split": "val_only", **pw_adapt},
         "arena_protocol": {"enroll_sentences": ARENA_ENROLL_SENTENCES, "query_sentences": ARENA_QUERY_SENTENCES, **arena_protocol},
+        "sentence_model_selection": sentence_model_selection,
         "arena_add_check": arena_add,
+        "sample_password_protocol": {
+            "benchmark_keys": len(CMU_PASSWORD_CODES), "benchmark_transitions": len(CMU_PASSWORD_CODES) - 1,
+            "browser_password_characters": len(CMU_BROWSER_SAMPLE_PASSWORD),
+            "browser_password_transitions": len(CMU_BROWSER_SAMPLE_PASSWORD) - 1,
+            "profiles": len(sample_password_cases),
+            "enrollment_session": 1, "enrollment_recordings": 5, "query_session": 6,
+        },
     }
 
     identification_bundle = {
@@ -2242,11 +2319,13 @@ def main() -> None:
         extra_payload={
             "schema_version": SCHEMA_VERSION,
             "preprocess_version": PREPROCESS_VERSION,
+            "model_version": deployed_model_version,
             "model_hash": model_hash,
-            "onnx_sha256": {
-                "sentence_17ch": sha17,
-                "password_9ch": sha9,
-            },
+            "onnx_sha256": onnx_shas,
+            "sentence_model": {"encoder": sentence_encoder, "file": sentence_onnx_path.name, "in_channels": N_CHANNELS},
+            **({"model_name": "Vanilla1DCNN (17 channels, augmented, AS-Norm)",
+                "password_aux_model": {"file": password_aux_onnx_path.name, "in_channels": N_CHANNELS}}
+               if password_aux_onnx_path is not None else {}),
             "touch_hold_impute_sec": touch_hold,
             "keyboard_layout": export_layout_for_web(),
             "sentence_cohort_centroids": _r5(sent_cohort),
@@ -2272,6 +2351,7 @@ def main() -> None:
                 "touch": pw_dual["touch"],
                 "slope": DISPLAY_SLOPE,
                 "adapt_margin": adapt_margin,
+                "adapt_enabled": adapt_enabled,
                 "adapt_keep": 12,
                 "frr_target": PASSWORD_FRR_TARGET,
                 "touch_reference_only": True,
@@ -2284,7 +2364,7 @@ def main() -> None:
                 },
             },
             "password_min_length": PASSWORD_MIN_LENGTH,
-            "calibrated_threshold_touch": password_touch["legacy_9ch_imputed_holds"]["threshold"],
+            "calibrated_threshold_touch": pw_deployed_thr["touch"],
             "mvp_sample_profiles": mvp_sample_profiles,
             "feature_metrics": {
                 "web_faithful_identification": web_identification,
@@ -2292,7 +2372,8 @@ def main() -> None:
                 "password_1to1_touch": password_touch,
                 "password_transfer_val": password_transfer_val,
                 "password_transfer_other_content": password_transfer,
-                "password_encoder_deployed": PASSWORD_ENCODER,
+                "single_encoder_comparison_choice": PASSWORD_ENCODER,
+                "password_encoder_deployed": "dual_9ch_17ch",
             },
         },
     )
@@ -2302,6 +2383,7 @@ def main() -> None:
         "ScaledManhattan (통계 베이스라인)": (yt_m, st_m, metrics_manhattan),
         "Vanilla1DCNN (딥러닝 베이스라인)": (yt_v, st_v, metrics_vanilla),
         "KeyPrintNet (제안 모델)": (yt_k, st_k, metrics_keyprint),
+        "Vanilla + Aug + AS-Norm (통제)": (yt_va_as, st_va_as, metrics_vanilla_aug_as),
     }
     plot_fig1_preprocessing(raw_df, splits, meta, sil_raw4, sil_bio9, fig_dir)
     plot_fig2_learning_curves(hist_vanilla, hist_keyprint, fig_dir, hist_keyprint_9ch=hist_keyprint_9ch)
@@ -2339,12 +2421,19 @@ def main() -> None:
             "keyprint_net_17ch": KEYPRINT_EPOCHS,
         },
         "reuse_weights": REUSE_WEIGHTS,
+        "evaluation_protocol_version": "kp-eval-v6",
+        "training_recipe": training_recipe,
+        "source_manifest_scope": "evaluation/training and auxiliary analysis scripts; notebook/packaging tools are tracked by the submission build",
+        "source_sha256": {str(p.relative_to(root)): _file_sha256(p) for p in sorted((root / "src").glob("*.py"))
+                          if p.name not in {"build_notebook.py", "package_submission.py", "refresh_portfolio.py"}},
+        "training_provenance": ((prev_report or {}).get("provenance", {}).get("training_provenance")
+                                or (prev_report or {}).get("provenance")) if REUSE_WEIGHTS else None,
         "schema_version": SCHEMA_VERSION,
         "preprocess_version": PREPROCESS_VERSION,
         "model_hash": model_hash,
         "disclosure": (
-            "Selection rules strictly use Validation; test split was previously evaluated in earlier iterations "
-            "(re-evaluated after leakage/preprocessing fixes); 9ch and 17ch checkpoints are newly trained from scratch."
+            "KeyRecs fixed-text timestamps interpreted on Train only. Both KeyPrintNet channel sets use 18% touch augmentation. "
+            "Encoder and threshold selection use Validation. Previously observed Test split is re-evaluated."
         ),
         "artifact_sha256": {
             "models/vanilla_1dcnn.pt": _file_sha256(vanilla_pt),
@@ -2355,6 +2444,8 @@ def main() -> None:
             "models/legacy/keyprint_net_9ch.onnx": _file_sha256(models_dir / "legacy" / "keyprint_net_9ch.onnx"),
             "web/public/models/keyprint_net.onnx": sha17,
             "web/public/models/keyprint_net_password.onnx": sha9,
+            **({str(password_aux_onnx_path.relative_to(out_root)): onnx_shas["password_17ch"]}
+               if password_aux_onnx_path is not None else {}),
             "web/public/models/model_config.json": _file_sha256(web_models_dir / "model_config.json"),
             "web/scripts/fixtures/feature_parity.json": _file_sha256(parity_fixture_path),
         },
@@ -2363,6 +2454,8 @@ def main() -> None:
     elapsed = round(time.time() - t0, 2)
     report = {
         "elapsed_seconds": elapsed,
+        "bot_split_audit": bot_split_audit,
+        "proposed_vs_augmented_control": comparison_with_control(test_trials, yt_k, st_k, st_va_as, thresh_k, thresh_va_as, SEED),
         "device": f"{device} ({gpu_name})",
         "provenance": provenance,
         "preprocessing": {
@@ -2374,6 +2467,7 @@ def main() -> None:
             "silhouette_bio17_cosine": round(sil_bio17, 4),
             "split_counts": meta["split_counts"],
             "keyrecs_sentence_corpus": meta.get("keyrecs_sentence_corpus"),
+            "keyrecs_fixed_timestamps": meta["keyrecs_fixed_timestamps"],
         },
         "models": {
             "ScaledManhattan": metrics_manhattan,
@@ -2389,6 +2483,7 @@ def main() -> None:
         "kshot_sensitivity": kshot_results,
         "variable_length_generalization": varlen_results,
         "onnx_export": onnx_info,
+        "onnx_export_sentence_encoder": sentence_onnx_info,
         "onnx_export_password_encoder": password_onnx_info,
         "feature_upgrade": feature_upgrade,
         "error_analysis": error_summary,

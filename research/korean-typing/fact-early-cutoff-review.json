@@ -1,0 +1,195 @@
+{
+  "연구": "FACT 공개 Galaxy S8 한국어 터치 간격, 76타, 등록 5개·질의 2개, 5인 후보",
+  "판정_커밋": "e7529d3f6be9b89f5f71a6958dadaa887e113c8f",
+  "기존_공개_집계_SHA256": "06f1b32f4e1fe89f2a6b6a284fef93ac2a747e336daf49f78eddd5cf834925c9",
+  "방법": "가명 순서의 5인 조를 홀짝으로 나눠 25명씩 교차. 각 방향에서 기준 선택에만 25명 × 7쌍(기존 시험 5쌍 + 미사용 등록 기록 4개로 2쌍), 나머지 25명의 시험 5쌍씩으로 평가. 두 방향을 합쳐 같은 사람의 각 시험 입력을 한 번씩 집계. 올바른 등록자·오분류·보류의 분모는 250, 다른 조에 대한 미등록자 시험 분모도 250. 기존 연구 자료의 재분석이며 신규 외부 검증은 아님.",
+  "미등록_조": "각 분할 안에서 다음 5인 조로 순환하여 평가. 원 공개 집계와 미등록 비교 조합이 달라 기존 기준 미등록 오수락이 33건에서 34건으로 달라짐.",
+  "후보기준": "최소 일치도 0.50부터 1.00, 최소 1·2위 차이 0.00부터 0.15, 각각 0.01 간격. 제한 기준은 등록자 오인식과 미등록자 오수락이 모두 현재 PR의 튜닝 분할 관측값 이내인 후보 중 등록자 정답 수락 최대화. 선택에 평가 분할 점수 미사용.",
+  "공개_시험_그대로의_대조": {
+    "현재 PR": {
+      "known_trials": 250,
+      "unknown_trials": 250,
+      "rank1_correct": 187,
+      "accepted_correct": 19,
+      "accepted_wrong": 0,
+      "deferred_known": 231,
+      "accepted_unknown": 33
+    },
+    "같은 모델에서 1·2위 차이 조건만 해제": {
+      "known_trials": 250,
+      "unknown_trials": 250,
+      "rank1_correct": 187,
+      "accepted_correct": 186,
+      "accepted_wrong": 63,
+      "deferred_known": 1,
+      "accepted_unknown": 214
+    }
+  },
+  "교차평가": {
+    "현재 PR": {
+      "known_trials": 250,
+      "unknown_trials": 250,
+      "rank1_correct": 187,
+      "accepted_correct": 19,
+      "accepted_wrong": 0,
+      "deferred_known": 231,
+      "accepted_unknown": 34
+    },
+    "검증에서 기존 두 오수락 횟수 이내로 정답 수락 최대화": {
+      "known_trials": 250,
+      "unknown_trials": 250,
+      "rank1_correct": 187,
+      "accepted_correct": 46,
+      "accepted_wrong": 0,
+      "deferred_known": 204,
+      "accepted_unknown": 29
+    },
+    "등록자·미등록자 정답에 같은 가중치": {
+      "known_trials": 250,
+      "unknown_trials": 250,
+      "rank1_correct": 187,
+      "accepted_correct": 155,
+      "accepted_wrong": 47,
+      "deferred_known": 48,
+      "accepted_unknown": 95
+    }
+  },
+  "분할별_선택과_결과": [
+    {
+      "현재 PR": {
+        "minimum_score": 0.78,
+        "minimum_gap": 0.12,
+        "calibration": {
+          "known_trials": 175,
+          "unknown_trials": 175,
+          "rank1_correct": 121,
+          "accepted_correct": 13,
+          "accepted_wrong": 0,
+          "deferred_known": 162,
+          "accepted_unknown": 23
+        },
+        "held_out": {
+          "known_trials": 125,
+          "unknown_trials": 125,
+          "rank1_correct": 103,
+          "accepted_correct": 9,
+          "accepted_wrong": 0,
+          "deferred_known": 116,
+          "accepted_unknown": 17
+        }
+      },
+      "검증에서 기존 두 오수락 횟수 이내로 정답 수락 최대화": {
+        "minimum_score": 0.87,
+        "minimum_gap": 0.03,
+        "calibration": {
+          "known_trials": 175,
+          "unknown_trials": 175,
+          "rank1_correct": 121,
+          "accepted_correct": 33,
+          "accepted_wrong": 0,
+          "deferred_known": 142,
+          "accepted_unknown": 17
+        },
+        "held_out": {
+          "known_trials": 125,
+          "unknown_trials": 125,
+          "rank1_correct": 103,
+          "accepted_correct": 29,
+          "accepted_wrong": 0,
+          "deferred_known": 96,
+          "accepted_unknown": 18
+        }
+      },
+      "등록자·미등록자 정답에 같은 가중치": {
+        "minimum_score": 0.85,
+        "minimum_gap": 0.0,
+        "calibration": {
+          "known_trials": 175,
+          "unknown_trials": 175,
+          "rank1_correct": 121,
+          "accepted_correct": 105,
+          "accepted_wrong": 42,
+          "deferred_known": 28,
+          "accepted_unknown": 55
+        },
+        "held_out": {
+          "known_trials": 125,
+          "unknown_trials": 125,
+          "rank1_correct": 103,
+          "accepted_correct": 82,
+          "accepted_wrong": 15,
+          "deferred_known": 28,
+          "accepted_unknown": 55
+        }
+      }
+    },
+    {
+      "현재 PR": {
+        "minimum_score": 0.78,
+        "minimum_gap": 0.12,
+        "calibration": {
+          "known_trials": 175,
+          "unknown_trials": 175,
+          "rank1_correct": 146,
+          "accepted_correct": 12,
+          "accepted_wrong": 0,
+          "deferred_known": 163,
+          "accepted_unknown": 23
+        },
+        "held_out": {
+          "known_trials": 125,
+          "unknown_trials": 125,
+          "rank1_correct": 84,
+          "accepted_correct": 10,
+          "accepted_wrong": 0,
+          "deferred_known": 115,
+          "accepted_unknown": 17
+        }
+      },
+      "검증에서 기존 두 오수락 횟수 이내로 정답 수락 최대화": {
+        "minimum_score": 0.87,
+        "minimum_gap": 0.05,
+        "calibration": {
+          "known_trials": 175,
+          "unknown_trials": 175,
+          "rank1_correct": 146,
+          "accepted_correct": 35,
+          "accepted_wrong": 0,
+          "deferred_known": 140,
+          "accepted_unknown": 23
+        },
+        "held_out": {
+          "known_trials": 125,
+          "unknown_trials": 125,
+          "rank1_correct": 84,
+          "accepted_correct": 17,
+          "accepted_wrong": 0,
+          "deferred_known": 108,
+          "accepted_unknown": 11
+        }
+      },
+      "등록자·미등록자 정답에 같은 가중치": {
+        "minimum_score": 0.85,
+        "minimum_gap": 0.0,
+        "calibration": {
+          "known_trials": 175,
+          "unknown_trials": 175,
+          "rank1_correct": 146,
+          "accepted_correct": 115,
+          "accepted_wrong": 21,
+          "deferred_known": 39,
+          "accepted_unknown": 79
+        },
+        "held_out": {
+          "known_trials": 125,
+          "unknown_trials": 125,
+          "rank1_correct": 84,
+          "accepted_correct": 73,
+          "accepted_wrong": 32,
+          "deferred_known": 20,
+          "accepted_unknown": 40
+        }
+      }
+    }
+  ]
+}

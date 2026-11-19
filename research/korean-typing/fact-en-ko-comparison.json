@@ -1,0 +1,710 @@
+{
+  "source": "https://doi.org/10.1016/j.patcog.2020.107556",
+  "design": {
+    "en": {
+      "supplement_reference": [
+        3,
+        5
+      ],
+      "supplement_probe": [
+        1,
+        7
+      ],
+      "mean_full_keystrokes": [
+        211.814,
+        211.684
+      ]
+    },
+    "ko": {
+      "supplement_reference": [
+        4,
+        6
+      ],
+      "supplement_probe": [
+        2,
+        8
+      ],
+      "mean_full_keystrokes": [
+        235.112,
+        235.262
+      ]
+    }
+  },
+  "protocol": "same 50 smartphone typists; within-language 5 enrolled, 2 query captures, 5 candidates; first 76 taps; down-down timing only; enrollment and probe are distinct publisher partitions with dates unavailable",
+  "published_archive_sha256": {
+    "1": "f068d211097f4e4e0ea6236a56bf6c178e977939b369a96cb4f9b387112ab025",
+    "2": "183f9b86161b787adc7aeac7281c104b8af447843fa6c041bfac8d1647a5a259",
+    "3": "3434adaba70ec155ff57915fce40ef22878c22482bb59d362c5db4bc40dea556",
+    "4": "44cfd09bf5778897bd9892021676648e436be9c113584509d2e8d69c64f98b99",
+    "5": "98c8b07bdc7be4eeaa03037aa4283a914e50ed174f7e78de0322f2656f5ffe19",
+    "6": "9ba9ea627bb1eedf7ebac25618b1c97ac0160d55d985e289a984eec029b6ee89",
+    "7": "20765c0d290e80f1fce0c1fe9f4b226e25e804d8c2de082db0c6624481f0a2f1",
+    "8": "ef915244c172a52ddf5004bb4251add9c8ae9d04971732d08a9968ff2ef4ce1b"
+  },
+  "reports": [
+    {
+      "schema": "keyprint-korean-ab-report/v1",
+      "language": "en",
+      "input_mode": "touch",
+      "capture_protocol": "published_recording_split",
+      "participants": 50,
+      "enroll_shots": 5,
+      "query_shots": 2,
+      "enroll_captures": 250,
+      "query_captures": 500,
+      "captures_with_behavior": 0,
+      "enrolled_probe_roster_size": 5,
+      "unknown_probe_roster_size": 5,
+      "main": {
+        "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+        "combined_model_hash": "ac38471759213dd1",
+        "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+        "onnx_runtime_web": "1.31.1",
+        "threshold": 0.73,
+        "margin": 0,
+        "configured_behavior_weight": 0.3,
+        "enrolled_probes": {
+          "trials": 250,
+          "top1_before_rejection": {
+            "count": 188,
+            "rate": 0.752
+          },
+          "accepted_correct": {
+            "count": 188,
+            "rate": 0.752
+          },
+          "accepted_wrong": {
+            "count": 62,
+            "rate": 0.248
+          },
+          "rejected": {
+            "count": 0,
+            "rate": 0
+          },
+          "rejected_below_threshold": {
+            "count": 0,
+            "rate": 0
+          },
+          "rejected_by_margin": {
+            "count": 0,
+            "rate": 0
+          }
+        },
+        "unknown_writer_probes": {
+          "trials": 250,
+          "false_accept": {
+            "count": 209,
+            "rate": 0.836
+          },
+          "rejected": {
+            "count": 41,
+            "rate": 0.164
+          },
+          "rejected_below_threshold": {
+            "count": 41,
+            "rate": 0.164
+          },
+          "rejected_by_margin": {
+            "count": 0,
+            "rate": 0
+          }
+        }
+      },
+      "candidate": {
+        "revision": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+        "combined_model_hash": "f6a1f3dec3ff5f57",
+        "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+        "onnx_runtime_web": "1.31.1",
+        "threshold": 0.78,
+        "margin": 0.12,
+        "configured_behavior_weight": 0.2,
+        "enrolled_probes": {
+          "trials": 250,
+          "top1_before_rejection": {
+            "count": 180,
+            "rate": 0.72
+          },
+          "accepted_correct": {
+            "count": 26,
+            "rate": 0.104
+          },
+          "accepted_wrong": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected": {
+            "count": 223,
+            "rate": 0.892
+          },
+          "rejected_below_threshold": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_by_margin": {
+            "count": 222,
+            "rate": 0.888
+          }
+        },
+        "unknown_writer_probes": {
+          "trials": 250,
+          "false_accept": {
+            "count": 11,
+            "rate": 0.044
+          },
+          "rejected": {
+            "count": 239,
+            "rate": 0.956
+          },
+          "rejected_below_threshold": {
+            "count": 35,
+            "rate": 0.14
+          },
+          "rejected_by_margin": {
+            "count": 204,
+            "rate": 0.816
+          }
+        }
+      },
+      "paired_change": {
+        "top1_before_rejection": {
+          "main_only": 27,
+          "candidate_only": 19,
+          "candidate_minus_main_pp": -3.2,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -10.8,
+            4
+          ]
+        },
+        "accepted_correct": {
+          "main_only": 162,
+          "candidate_only": 0,
+          "candidate_minus_main_pp": -64.8,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -73.2,
+            -55.6
+          ]
+        },
+        "accepted_wrong": {
+          "main_only": 61,
+          "candidate_only": 0,
+          "candidate_minus_main_pp": -24.4,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -31.6,
+            -17.6
+          ]
+        },
+        "rejected": {
+          "main_only": 0,
+          "candidate_only": 223,
+          "candidate_minus_main_pp": 89.2,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            81.2,
+            95.6
+          ]
+        },
+        "unknown_false_accept": {
+          "main_only": 199,
+          "candidate_only": 1,
+          "candidate_minus_main_pp": -79.2,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -88.4,
+            -69.6
+          ]
+        }
+      },
+      "full_roster": {
+        "enrolled_probe_roster_size": 50,
+        "unknown_probe_roster_size": 49,
+        "main": {
+          "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+          "combined_model_hash": "ac38471759213dd1",
+          "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+          "onnx_runtime_web": "1.31.1",
+          "threshold": 0.73,
+          "margin": 0,
+          "configured_behavior_weight": 0.3,
+          "enrolled_probes": {
+            "trials": 250,
+            "top1_before_rejection": {
+              "count": 77,
+              "rate": 0.308
+            },
+            "accepted_correct": {
+              "count": 77,
+              "rate": 0.308
+            },
+            "accepted_wrong": {
+              "count": 173,
+              "rate": 0.692
+            },
+            "rejected": {
+              "count": 0,
+              "rate": 0
+            },
+            "rejected_below_threshold": {
+              "count": 0,
+              "rate": 0
+            },
+            "rejected_by_margin": {
+              "count": 0,
+              "rate": 0
+            }
+          },
+          "unknown_writer_probes": {
+            "trials": 250,
+            "false_accept": {
+              "count": 250,
+              "rate": 1
+            },
+            "rejected": {
+              "count": 0,
+              "rate": 0
+            },
+            "rejected_below_threshold": {
+              "count": 0,
+              "rate": 0
+            },
+            "rejected_by_margin": {
+              "count": 0,
+              "rate": 0
+            }
+          }
+        },
+        "candidate": {
+          "revision": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+          "combined_model_hash": "f6a1f3dec3ff5f57",
+          "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+          "onnx_runtime_web": "1.31.1",
+          "threshold": 0.78,
+          "margin": 0.12,
+          "configured_behavior_weight": 0.2,
+          "enrolled_probes": {
+            "trials": 250,
+            "top1_before_rejection": {
+              "count": 63,
+              "rate": 0.252
+            },
+            "accepted_correct": {
+              "count": 0,
+              "rate": 0
+            },
+            "accepted_wrong": {
+              "count": 0,
+              "rate": 0
+            },
+            "rejected": {
+              "count": 250,
+              "rate": 1
+            },
+            "rejected_below_threshold": {
+              "count": 0,
+              "rate": 0
+            },
+            "rejected_by_margin": {
+              "count": 250,
+              "rate": 1
+            }
+          },
+          "unknown_writer_probes": {
+            "trials": 250,
+            "false_accept": {
+              "count": 1,
+              "rate": 0.004
+            },
+            "rejected": {
+              "count": 249,
+              "rate": 0.996
+            },
+            "rejected_below_threshold": {
+              "count": 0,
+              "rate": 0
+            },
+            "rejected_by_margin": {
+              "count": 249,
+              "rate": 0.996
+            }
+          }
+        },
+        "paired_change": {
+          "top1_before_rejection": {
+            "main_only": 43,
+            "candidate_only": 29,
+            "candidate_minus_main_pp": -5.6,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              -14.8,
+              3.2
+            ]
+          },
+          "accepted_correct": {
+            "main_only": 77,
+            "candidate_only": 0,
+            "candidate_minus_main_pp": -30.8,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              -40,
+              -22
+            ]
+          },
+          "accepted_wrong": {
+            "main_only": 173,
+            "candidate_only": 0,
+            "candidate_minus_main_pp": -69.2,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              -78,
+              -60
+            ]
+          },
+          "rejected": {
+            "main_only": 0,
+            "candidate_only": 250,
+            "candidate_minus_main_pp": 100,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              100,
+              100
+            ]
+          },
+          "unknown_false_accept": {
+            "main_only": 249,
+            "candidate_only": 0,
+            "candidate_minus_main_pp": -99.6,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              -100,
+              -98.8
+            ]
+          }
+        }
+      }
+    },
+    {
+      "schema": "keyprint-korean-ab-report/v1",
+      "language": "ko",
+      "input_mode": "touch",
+      "capture_protocol": "published_recording_split",
+      "participants": 50,
+      "enroll_shots": 5,
+      "query_shots": 2,
+      "enroll_captures": 250,
+      "query_captures": 500,
+      "captures_with_behavior": 0,
+      "enrolled_probe_roster_size": 5,
+      "unknown_probe_roster_size": 5,
+      "main": {
+        "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+        "combined_model_hash": "ac38471759213dd1",
+        "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+        "onnx_runtime_web": "1.31.1",
+        "threshold": 0.73,
+        "margin": 0,
+        "configured_behavior_weight": 0.3,
+        "enrolled_probes": {
+          "trials": 250,
+          "top1_before_rejection": {
+            "count": 177,
+            "rate": 0.708
+          },
+          "accepted_correct": {
+            "count": 176,
+            "rate": 0.704
+          },
+          "accepted_wrong": {
+            "count": 73,
+            "rate": 0.292
+          },
+          "rejected": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_below_threshold": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_by_margin": {
+            "count": 0,
+            "rate": 0
+          }
+        },
+        "unknown_writer_probes": {
+          "trials": 250,
+          "false_accept": {
+            "count": 219,
+            "rate": 0.876
+          },
+          "rejected": {
+            "count": 31,
+            "rate": 0.124
+          },
+          "rejected_below_threshold": {
+            "count": 31,
+            "rate": 0.124
+          },
+          "rejected_by_margin": {
+            "count": 0,
+            "rate": 0
+          }
+        }
+      },
+      "candidate": {
+        "revision": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+        "combined_model_hash": "f6a1f3dec3ff5f57",
+        "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+        "onnx_runtime_web": "1.31.1",
+        "threshold": 0.78,
+        "margin": 0.12,
+        "configured_behavior_weight": 0.2,
+        "enrolled_probes": {
+          "trials": 250,
+          "top1_before_rejection": {
+            "count": 187,
+            "rate": 0.748
+          },
+          "accepted_correct": {
+            "count": 19,
+            "rate": 0.076
+          },
+          "accepted_wrong": {
+            "count": 0,
+            "rate": 0
+          },
+          "rejected": {
+            "count": 231,
+            "rate": 0.924
+          },
+          "rejected_below_threshold": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_by_margin": {
+            "count": 230,
+            "rate": 0.92
+          }
+        },
+        "unknown_writer_probes": {
+          "trials": 250,
+          "false_accept": {
+            "count": 33,
+            "rate": 0.132
+          },
+          "rejected": {
+            "count": 217,
+            "rate": 0.868
+          },
+          "rejected_below_threshold": {
+            "count": 36,
+            "rate": 0.144
+          },
+          "rejected_by_margin": {
+            "count": 181,
+            "rate": 0.724
+          }
+        }
+      },
+      "paired_change": {
+        "top1_before_rejection": {
+          "main_only": 14,
+          "candidate_only": 24,
+          "candidate_minus_main_pp": 4,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -2.8,
+            10.8
+          ]
+        },
+        "accepted_correct": {
+          "main_only": 157,
+          "candidate_only": 0,
+          "candidate_minus_main_pp": -62.8,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -72,
+            -54
+          ]
+        },
+        "accepted_wrong": {
+          "main_only": 73,
+          "candidate_only": 0,
+          "candidate_minus_main_pp": -29.2,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -38.8,
+            -19.6
+          ]
+        },
+        "rejected": {
+          "main_only": 0,
+          "candidate_only": 230,
+          "candidate_minus_main_pp": 92,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            86,
+            96.8
+          ]
+        },
+        "unknown_false_accept": {
+          "main_only": 186,
+          "candidate_only": 0,
+          "candidate_minus_main_pp": -74.4,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -83.2,
+            -65.2
+          ]
+        }
+      },
+      "full_roster": {
+        "enrolled_probe_roster_size": 50,
+        "unknown_probe_roster_size": 49,
+        "main": {
+          "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+          "combined_model_hash": "ac38471759213dd1",
+          "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+          "onnx_runtime_web": "1.31.1",
+          "threshold": 0.73,
+          "margin": 0,
+          "configured_behavior_weight": 0.3,
+          "enrolled_probes": {
+            "trials": 250,
+            "top1_before_rejection": {
+              "count": 63,
+              "rate": 0.252
+            },
+            "accepted_correct": {
+              "count": 62,
+              "rate": 0.248
+            },
+            "accepted_wrong": {
+              "count": 187,
+              "rate": 0.748
+            },
+            "rejected": {
+              "count": 1,
+              "rate": 0.004
+            },
+            "rejected_below_threshold": {
+              "count": 1,
+              "rate": 0.004
+            },
+            "rejected_by_margin": {
+              "count": 0,
+              "rate": 0
+            }
+          },
+          "unknown_writer_probes": {
+            "trials": 250,
+            "false_accept": {
+              "count": 249,
+              "rate": 0.996
+            },
+            "rejected": {
+              "count": 1,
+              "rate": 0.004
+            },
+            "rejected_below_threshold": {
+              "count": 1,
+              "rate": 0.004
+            },
+            "rejected_by_margin": {
+              "count": 0,
+              "rate": 0
+            }
+          }
+        },
+        "candidate": {
+          "revision": "b999eccc0d0adbba2e0b386443f290cd4fb728c5",
+          "combined_model_hash": "f6a1f3dec3ff5f57",
+          "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+          "onnx_runtime_web": "1.31.1",
+          "threshold": 0.78,
+          "margin": 0.12,
+          "configured_behavior_weight": 0.2,
+          "enrolled_probes": {
+            "trials": 250,
+            "top1_before_rejection": {
+              "count": 67,
+              "rate": 0.268
+            },
+            "accepted_correct": {
+              "count": 0,
+              "rate": 0
+            },
+            "accepted_wrong": {
+              "count": 0,
+              "rate": 0
+            },
+            "rejected": {
+              "count": 250,
+              "rate": 1
+            },
+            "rejected_below_threshold": {
+              "count": 1,
+              "rate": 0.004
+            },
+            "rejected_by_margin": {
+              "count": 249,
+              "rate": 0.996
+            }
+          },
+          "unknown_writer_probes": {
+            "trials": 250,
+            "false_accept": {
+              "count": 0,
+              "rate": 0
+            },
+            "rejected": {
+              "count": 250,
+              "rate": 1
+            },
+            "rejected_below_threshold": {
+              "count": 1,
+              "rate": 0.004
+            },
+            "rejected_by_margin": {
+              "count": 249,
+              "rate": 0.996
+            }
+          }
+        },
+        "paired_change": {
+          "top1_before_rejection": {
+            "main_only": 25,
+            "candidate_only": 29,
+            "candidate_minus_main_pp": 1.6,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              -6.4,
+              10
+            ]
+          },
+          "accepted_correct": {
+            "main_only": 62,
+            "candidate_only": 0,
+            "candidate_minus_main_pp": -24.8,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              -33.6,
+              -16.8
+            ]
+          },
+          "accepted_wrong": {
+            "main_only": 187,
+            "candidate_only": 0,
+            "candidate_minus_main_pp": -74.8,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              -83.2,
+              -66
+            ]
+          },
+          "rejected": {
+            "main_only": 0,
+            "candidate_only": 249,
+            "candidate_minus_main_pp": 99.6,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              98.8,
+              100
+            ]
+          },
+          "unknown_false_accept": {
+            "main_only": 249,
+            "candidate_only": 0,
+            "candidate_minus_main_pp": -99.6,
+            "conditional_writer_bootstrap_95_ci_pp": [
+              -100,
+              -98.8
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

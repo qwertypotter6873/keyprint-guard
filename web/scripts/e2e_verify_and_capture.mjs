@@ -3,14 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { findChromeExecutable } from './browser_helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(WEB_DIR, 'dist');
 const MODEL_CONFIG_PATH = path.join(WEB_DIR, 'public', 'models', 'model_config.json');
 const DEFAULT_SCREENSHOT_DIR = path.resolve(WEB_DIR, '..', 'assets', 'screenshots');
-const CHROME_PATH =
-  process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME_PATH = findChromeExecutable(chromium);
 const DEMO_ROOM = 'DEMO_CAPTURE';
 
 const MIME_TYPES = {
@@ -27,10 +27,14 @@ const MIME_TYPES = {
 
 function parseCliArgs(argv) {
   let outDir = DEFAULT_SCREENSHOT_DIR;
+  let baseUrl = null;
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--out-dir' || arg === '-o') {
+    if (arg === '--base-url') {
+      baseUrl = new URL(args[++i]);
+      if (!['https:', 'http:'].includes(baseUrl.protocol)) throw new Error('Expected an HTTP(S) demo URL');
+    } else if (arg === '--out-dir' || arg === '-o') {
       if (!args[i + 1]) {
         throw new Error(`Missing directory path after ${arg}`);
       }
@@ -40,7 +44,7 @@ function parseCliArgs(argv) {
       outDir = path.resolve(process.cwd(), arg.slice('--out-dir='.length));
     }
   }
-  return { outDir };
+  return { outDir, baseUrl };
 }
 
 function loadProtocolConfig() {
@@ -246,18 +250,19 @@ async function selectGuardAccountByName(page, targetName) {
 }
 
 async function run() {
-  const { outDir } = parseCliArgs(process.argv);
+  const { outDir, baseUrl } = parseCliArgs(process.argv);
   const protocol = loadProtocolConfig();
 
-  if (!fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
+  if (!baseUrl && !fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
     throw new Error(`Missing production build at ${DIST_DIR}. Run "npm run build" in web/ first.`);
   }
 
   fs.mkdirSync(outDir, { recursive: true });
-  const { server, url } = await startStaticServer(DIST_DIR);
-  const roomUrl = `${url}/?room=${DEMO_ROOM}`;
+  const local = baseUrl ? null : await startStaticServer(DIST_DIR);
+  const roomUrl = baseUrl?.href ?? `${local.url}/`;
+  const appOrigin = new URL(roomUrl).origin;
   console.log(
-    `[E2E] Serving v2 build at ${roomUrl} | protocol: pw>=${protocol.passwordMinLength} ("${protocol.targetPassword}"), arena=${protocol.arenaEnrollSentences} enroll / ${protocol.arenaQuerySentences} query -> ${outDir}`
+    `[E2E] Checking ${roomUrl} | protocol: pw>=${protocol.passwordMinLength}, arena=${protocol.arenaEnrollSentences} enroll / ${protocol.arenaQuerySentences} query -> ${outDir}`
   );
 
   const browser = await chromium.launch({
@@ -301,7 +306,7 @@ async function run() {
     await context.route('**/*', (route) => {
       const reqUrl = new URL(route.request().url());
       if (
-        reqUrl.hostname === '127.0.0.1' ||
+        reqUrl.origin === appOrigin ||
         reqUrl.protocol === 'data:' ||
         reqUrl.protocol === 'blob:'
       ) {
@@ -505,7 +510,31 @@ async function run() {
       fullPage: false,
     });
 
-    // 4. Room Sync & Profile Management Dialog (screenshot 04)
+    // 4. Real UI validation: a short demonstration password is refused before enrollment.
+    const profilesBeforeValidation = await pageA.evaluate(() => window.__keyprintTestApi.state.profiles.length);
+    const shortDemoPassword = 'Demo2026'.slice(0, protocol.passwordMinLength - 1);
+    await pageA.click('#guard-sub-enroll');
+    await pageA.fill('#guard-enroll-name', '입력 확인 (시연)');
+    await pageA.fill('#guard-enroll-pw-target', shortDemoPassword);
+    await pageA.click('#guard-enroll-input');
+    await pageA.keyboard.type(shortDemoPassword, { delay: 35 });
+    await pageA.keyboard.press('Enter');
+    await pageA.waitForFunction(
+      (minLength) => document.getElementById('guard-enroll-feedback')?.textContent?.includes(`최소 ${minLength}자`),
+      protocol.passwordMinLength
+    );
+    const profilesAfterValidation = await pageA.evaluate(() => window.__keyprintTestApi.state.profiles.length);
+    if (profilesAfterValidation !== profilesBeforeValidation) {
+      throw new Error('Short password validation must not create a profile');
+    }
+    console.log('[E2E] Short demonstration password refused:', (await pageA.textContent('#guard-enroll-feedback'))?.trim());
+    await pageA.waitForTimeout(220);
+    await pageA.screenshot({
+      path: path.join(outDir, '04_exception_handling_guard.png'),
+      fullPage: false,
+    });
+
+    // Load the same comparison samples for screenshots 05 and 06.
     await pageA.click('#open-room-btn');
     await pageA.waitForSelector('#room-dialog[open]', { timeout: 5000 });
     const hasSamples = await pageA.evaluate(() =>
@@ -515,11 +544,6 @@ async function run() {
       await pageA.click('#toggle-samples-btn');
       await pageA.waitForTimeout(180);
     }
-    await pageA.waitForTimeout(220);
-    await pageA.screenshot({
-      path: path.join(outDir, '04_exception_handling_guard.png'),
-      fullPage: false,
-    });
     await pageA.click('#close-room-btn');
     await pageA.waitForTimeout(180);
 
@@ -560,13 +584,14 @@ async function run() {
     const blindTitle = (await pageA.textContent('#arena-result-title'))?.trim() || '';
     const blindMeta = (await pageA.textContent('#arena-result-meta'))?.trim() || '';
     console.log(`[E2E] Mode A ${protocol.arenaQuerySentences}-Sentence Blind Result: ${blindTitle} | ${blindMeta}`);
-    if (!blindTitle.includes('김대현')) {
+    const rankLabel = (await pageA.textContent('#arena-result-kicker'))?.trim();
+    if (rankLabel !== '예상 작성자 1위' || !blindTitle.includes('김대현')) {
       throw new Error(`Expected Blind 1:N winner to be 김대현, got: ${blindTitle}`);
     }
 
     await pageA.screenshot({
       path: path.join(outDir, '05_typing_arena_who_is_typing.png'),
-      fullPage: false,
+      fullPage: true,
     });
 
     // 6. Mode C: Principles & Profile Structure tab directly from the active verdict (#arena-inspect-viz-btn)
@@ -656,7 +681,7 @@ async function run() {
     }
   } finally {
     await browser.close();
-    server.close();
+    local?.server.close();
   }
 }
 

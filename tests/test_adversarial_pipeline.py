@@ -10,7 +10,6 @@ import hashlib
 import importlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -46,6 +45,7 @@ from password_synth import (  # noqa: E402
 from preprocessing import (  # noqa: E402
     N_CHANNELS,
     SEED,
+    TOUCH_PROB,
     augment_keystroke_batch,
     load_keyrecs_fixed_split,
     parse_keyrecs_sentence_corpus,
@@ -53,11 +53,6 @@ from preprocessing import (  # noqa: E402
     touchify_timings,
 )
 from train_and_evaluate import KEYPRINT_DEFAULT_EPOCHS, VANILLA_DEFAULT_EPOCHS  # noqa: E402
-
-
-SCRATCH_VERIFY_DIR = Path(
-    "/Users/bookend/.gemini/antigravity-cli/brain/d27dc495-df96-439d-8c05-28dba720a294/scratch/track_a_verify"
-)
 
 
 class TestLosslessKeyRecsParserAndWindows(unittest.TestCase):
@@ -351,7 +346,7 @@ class TestDisjointSynthesisAndCapitalThresholdParity(unittest.TestCase):
         subjs = sorted({p for (p, s) in raw_sessions if s == 1})[:20]
         tabs = digraph_tables(raw_sessions, subjs)
 
-        # Every occurrence across all (person, session, digraph) has a unique integer occ_id at index 4
+        # The starting event identifies an occurrence across participants and sessions.
         all_occ_ids = [occ[4] for tab in tabs.values() for lst in tab.values() for occ in lst]
         self.assertEqual(len(all_occ_ids), len(set(all_occ_ids)))
 
@@ -398,9 +393,12 @@ class TestDisjointSynthesisAndCapitalThresholdParity(unittest.TestCase):
         self.assertGreater(len(same_rows), 0)
         for r in same_rows:
             self.assertTrue(set(r["enroll_occ_ids"]).isdisjoint(set(r["query_occ_ids"])))
+            self.assertTrue(set(r["enroll_source_key_ids"]).isdisjoint(r["query_source_key_ids"]))
 
         synth_meta = synthesis_metadata(tabs, val_p, chosen_val, rows)
         self.assertTrue(synth_meta["disjoint_occ_enforced"])
+        self.assertTrue(synth_meta["disjoint_source_events_enforced"])
+        self.assertEqual(synth_meta["same_day_rows_verified"], len(same_rows))
         self.assertNotIn("unique_syntheses", json.dumps(synth_meta))
         self.assertIn("generated_attempts", synth_meta)
 
@@ -444,16 +442,16 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
                 os.environ["KEYPRINT_SMOKE_EPOCHS"] = old_smoke
 
     def test_clean_empty_directory_from_scratch_pipeline_and_notebook_execution(self) -> None:
-        if SCRATCH_VERIFY_DIR.exists():
-            shutil.rmtree(SCRATCH_VERIFY_DIR)
-        SCRATCH_VERIFY_DIR.mkdir(parents=True, exist_ok=True)
+        scratch = tempfile.TemporaryDirectory(prefix="keyprint_verify_")
+        self.addCleanup(scratch.cleanup)
+        scratch_root = Path(scratch.name)
         # Guarantee ZERO pre-existing .pt or .onnx files before running
-        self.assertEqual(list(SCRATCH_VERIFY_DIR.rglob("*.pt")), [])
-        self.assertEqual(list(SCRATCH_VERIFY_DIR.rglob("*.onnx")), [])
+        self.assertEqual(list(scratch_root.rglob("*.pt")), [])
+        self.assertEqual(list(scratch_root.rglob("*.onnx")), [])
 
         env = {
             **os.environ,
-            "KEYPRINT_OUTPUT_ROOT": str(SCRATCH_VERIFY_DIR),
+            "KEYPRINT_OUTPUT_ROOT": str(scratch_root),
             "KEYPRINT_REPO_ROOT": str(REPO_ROOT),
             "KEYPRINT_SMOKE_EPOCHS": "1",
         }
@@ -477,19 +475,25 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
             "web/scripts/fixtures/feature_parity.json",
             "models/evaluation_report.json",
         ):
-            self.assertTrue((SCRATCH_VERIFY_DIR / rel).exists(), msg=f"Missing {rel}")
+            self.assertTrue((scratch_root / rel).exists(), msg=f"Missing {rel}")
 
-        report = json.loads((SCRATCH_VERIFY_DIR / "models" / "evaluation_report.json").read_text(encoding="utf-8"))
-        web_cfg = json.loads((SCRATCH_VERIFY_DIR / "web" / "public" / "models" / "model_config.json").read_text(encoding="utf-8"))
-        parity_fx = json.loads((SCRATCH_VERIFY_DIR / "web" / "scripts" / "fixtures" / "feature_parity.json").read_text(encoding="utf-8"))
+        report = json.loads((scratch_root / "models" / "evaluation_report.json").read_text(encoding="utf-8"))
+        web_cfg = json.loads((scratch_root / "web" / "public" / "models" / "model_config.json").read_text(encoding="utf-8"))
+        parity_fx = json.loads((scratch_root / "web" / "scripts" / "fixtures" / "feature_parity.json").read_text(encoding="utf-8"))
 
         # Schema v4 & provenance checks
         self.assertEqual(web_cfg["schema_version"], 4)
         self.assertEqual(web_cfg["preprocess_version"], "kp-preproc-v4")
-        sha17 = hashlib.sha256((SCRATCH_VERIFY_DIR / "web/public/models/keyprint_net.onnx").read_bytes()).hexdigest()
-        sha9 = hashlib.sha256((SCRATCH_VERIFY_DIR / "web/public/models/keyprint_net_password.onnx").read_bytes()).hexdigest()
-        expected_hash = hashlib.sha256(f"{sha17}:{sha9}".encode("utf-8")).hexdigest()[:16]
-        self.assertEqual(web_cfg["onnx_sha256"], {"sentence_17ch": sha17, "password_9ch": sha9})
+        sha17 = hashlib.sha256((scratch_root / "web/public/models/keyprint_net.onnx").read_bytes()).hexdigest()
+        sha9 = hashlib.sha256((scratch_root / "web/public/models/keyprint_net_password.onnx").read_bytes()).hexdigest()
+        expected_shas = {"sentence_17ch": sha17, "password_9ch": sha9}
+        if web_cfg["sentence_model"]["encoder"] == "vanilla_17ch_aug":
+            aux_path = scratch_root / "web/public/models" / web_cfg["password_aux_model"]["file"]
+            expected_shas["password_17ch"] = hashlib.sha256(aux_path.read_bytes()).hexdigest()
+        else:
+            self.assertNotIn("password_aux_model", web_cfg)
+        expected_hash = hashlib.sha256(":".join(expected_shas.values()).encode("utf-8")).hexdigest()[:16]
+        self.assertEqual(web_cfg["onnx_sha256"], expected_shas)
         self.assertEqual(web_cfg["model_hash"], expected_hash)
         for sp in web_cfg["mvp_sample_profiles"]:
             self.assertEqual(sp["schemaVersion"], 4)
@@ -501,6 +505,22 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
         for case in parity_fx["cases"]:
             for k in ("h_curr", "h_next", "hv_curr", "hv_next"):
                 self.assertIn(k, case["expected"]["stroke"])
+
+        self.assertEqual(len(parity_fx["sample_password_cases"]), 4)
+        for case in parity_fx["sample_password_cases"]:
+            self.assertEqual(len(case["enrollment"]), 5)
+            for capture in [*case["enrollment"], case["genuine_query"]]:
+                self.assertEqual(len(capture["stroke"]["holds"]), 10)
+                self.assertEqual(len(capture["stroke"]["dds"]), 9)
+                self.assertEqual(np.shape(capture["tensor"]), (17, 9))
+        self.assertEqual(len(web_cfg["benchmark_presets"][0]["genuine_test_stroke"]["dds"]), 10)
+        selection = report["feature_upgrade"]["sentence_model_selection"]
+        self.assertEqual(selection["chosen_encoder"], web_cfg["sentence_model"]["encoder"])
+        keyboard = selection["web_68_char_keyboard"]
+        target = keyboard["validation"]["validation_target_correct_accept"]
+        for candidate in keyboard["validation"]["candidates"].values():
+            self.assertGreaterEqual(candidate["validation_5plus2"]["correct_accept"], target)
+        self.assertEqual(report["provenance"]["training_recipe"]["touch_probability"]["KeyPrintNet_9ch"], TOUCH_PROB)
 
         # Controlled baselines & human(1600) vs bot(200) breakdown
         for m_name in (
@@ -538,46 +558,32 @@ class TestCanonicalDefaultsAndCleanDirectoryPipeline(unittest.TestCase):
         subprocess.run([py, str(REPO_ROOT / "src" / "eval_password_calibration.py")], env=env, check=True)
         subprocess.run([py, str(REPO_ROOT / "src" / "eval_typing_style.py")], env=env, check=True)
 
-        pw_cal = json.loads((SCRATCH_VERIFY_DIR / "models" / "password_calibration.json").read_text(encoding="utf-8"))
+        pw_cal = json.loads((scratch_root / "models" / "password_calibration.json").read_text(encoding="utf-8"))
         self.assertFalse(pw_cal["split_isolation"]["val_test_pooled"])
-        style_rep = json.loads((SCRATCH_VERIFY_DIR / "models" / "typing_style_analysis.json").read_text(encoding="utf-8"))
+        style_rep = json.loads((scratch_root / "models" / "typing_style_analysis.json").read_text(encoding="utf-8"))
         self.assertEqual(style_rep["participant_counts"]["raw_corpus_participants"], 99)
         self.assertEqual(style_rep["participant_counts"]["clean_chunk_participants"], 96)
 
         # 3) Generate & execute canonical non-retraining notebook (`build_notebook.py`)
-        subprocess.run([py, str(REPO_ROOT / "src" / "build_notebook.py")], env=env, check=True)
-        nb_path = SCRATCH_VERIFY_DIR / "notebooks" / "keyprint_training_pipeline.ipynb"
+        subprocess.run([py, str(REPO_ROOT / "src" / "build_notebook.py"), "--execute"], env=env, check=True)
+        nb_path = scratch_root / "notebooks" / "keyprint_training_pipeline.ipynb"
         nb_text = nb_path.read_text(encoding="utf-8")
         self.assertNotIn("train_vanilla_baseline", nb_text)
         self.assertNotIn("train_keyprint_net", nb_text)
 
         nb = nbformat.read(nb_path, as_version=4)
-        code_cells = [c["source"] for c in nb.cells if c.cell_type == "code"]
-        runner = (
-            "import json, matplotlib\n"
-            "matplotlib.use('Agg')\n"
-            "import builtins\n"
-            "builtins.display = lambda *a, **k: None\n"
-            "ns = {}\n"
-            f"cells = {json.dumps(code_cells)}\n"
-            "for idx, src in enumerate(cells):\n"
-            "    exec(compile(src, f'<nb_cell_{idx}>', 'exec'), ns)\n"
-            "print('NOTEBOOK_EXEC_OK')\n"
-        )
-        res = subprocess.run(
-            [py, "-c", runner],
-            cwd=str(nb_path.parent),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        self.assertIn("NOTEBOOK_EXEC_OK", res.stdout)
+        from build_notebook import notebook_input_hashes, validate_notebook_outputs
+        hashes = notebook_input_hashes(scratch_root)
+        self.assertEqual(validate_notebook_outputs(nb, hashes), 6)
+        self.assertEqual(dict(nb.metadata["verification_input_sha256"]), hashes)
+        stale_figure = {**hashes, "assets/figures/fig8_feature_upgrade.png": "0" * 64}
+        with self.assertRaisesRegex(AssertionError, "Embedded figures"):
+            validate_notebook_outputs(nb, stale_figure)
 
         # 4) Verify `KEYPRINT_REUSE_WEIGHTS=1` preserves histories & exact metrics without retraining
         env_reuse = {**env, "KEYPRINT_REUSE_WEIGHTS": "1"}
         subprocess.run([py, str(REPO_ROOT / "src" / "visualize_and_run.py")], env=env_reuse, check=True)
-        report_reused = json.loads((SCRATCH_VERIFY_DIR / "models" / "evaluation_report.json").read_text(encoding="utf-8"))
+        report_reused = json.loads((scratch_root / "models" / "evaluation_report.json").read_text(encoding="utf-8"))
         for h_k in ("Vanilla1DCNN", "Vanilla1DCNN_Aug", "KeyPrintNet_9ch", "KeyPrintNet"):
             self.assertEqual(len(report_reused["histories"][h_k]), 1)
         self.assertAlmostEqual(

@@ -30,7 +30,7 @@ import {
   openSetAccept,
   textToKeystrokes,
 } from '../src/features.js';
-import { DEFAULT_PREPROCESS_VERSION, SCHEMA_VERSION, sha256Hex, sha256HexPureJs } from '../src/biometrics.js';
+import { DEFAULT_PREPROCESS_VERSION, KeyPrintEngine, SCHEMA_VERSION, sha256Hex, sha256HexPureJs } from '../src/biometrics.js';
 import { normalizeProfileName, validateProfileSchema } from '../src/roomSync.js';
 import { composingTailIndex, computeLiveAccuracy, validateSentenceCapture } from '../src/validation.js';
 import { analyzeProfileConvergence, createPresetCapture } from '../src/visualizer.js';
@@ -236,6 +236,68 @@ if (fixture.capital_cases?.length) console.log(`  ✓ capital-letter (Shift vs C
 check(Boolean(config.password_dual?.keyboard && config.password_dual?.touch), 'model_config.json has dual password parameters');
 check(config.password_min_length === 12 && Array.isArray(config.password_dual?.by_length), 'password: 12-char minimum + length-aware calibration in config');
 check(config.arena_enroll_sentences === 5 && config.arena_query_sentences === 2, 'typing practice protocol: 5 enrolment / 2 query sentences');
+
+if (config.sentence_model) {
+  check(fixture.sample_password_cases?.length === 4, 'all four sample passwords have a browser replay fixture');
+}
+if (fixture.sample_password_cases?.length) {
+  const engine = new KeyPrintEngine();
+  const fileBase = 'http://local-model-fixture.invalid/models/';
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const href = String(url);
+    if (!href.startsWith(fileBase)) return originalFetch(url, options);
+    return new Response(readFileSync(join(here, '..', 'public', 'models', href.slice(fileBase.length))));
+  };
+  try {
+    await engine.init(`${fileBase}keyprint_net.onnx`, `${fileBase}model_config.json`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  for (const sample of fixture.sample_password_cases) {
+    const profile = config.mvp_sample_profiles.find((p) => p.id === sample.id);
+    const template = profile?.password;
+    check(template?.target === sample.password, `${sample.id}: matching password template`);
+    check(profile?.source?.cmu_subject === sample.cmu_subject, `${sample.id}: matching CMU source`);
+    check(sample.enrollment.length === 5, `${sample.id}: five enrollment captures`);
+    check(JSON.stringify(template?.testGenuineStroke) === JSON.stringify(sample.genuine_query.stroke), `${sample.id}: bundled query matches replay`);
+    const byEncoder = { password: [], passwordAux: [] };
+    for (const [i, capture] of [...sample.enrollment, sample.genuine_query].entries()) {
+      const el = new FakeInput();
+      let submitted = null;
+      const recorder = new SmartKeystrokeRecorder(el, { onSubmit: () => { submitted = recorder.extractCleanStroke(); } });
+      for (const ev of capture.script) {
+        if (ev.type === 'keydown') keydown(el, ev.t, ev.code, ev.key);
+        else if (ev.type === 'keyup') keyup(el, ev.t, ev.code, ev.key);
+        else setValue(el, ev.t, el.value + ev.data, 'insertText');
+      }
+      const label = `${sample.id} ${capture.session}/${capture.rep}`;
+      check(submitted && submitted.cleanDigraphCount === 9 && el.value === sample.password, `${label}: Enter submits exactly nine digraphs`);
+      if (!submitted) continue;
+      const { stroke } = submitted;
+      check(stroke.holds.length === 10 && stroke.pairKeys.every((pair) => !pair.includes('Enter')), `${label}: ten characters without Enter`);
+      check(JSON.stringify(stroke.pairKeys) === JSON.stringify(capture.stroke.pairKeys), `${label}: physical key pairs`);
+      const { tensorData, dims } = buildInputTensor(stroke, config);
+      check(dims[1] === 17 && dims[2] === 9, `${label}: browser tensor [1, 17, 9]`);
+      check(tensorData.every((value, j) => close(value, capture.tensor[Math.floor(j / 9)]?.[j % 9], 2e-5)), `${label}: Python/browser tensor parity`);
+      const embeddings = await engine.embedAll(stroke);
+      if (i < sample.enrollment.length) {
+        check(embeddings.password.every((v, j) => close(v, template?.exemplars?.[i]?.[j], 2e-5)), `${label}: 9-channel enrollment exemplar`);
+        check(embeddings.passwordAux.every((v, j) => close(v, template?.enc17?.exemplars?.[i]?.[j], 2e-5)), `${label}: 17-channel enrollment exemplar`);
+        byEncoder.password.push(embeddings.password);
+        byEncoder.passwordAux.push(embeddings.passwordAux);
+      } else {
+        check(embeddings.password.every((v, j) => close(v, capture.embedding9[j], 2e-5)), `${label}: 9-channel genuine query`);
+        check(embeddings.passwordAux.every((v, j) => close(v, capture.embedding17[j], 2e-5)), `${label}: 17-channel genuine query`);
+      }
+    }
+    for (const [key, expected] of [['password', template?.centroid], ['passwordAux', template?.enc17?.centroid]]) {
+      const centroid = combineEmbeddings(byEncoder[key]);
+      check(centroid.length === 64 && centroid.every((v, j) => close(v, expected?.[j], 2e-5)), `${sample.id}: ${key} template centroid`);
+    }
+  }
+  console.log(`  ✓ ${fixture.sample_password_cases.length} sample passwords: Enter submission and both ONNX encoders`);
+}
 
 // ---------------------------------------------------------------------------------------
 // 2) Unit tests

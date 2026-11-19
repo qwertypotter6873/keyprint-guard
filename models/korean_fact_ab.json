@@ -1,0 +1,733 @@
+{
+  "schema": "keyprint-korean-ab-report/v1",
+  "language": "ko",
+  "input_mode": "touch",
+  "capture_protocol": "published_recording_split",
+  "participants": 50,
+  "enroll_shots": 5,
+  "query_shots": 2,
+  "enroll_captures": 250,
+  "query_captures": 500,
+  "captures_with_behavior": 0,
+  "enrolled_probe_roster_size": 5,
+  "unknown_probe_roster_size": 5,
+  "main": {
+    "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+    "combined_model_hash": "ac38471759213dd1",
+    "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+    "onnx_runtime_web": "1.31.1",
+    "threshold": 0.73,
+    "margin": 0,
+    "configured_behavior_weight": 0.3,
+    "enrolled_probes": {
+      "trials": 250,
+      "top1_before_rejection": {
+        "count": 177,
+        "rate": 0.708
+      },
+      "accepted_correct": {
+        "count": 176,
+        "rate": 0.704
+      },
+      "accepted_wrong": {
+        "count": 73,
+        "rate": 0.292
+      },
+      "rejected": {
+        "count": 1,
+        "rate": 0.004
+      },
+      "rejected_below_threshold": {
+        "count": 1,
+        "rate": 0.004
+      },
+      "rejected_by_margin": {
+        "count": 0,
+        "rate": 0
+      }
+    },
+    "unknown_writer_probes": {
+      "trials": 250,
+      "false_accept": {
+        "count": 219,
+        "rate": 0.876
+      },
+      "rejected": {
+        "count": 31,
+        "rate": 0.124
+      },
+      "rejected_below_threshold": {
+        "count": 31,
+        "rate": 0.124
+      },
+      "rejected_by_margin": {
+        "count": 0,
+        "rate": 0
+      }
+    }
+  },
+  "candidate": {
+    "revision": "e7529d3f6be9b89f5f71a6958dadaa887e113c8f",
+    "combined_model_hash": "f6a1f3dec3ff5f57",
+    "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+    "onnx_runtime_web": "1.31.1",
+    "threshold": 0.78,
+    "margin": 0.12,
+    "configured_behavior_weight": 0.2,
+    "enrolled_probes": {
+      "trials": 250,
+      "top1_before_rejection": {
+        "count": 187,
+        "rate": 0.748
+      },
+      "accepted_correct": {
+        "count": 19,
+        "rate": 0.076
+      },
+      "accepted_wrong": {
+        "count": 0,
+        "rate": 0
+      },
+      "rejected": {
+        "count": 231,
+        "rate": 0.924
+      },
+      "rejected_below_threshold": {
+        "count": 1,
+        "rate": 0.004
+      },
+      "rejected_by_margin": {
+        "count": 230,
+        "rate": 0.92
+      }
+    },
+    "unknown_writer_probes": {
+      "trials": 250,
+      "false_accept": {
+        "count": 33,
+        "rate": 0.132
+      },
+      "rejected": {
+        "count": 217,
+        "rate": 0.868
+      },
+      "rejected_below_threshold": {
+        "count": 36,
+        "rate": 0.144
+      },
+      "rejected_by_margin": {
+        "count": 181,
+        "rate": 0.724
+      }
+    }
+  },
+  "paired_change": {
+    "top1_before_rejection": {
+      "main_only": 14,
+      "candidate_only": 24,
+      "candidate_minus_main_pp": 4,
+      "conditional_writer_bootstrap_95_ci_pp": [
+        -2.8,
+        10.8
+      ]
+    },
+    "accepted_correct": {
+      "main_only": 157,
+      "candidate_only": 0,
+      "candidate_minus_main_pp": -62.8,
+      "conditional_writer_bootstrap_95_ci_pp": [
+        -72,
+        -54
+      ]
+    },
+    "accepted_wrong": {
+      "main_only": 73,
+      "candidate_only": 0,
+      "candidate_minus_main_pp": -29.2,
+      "conditional_writer_bootstrap_95_ci_pp": [
+        -38.8,
+        -19.6
+      ]
+    },
+    "rejected": {
+      "main_only": 0,
+      "candidate_only": 230,
+      "candidate_minus_main_pp": 92,
+      "conditional_writer_bootstrap_95_ci_pp": [
+        86,
+        96.8
+      ]
+    },
+    "unknown_false_accept": {
+      "main_only": 186,
+      "candidate_only": 0,
+      "candidate_minus_main_pp": -74.4,
+      "conditional_writer_bootstrap_95_ci_pp": [
+        -83.2,
+        -65.2
+      ]
+    }
+  },
+  "full_roster": {
+    "enrolled_probe_roster_size": 50,
+    "unknown_probe_roster_size": 49,
+    "main": {
+      "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+      "combined_model_hash": "ac38471759213dd1",
+      "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+      "onnx_runtime_web": "1.31.1",
+      "threshold": 0.73,
+      "margin": 0,
+      "configured_behavior_weight": 0.3,
+      "enrolled_probes": {
+        "trials": 250,
+        "top1_before_rejection": {
+          "count": 63,
+          "rate": 0.252
+        },
+        "accepted_correct": {
+          "count": 62,
+          "rate": 0.248
+        },
+        "accepted_wrong": {
+          "count": 187,
+          "rate": 0.748
+        },
+        "rejected": {
+          "count": 1,
+          "rate": 0.004
+        },
+        "rejected_below_threshold": {
+          "count": 1,
+          "rate": 0.004
+        },
+        "rejected_by_margin": {
+          "count": 0,
+          "rate": 0
+        }
+      },
+      "unknown_writer_probes": {
+        "trials": 250,
+        "false_accept": {
+          "count": 249,
+          "rate": 0.996
+        },
+        "rejected": {
+          "count": 1,
+          "rate": 0.004
+        },
+        "rejected_below_threshold": {
+          "count": 1,
+          "rate": 0.004
+        },
+        "rejected_by_margin": {
+          "count": 0,
+          "rate": 0
+        }
+      }
+    },
+    "candidate": {
+      "revision": "e7529d3f6be9b89f5f71a6958dadaa887e113c8f",
+      "combined_model_hash": "f6a1f3dec3ff5f57",
+      "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+      "onnx_runtime_web": "1.31.1",
+      "threshold": 0.78,
+      "margin": 0.12,
+      "configured_behavior_weight": 0.2,
+      "enrolled_probes": {
+        "trials": 250,
+        "top1_before_rejection": {
+          "count": 67,
+          "rate": 0.268
+        },
+        "accepted_correct": {
+          "count": 0,
+          "rate": 0
+        },
+        "accepted_wrong": {
+          "count": 0,
+          "rate": 0
+        },
+        "rejected": {
+          "count": 250,
+          "rate": 1
+        },
+        "rejected_below_threshold": {
+          "count": 1,
+          "rate": 0.004
+        },
+        "rejected_by_margin": {
+          "count": 249,
+          "rate": 0.996
+        }
+      },
+      "unknown_writer_probes": {
+        "trials": 250,
+        "false_accept": {
+          "count": 0,
+          "rate": 0
+        },
+        "rejected": {
+          "count": 250,
+          "rate": 1
+        },
+        "rejected_below_threshold": {
+          "count": 1,
+          "rate": 0.004
+        },
+        "rejected_by_margin": {
+          "count": 249,
+          "rate": 0.996
+        }
+      }
+    },
+    "paired_change": {
+      "top1_before_rejection": {
+        "main_only": 25,
+        "candidate_only": 29,
+        "candidate_minus_main_pp": 1.6,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          -6.4,
+          10
+        ]
+      },
+      "accepted_correct": {
+        "main_only": 62,
+        "candidate_only": 0,
+        "candidate_minus_main_pp": -24.8,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          -33.6,
+          -16.8
+        ]
+      },
+      "accepted_wrong": {
+        "main_only": 187,
+        "candidate_only": 0,
+        "candidate_minus_main_pp": -74.8,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          -83.2,
+          -66
+        ]
+      },
+      "rejected": {
+        "main_only": 0,
+        "candidate_only": 249,
+        "candidate_minus_main_pp": 99.6,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          98.8,
+          100
+        ]
+      },
+      "unknown_false_accept": {
+        "main_only": 249,
+        "candidate_only": 0,
+        "candidate_minus_main_pp": -99.6,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          -100,
+          -98.8
+        ]
+      }
+    }
+  },
+  "full_recording": {
+    "enrolled_probe_roster_size": 5,
+    "unknown_probe_roster_size": 5,
+    "main": {
+      "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+      "combined_model_hash": "ac38471759213dd1",
+      "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+      "onnx_runtime_web": "1.31.1",
+      "threshold": 0.73,
+      "margin": 0,
+      "configured_behavior_weight": 0.3,
+      "enrolled_probes": {
+        "trials": 250,
+        "top1_before_rejection": {
+          "count": 210,
+          "rate": 0.84
+        },
+        "accepted_correct": {
+          "count": 209,
+          "rate": 0.836
+        },
+        "accepted_wrong": {
+          "count": 40,
+          "rate": 0.16
+        },
+        "rejected": {
+          "count": 1,
+          "rate": 0.004
+        },
+        "rejected_below_threshold": {
+          "count": 1,
+          "rate": 0.004
+        },
+        "rejected_by_margin": {
+          "count": 0,
+          "rate": 0
+        }
+      },
+      "unknown_writer_probes": {
+        "trials": 250,
+        "false_accept": {
+          "count": 223,
+          "rate": 0.892
+        },
+        "rejected": {
+          "count": 27,
+          "rate": 0.108
+        },
+        "rejected_below_threshold": {
+          "count": 27,
+          "rate": 0.108
+        },
+        "rejected_by_margin": {
+          "count": 0,
+          "rate": 0
+        }
+      }
+    },
+    "candidate": {
+      "revision": "e7529d3f6be9b89f5f71a6958dadaa887e113c8f",
+      "combined_model_hash": "f6a1f3dec3ff5f57",
+      "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+      "onnx_runtime_web": "1.31.1",
+      "threshold": 0.78,
+      "margin": 0.12,
+      "configured_behavior_weight": 0.2,
+      "enrolled_probes": {
+        "trials": 250,
+        "top1_before_rejection": {
+          "count": 214,
+          "rate": 0.856
+        },
+        "accepted_correct": {
+          "count": 18,
+          "rate": 0.072
+        },
+        "accepted_wrong": {
+          "count": 0,
+          "rate": 0
+        },
+        "rejected": {
+          "count": 232,
+          "rate": 0.928
+        },
+        "rejected_below_threshold": {
+          "count": 1,
+          "rate": 0.004
+        },
+        "rejected_by_margin": {
+          "count": 231,
+          "rate": 0.924
+        }
+      },
+      "unknown_writer_probes": {
+        "trials": 250,
+        "false_accept": {
+          "count": 32,
+          "rate": 0.128
+        },
+        "rejected": {
+          "count": 218,
+          "rate": 0.872
+        },
+        "rejected_below_threshold": {
+          "count": 34,
+          "rate": 0.136
+        },
+        "rejected_by_margin": {
+          "count": 184,
+          "rate": 0.736
+        }
+      }
+    },
+    "paired_change": {
+      "top1_before_rejection": {
+        "main_only": 14,
+        "candidate_only": 18,
+        "candidate_minus_main_pp": 1.6,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          -4.4,
+          7.6
+        ]
+      },
+      "accepted_correct": {
+        "main_only": 191,
+        "candidate_only": 0,
+        "candidate_minus_main_pp": -76.4,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          -84.4,
+          -68.8
+        ]
+      },
+      "accepted_wrong": {
+        "main_only": 40,
+        "candidate_only": 0,
+        "candidate_minus_main_pp": -16,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          -23.2,
+          -9.2
+        ]
+      },
+      "rejected": {
+        "main_only": 0,
+        "candidate_only": 231,
+        "candidate_minus_main_pp": 92.4,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          86,
+          97.2
+        ]
+      },
+      "unknown_false_accept": {
+        "main_only": 191,
+        "candidate_only": 0,
+        "candidate_minus_main_pp": -76.4,
+        "conditional_writer_bootstrap_95_ci_pp": [
+          -86.4,
+          -66
+        ]
+      }
+    },
+    "full_roster": {
+      "enrolled_probe_roster_size": 50,
+      "unknown_probe_roster_size": 49,
+      "main": {
+        "revision": "4afdaa2a4a3e6063a6cfbeb82b893481866dd471",
+        "combined_model_hash": "ac38471759213dd1",
+        "config_sha256": "aa3a3b5eee1aac414d275c23046356b929a6d244914fb25487d7fe3467a0cec9",
+        "onnx_runtime_web": "1.31.1",
+        "threshold": 0.73,
+        "margin": 0,
+        "configured_behavior_weight": 0.3,
+        "enrolled_probes": {
+          "trials": 250,
+          "top1_before_rejection": {
+            "count": 95,
+            "rate": 0.38
+          },
+          "accepted_correct": {
+            "count": 94,
+            "rate": 0.376
+          },
+          "accepted_wrong": {
+            "count": 155,
+            "rate": 0.62
+          },
+          "rejected": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_below_threshold": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_by_margin": {
+            "count": 0,
+            "rate": 0
+          }
+        },
+        "unknown_writer_probes": {
+          "trials": 250,
+          "false_accept": {
+            "count": 249,
+            "rate": 0.996
+          },
+          "rejected": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_below_threshold": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_by_margin": {
+            "count": 0,
+            "rate": 0
+          }
+        }
+      },
+      "candidate": {
+        "revision": "e7529d3f6be9b89f5f71a6958dadaa887e113c8f",
+        "combined_model_hash": "f6a1f3dec3ff5f57",
+        "config_sha256": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
+        "onnx_runtime_web": "1.31.1",
+        "threshold": 0.78,
+        "margin": 0.12,
+        "configured_behavior_weight": 0.2,
+        "enrolled_probes": {
+          "trials": 250,
+          "top1_before_rejection": {
+            "count": 100,
+            "rate": 0.4
+          },
+          "accepted_correct": {
+            "count": 0,
+            "rate": 0
+          },
+          "accepted_wrong": {
+            "count": 0,
+            "rate": 0
+          },
+          "rejected": {
+            "count": 250,
+            "rate": 1
+          },
+          "rejected_below_threshold": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_by_margin": {
+            "count": 249,
+            "rate": 0.996
+          }
+        },
+        "unknown_writer_probes": {
+          "trials": 250,
+          "false_accept": {
+            "count": 0,
+            "rate": 0
+          },
+          "rejected": {
+            "count": 250,
+            "rate": 1
+          },
+          "rejected_below_threshold": {
+            "count": 1,
+            "rate": 0.004
+          },
+          "rejected_by_margin": {
+            "count": 249,
+            "rate": 0.996
+          }
+        }
+      },
+      "paired_change": {
+        "top1_before_rejection": {
+          "main_only": 37,
+          "candidate_only": 42,
+          "candidate_minus_main_pp": 2,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -8,
+            12.4
+          ]
+        },
+        "accepted_correct": {
+          "main_only": 94,
+          "candidate_only": 0,
+          "candidate_minus_main_pp": -37.6,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -46,
+            -29.2
+          ]
+        },
+        "accepted_wrong": {
+          "main_only": 155,
+          "candidate_only": 0,
+          "candidate_minus_main_pp": -62,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -70.8,
+            -53.6
+          ]
+        },
+        "rejected": {
+          "main_only": 0,
+          "candidate_only": 249,
+          "candidate_minus_main_pp": 99.6,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            98.8,
+            100
+          ]
+        },
+        "unknown_false_accept": {
+          "main_only": 249,
+          "candidate_only": 0,
+          "candidate_minus_main_pp": -99.6,
+          "conditional_writer_bootstrap_95_ci_pp": [
+            -100,
+            -98.8
+          ]
+        }
+      }
+    }
+  },
+  "dataset": {
+    "name": "FACT (Korean subset), Kim and Kang (2020)",
+    "doi": "10.1016/j.patcog.2020.107556",
+    "paper": "https://pure.korea.ac.kr/en/publications/freely-typed-keystroke-dynamics-based-user-authentication-for-mob/",
+    "methods": "https://dcollection.korea.ac.kr/srch/srchDetail/000000127101",
+    "method_reference": "Junhong Kim's dissertation, Chapter 4, Tables 16, 19 and 21",
+    "device": "Samsung Galaxy S8, Android 9",
+    "archives": {
+      "enroll": [
+        {
+          "url": "https://ars.els-cdn.com/content/image/1-s2.0-S0031320320303599-mmc4.zip",
+          "sha256": "44cfd09bf5778897bd9892021676648e436be9c113584509d2e8d69c64f98b99"
+        },
+        {
+          "url": "https://ars.els-cdn.com/content/image/1-s2.0-S0031320320303599-mmc6.zip",
+          "sha256": "9ba9ea627bb1eedf7ebac25618b1c97ac0160d55d985e289a984eec029b6ee89"
+        }
+      ],
+      "query": [
+        {
+          "url": "https://ars.els-cdn.com/content/image/1-s2.0-S0031320320303599-mmc2.zip",
+          "sha256": "183f9b86161b787adc7aeac7281c104b8af447843fa6c041bfac8d1647a5a259"
+        },
+        {
+          "url": "https://ars.els-cdn.com/content/image/1-s2.0-S0031320320303599-mmc8.zip",
+          "sha256": "ef915244c172a52ddf5004bb4251add9c8ae9d04971732d08a9968ff2ef4ce1b"
+        }
+      ]
+    },
+    "reference": {
+      "reported_keystrokes_per_recording_mean": 235.112,
+      "min_source_keystrokes": 161,
+      "available_recordings": 500,
+      "selected_recordings": 250,
+      "digraphs": {
+        "prompt_length": {
+          "before_range_filter": 18750,
+          "after_range_filter": 18736
+        },
+        "full_recording": {
+          "before_range_filter": 58905,
+          "after_range_filter": 58824
+        }
+      }
+    },
+    "test": {
+      "reported_keystrokes_per_recording_mean": 235.262,
+      "min_source_keystrokes": 162,
+      "available_recordings": 500,
+      "selected_recordings": 500,
+      "digraphs": {
+        "prompt_length": {
+          "before_range_filter": 37500,
+          "after_range_filter": 37472
+        },
+        "full_recording": {
+          "before_range_filter": 117131,
+          "after_range_filter": 116940
+        }
+      }
+    },
+    "exact_shared_timing_recordings": 0,
+    "exact_shared_key_sequences": 0,
+    "prompt_ids_available": false,
+    "session_dates_available": false
+  },
+  "protocol": {
+    "model_inputs": "Observed touch DD only. Key geometry is unknown. Holds and UD use each release's touch imputation. Behavior is unavailable.",
+    "source_prefix_keystrokes": 76,
+    "source_prefix_dd_intervals": 75,
+    "prefix_length_selection": "First consecutive keystrokes in each recording, fixed to the median two-set keystroke count of the 64 Korean Arena prompts.",
+    "full_recording_sensitivity": "The same enrollments, query pairs and rosters with whole source recordings.",
+    "filter": "0.006 to 2.2 seconds per DD, inclusive, with a stitch after discarded intervals.",
+    "enrollment": "First five recordings per writer in the publisher reference split, in archive order.",
+    "query": "All ten recordings per writer in the publisher test split, grouped into five nonoverlapping pairs in archive order.",
+    "primary_roster": "Ten fixed groups of five by ascending pseudonymous writer ID. Enrolled probes use their group; unknown probes use the next group cyclically.",
+    "full_roster": "Enrolled probes use all 50 writers; unknown probes use the 49 other writers. Same query pool as primary.",
+    "paired_intervals": "Percentile bootstrap over 50 writer blocks, 2000 draws, seed 1729. Descriptive for these fixed rosters and recordings."
+  }
+}

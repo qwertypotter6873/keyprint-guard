@@ -22,9 +22,103 @@ canonical checkpoints). Instead it:
 
 from __future__ import annotations
 
+import argparse
+import base64
+import hashlib
+import json
 import os
+import sys
+import tempfile
 from pathlib import Path
 import nbformat as nbf
+
+NOTEBOOK_SECTIONS = (
+    "environment", "preprocessing", "inference_history", "model_comparison",
+    "transfer_analysis", "onnx_integrity",
+)
+NOTEBOOK_FIGURES = {
+    "preprocessing": ("fig1_preprocessing_comparison.png",),
+    "model_comparison": (
+        "fig2_learning_curves.png", "fig3_roc_det_kshot.png", "fig4_confusion_matrices.png",
+        "fig5_embedding_tsne.png", "fig6_error_analysis_and_ablation.png", "fig7_typist_identification.png",
+    ),
+    "transfer_analysis": ("fig8_feature_upgrade.png",),
+}
+NOTEBOOK_INPUT_FILES = (
+    "models/evaluation_report.json", "models/password_calibration.json",
+    "models/typing_style_analysis.json", "web/public/models/model_config.json",
+    "models/vanilla_1dcnn.pt", "models/vanilla_1dcnn_aug.pt",
+    "models/keyprint_net.pt", "models/legacy/keyprint_net_9ch.pt",
+    "web/public/models/keyprint_net.onnx", "web/public/models/keyprint_net_password.onnx",
+    *(f"assets/figures/{name}" for figures in NOTEBOOK_FIGURES.values() for name in figures),
+)
+
+
+def notebook_input_hashes(root: Path) -> dict[str, str]:
+    inputs = list(NOTEBOOK_INPUT_FILES)
+    config = json.loads((root / 'web/public/models/model_config.json').read_text(encoding='utf-8'))
+    if 'password_aux_model' in config:
+        inputs.append('web/public/models/' + config['password_aux_model']['file'])
+    return {rel: hashlib.sha256((root / rel).read_bytes()).hexdigest() for rel in inputs}
+
+
+def validate_notebook_outputs(nb: nbf.NotebookNode, input_hashes: dict[str, str] | None = None) -> int:
+    """Require completed verification, readable tables, histories, and embedded figures."""
+    code_cells = [c for c in nb.cells if c.cell_type == "code"]
+    if not code_cells:
+        raise AssertionError("Notebook contains no code cells")
+    sections = {}
+    for idx, cell in enumerate(code_cells):
+        outputs = cell.get("outputs", [])
+        if not isinstance(cell.get("execution_count"), int) or cell.execution_count < 1 or not outputs:
+            raise AssertionError(f"Notebook code cell {idx} is unexecuted or has no output; run build_notebook.py --execute")
+        if any(o.output_type == "error" for o in outputs):
+            raise AssertionError(f"Notebook code cell {idx} contains an execution error")
+        section = cell.metadata.get("verification_section")
+        if section in sections:
+            raise AssertionError(f"Duplicate notebook verification section: {section}")
+        sections[section] = cell
+    for section in NOTEBOOK_SECTIONS:
+        if section not in sections:
+            raise AssertionError(f"Missing notebook verification section: {section}")
+        cell = sections[section]
+        text_output = "\n".join(o.get("text", "") for o in cell.outputs if o.output_type == "stream")
+        if f"KEYPRINT_VERIFIED:{section}" not in text_output:
+            raise AssertionError(f"Incomplete notebook verification section: {section}")
+        mime_types = {mime for o in cell.outputs for mime in o.get("data", {})}
+        if input_hashes is not None and section in NOTEBOOK_FIGURES:
+            expected = [input_hashes[f"assets/figures/{name}"] for name in NOTEBOOK_FIGURES[section]]
+            actual = [hashlib.sha256(base64.b64decode(o.data["image/png"])).hexdigest()
+                      for o in cell.outputs if "image/png" in o.get("data", {})]
+            if actual != expected:
+                raise AssertionError(f"Embedded figures in notebook section {section} differ from the submitted PNGs")
+        if section in {"preprocessing", "inference_history", "model_comparison", "transfer_analysis"}:
+            if "image/png" not in mime_types or "text/html" not in mime_types:
+                raise AssertionError(f"Notebook {section} must include a rendered table and embedded PNG figure")
+        if section == "inference_history":
+            for model in ("Vanilla1DCNN", "Vanilla1DCNN_Aug", "KeyPrintNet_9ch", "KeyPrintNet"):
+                if f"TRAINING_HISTORY:{model}" not in text_output:
+                    raise AssertionError(f"Missing rendered epoch history for {model}")
+    return len(code_cells)
+
+
+def execute_notebook(nb_path: Path, repo_root: Path, out_root: Path, timeout: int = 900) -> None:
+    from jupyter_client import KernelManager
+    from nbclient import NotebookClient
+
+    before = notebook_input_hashes(out_root)
+    nb = nbf.read(nb_path, as_version=4)
+    km = KernelManager(kernel_name="python3")
+    # Use this CLI's interpreter, even when the user's default Jupyter kernel differs.
+    km.kernel_spec.argv = [sys.executable, "-m", "ipykernel_launcher", "-f", "{connection_file}"]
+    client = NotebookClient(nb, km=km, timeout=timeout, allow_errors=False)
+    env = {**os.environ, "KEYPRINT_REPO_ROOT": str(repo_root), "KEYPRINT_OUTPUT_ROOT": str(out_root)}
+    client.execute(cwd=str(repo_root), env=env, cleanup_kc=True)
+    validate_notebook_outputs(nb, before)
+    if notebook_input_hashes(out_root) != before:
+        raise RuntimeError("Verification inputs changed during notebook execution; rerun after artifact generation finishes")
+    nb.metadata["verification_input_sha256"] = before
+    nbf.write(nb, nb_path)
 
 
 def create_notebook(nb_path: Path) -> None:
@@ -37,7 +131,7 @@ def create_notebook(nb_path: Path) -> None:
         "- **노트북 역할 (Non-Retraining Canonical Verification)**:\n"
         "  - 본 노트북은 재실행 시 가중치가 달라지는 중복 재학습을 수행하지 않고, 공식 파이프라인(`src/visualize_and_run.py`, `src/eval_password_calibration.py`, `src/eval_typing_style.py`)이 생성한 **정규 가중치(`.pt`, `.onnx`)·학습 에포크 로그(`histories`)·평가 리포트 JSON 3종**을 로드하여 **실시간 순방향 추론 재현성(`±1e-5`)과 전 구간 지표를 검증**합니다.\n"
         "- **데이터셋**:\n"
-        "  1. **CMU Keystroke Dynamics Benchmark** (`20,400` 세션 = `51명 × 8세션 × 50회`, 고정 암호 `.tie5Roanl`, 학술 공개)\n"
+        "  1. **CMU Keystroke Dynamics Benchmark** (`20,400` 입력 시퀀스 = `51명 × 8세션 × 50회`, 총 `408`세션, 고정 암호 `.tie5Roanl`, 학술 공개)\n"
         "  2. **KeyRecs Multi-Session Sentence & Fixed-Text Dataset** (Zenodo `10.5281/zenodo.7886742`, CC-BY 4.0, 원시 `99명 × 2세션` 자유 필사 `562,596` 데이터 라인 = 유효 전이 `562,398`행 + 세션 종단 타건 `198`행 → 무오타 비중첩 `25자` 문장 시퀀스 통과 `96명` + 고정 문자열 `vpwjkeurkb`)\n"
         "---"
     ))
@@ -48,6 +142,7 @@ def create_notebook(nb_path: Path) -> None:
         "from pathlib import Path\n"
         "import numpy as np\n"
         "import pandas as pd\n"
+        "from IPython import get_ipython\n"
         "import matplotlib.pyplot as plt\n"
         "import torch\n"
         "import onnxruntime as ort\n"
@@ -64,12 +159,14 @@ def create_notebook(nb_path: Path) -> None:
         ")\n"
         "from models import ScaledManhattanDetector, Vanilla1DCNN, KeyPrintNet\n"
         "from train_and_evaluate import (\n"
-        "    set_all_seeds, configure_korean_matplotlib, get_device,\n"
+        "    set_all_seeds, configure_korean_matplotlib, get_device, TEST_BOT_SEED,\n"
         "    build_verification_trials, encode_sequences, compute_cohort_centroids,\n"
         "    score_manhattan_trials, score_embedding_trials,\n"
         "    evaluate_1toN_identification_embeddings, evaluate_1toN_identification_manhattan,\n"
         "    find_optimal_val_threshold, summarize_metrics, impostor_breakdown_embedding, impostor_breakdown_manhattan\n"
         ")\n\n"
+        "# Training modules select Agg; restore notebook rendering after importing them.\n"
+        "get_ipython().run_line_magic('matplotlib', 'inline')\n"
         "set_all_seeds(SEED)\n"
         "font_used = configure_korean_matplotlib()\n"
         "device = get_device()\n"
@@ -77,7 +174,7 @@ def create_notebook(nb_path: Path) -> None:
         "print(f'REPO_ROOT: {REPO_ROOT}\\nOUT_ROOT : {OUT_ROOT}')\n\n"
         "raw_df = pd.read_csv(REPO_ROOT / 'data/raw/DSL-StrongPasswordData.csv')\n"
         "print(f'[CMU 데이터] 크기: {raw_df.shape[0]:,} 행 × {raw_df.shape[1]} 열 | 결측치: {raw_df.isnull().sum().sum()}건 | 피험자: {raw_df[\"subject\"].nunique()}명')\n"
-        "raw_df.head(3)"
+        "display(raw_df.head(3))"
     ))
 
     cells.append(nbf.v4.new_markdown_cell(
@@ -137,7 +234,10 @@ def create_notebook(nb_path: Path) -> None:
         "chan_mean = np.array(meta['channel_mean'], dtype=np.float32)\n"
         "chan_std = np.array(meta['channel_std'], dtype=np.float32)\n"
         "val_trials = build_verification_trials(splits['val'], chan_mean, chan_std, k_shot=5, seed=SEED)\n"
-        "test_trials = build_verification_trials(splits['test'], chan_mean, chan_std, k_shot=5, seed=SEED)\n\n"
+        "test_trials = build_verification_trials(splits['test'], chan_mean, chan_std, k_shot=5, seed=SEED, bot_seed=TEST_BOT_SEED)\n"
+        "assert val_trials['bot_seed'] != test_trials['bot_seed']\n"
+        "assert not any(np.array_equal(v, t) for v in val_trials['bot_seq'] for t in test_trials['bot_seq'])\n"
+        "print(f'Validation bot seed={val_trials[\"bot_seed\"]}; Test bot seed={test_trials[\"bot_seed\"]} (separate synthetic banks)')\n\n"
         "# 1) ScaledManhattan\n"
         "manhattan = ScaledManhattanDetector(shrinkage=0.35).fit_prior(splits['train'].raw_flat, splits['train'].subject_ids)\n"
         "yv_m, sv_m = score_manhattan_trials(manhattan, splits['val'], val_trials)\n"
@@ -188,6 +288,12 @@ def create_notebook(nb_path: Path) -> None:
         "print('모든 6개 통제 비교 모델 실시간 순방향 추론 지표가 evaluation_report.json과 1e-5 이내 완전 일치합니다!')\n\n"
         "# 저장된 에포크 학습 로그 요약 및 학습 곡선 시각화\n"
         "hist = report['histories']\n"
+        "for model_name in ('Vanilla1DCNN', 'Vanilla1DCNN_Aug', 'KeyPrintNet_9ch', 'KeyPrintNet'):\n"
+        "    history_df = pd.DataFrame(hist[model_name])\n"
+        "    assert len(history_df) > 0 and {'epoch', 'train_loss', 'val_eer'}.issubset(history_df.columns)\n"
+        "    print(f'TRAINING_HISTORY:{model_name} | {len(history_df)} epochs')\n"
+        "    with pd.option_context('display.max_rows', None, 'display.max_columns', None):\n"
+        "        display(history_df)\n"
         "fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))\n"
         "for label, key in [('Vanilla1DCNN', 'Vanilla1DCNN'), ('Vanilla1DCNN_Aug', 'Vanilla1DCNN_Aug'), ('KeyPrintNet 9ch', 'KeyPrintNet_9ch'), ('KeyPrintNet 17ch', 'KeyPrintNet')]:\n"
         "    rows_h = hist.get(key, [])\n"
@@ -235,7 +341,19 @@ def create_notebook(nb_path: Path) -> None:
         "display(pd.DataFrame(tbl_rows))\n"
         "print('=== [§5.1] 동일 Validation 임계값 기준 실측 인간 침입자(1,600) vs 합성 매크로 봇(200) 분리 ===')\n"
         "display(pd.DataFrame(brk_rows))\n\n"
+        "comparison = report.get('proposed_vs_augmented_control')\n"
+        "if comparison:\n"
+        "    print('=== [제안 모델 - 통제 베이스라인: 피험자 단위 불확실성] ===')\n"
+        "    print(comparison['resampling_unit'])\n"
+        "    display(pd.DataFrame(comparison['metrics']).T)\n"
+        "    print('차이의 95% 구간이 0을 포함하면 해당 지표의 우위를 단정하지 않습니다. 테스트 차이는 모델 선택 규칙으로 사용하지 않습니다.')\n\n"
         "fu = report['feature_upgrade']\n"
+        "selection = fu['sentence_model_selection']\n"
+        "print('25자 교차 세션 Validation Top-1으로 선택한 문장 인코더:', selection['chosen_encoder'])\n"
+        "clean = selection['clean_25_char_cross_session']\n"
+        "display(pd.DataFrame({split: {name: row['top1_accuracy'] for name, row in clean[split].items()} for split in ('validation', 'test')}))\n"
+        "print('68자 키보드, 5명 등록, 5문장 등록·2문장 질의의 Test 수락률')\n"
+        "display(pd.DataFrame({name: row['gallery_5']['two_sentences_enroll5_margin'] for name, row in selection['web_68_char_keyboard']['test'].items()}).T)\n"
         "id_rows = []\n"
         "for m_key in ('ScaledManhattan', 'Vanilla1DCNN', 'Vanilla1DCNN_Aug', 'Vanilla1DCNN_Aug_ASNorm', 'KeyPrintNet_9ch', 'KeyPrintNet'):\n"
         "    r = report['typist_identification_1toN']['cmu_10way'][m_key]\n"
@@ -245,8 +363,8 @@ def create_notebook(nb_path: Path) -> None:
         "        id_rows.append({\n"
         "            '프로토콜': f'KeyRecs 18인 폐쇄형 [3문장 단일질의 기준선 k=3, q=1] ({dev_name})',\n"
         "            '모델': m_key,\n"
-        "            '성능 요약 1': f\"Top-1 당일 {res['same_session']['top1_accuracy']*100:.1f}% / 익일 {res['cross_session']['top1_accuracy']*100:.1f}%\",\n"
-        "            '성능 요약 2': f\"Top-3 당일 {res['same_session']['top3_accuracy']*100:.1f}% / 익일 {res['cross_session']['top3_accuracy']*100:.1f}%\",\n"
+        "            '성능 요약 1': f\"Top-1 동일 세션 {res['same_session']['top1_accuracy']*100:.1f}% / 교차 세션 {res['cross_session']['top1_accuracy']*100:.1f}%\",\n"
+        "            '성능 요약 2': f\"Top-3 동일 세션 {res['same_session']['top3_accuracy']*100:.1f}% / 교차 세션 {res['cross_session']['top3_accuracy']*100:.1f}%\",\n"
         "        })\n"
         "ap = fu['arena_protocol']\n"
         "for dev_name in ('keyboard', 'touch'):\n"
@@ -254,33 +372,35 @@ def create_notebook(nb_path: Path) -> None:
         "    g10_dep = ap[dev_name]['gallery_10']['two_sentences_enroll5_margin']\n"
         "    id_rows.append({\n"
         "        '프로토콜': f'Arena 10인 개방형 [3문장 단일질의 기준선 k=3, q=1] ({dev_name})',\n"
-        "        '모델': 'KeyPrintNet 17ch + Behavior',\n"
+        "        '모델': selection['chosen_encoder'] + ' + Behavior',\n"
         "        '성능 요약 1': f\"정식별 {g10_base['correct_accept']*100:.1f}% / 오식별 {g10_base['misidentified']*100:.1f}%\",\n"
         "        '성능 요약 2': f\"외부인 오수락 {g10_base['outsider_accepted']*100:.1f}%\",\n"
         "    })\n"
         "    id_rows.append({\n"
         "        '프로토콜': f'Arena 10인 개방형 [5문장 등록 · 2문장 질의 배포 프로토콜 k=5, q=2] ({dev_name})',\n"
-        "        '모델': 'KeyPrintNet 17ch + Behavior + Margin',\n"
+        "        '모델': selection['chosen_encoder'] + ' + Behavior + Margin',\n"
         "        '성능 요약 1': f\"정식별 {g10_dep['correct_accept']*100:.1f}% / 오식별 {g10_dep['misidentified']*100:.1f}%\",\n"
-        "        '성능 요약 2': f\"외부인 오수락 {g10_dep['outsider_accepted']*100:.1f}% (기준선 대비 개선)\",\n"
+        "        '성능 요약 2': f\"외부인 오수락 {g10_dep['outsider_accepted']*100:.1f}%\",\n"
         "    })\n"
         "print('=== [§5.2] 1:N 인물 식별: 3문장 단일질의 기준선 vs 5문장·2문장 배포 프로토콜 ===')\n"
         "display(pd.DataFrame(id_rows))\n"
-        "for fig_name in ['fig2_learning_curves.png', 'fig3_roc_det_kshot.png', 'fig4_confusion_matrices.png', 'fig5_embedding_tsne.png', 'fig6_error_analysis_and_ablation.png', 'fig7_typist_identification.png']:\n"
+        f"for fig_name in {NOTEBOOK_FIGURES['model_comparison']!r}:\n"
         "    ipy_display(Image(filename=str(OUT_ROOT / 'assets/figures' / fig_name), width=960))"
     ))
 
     cells.append(nbf.v4.new_markdown_cell(
         "## 5. `§5.6~5.7` 비밀번호 전이 · Occurrence 분리 합성 · 배포 임계값 일치 · 문제 해결 절제 로그\n"
-        "- **인코더 선택 격리**: `password_transfer_val`(`Validation` 피험자 전용) 결과만으로 비밀번호 인코더를 선택하고, `password_transfer_other_content`(`Test` 피험자 전용)로 최종 검증합니다.\n"
-        "- **디그래프 합성 표본 격리**: 같은 날(`Session 1`) 등록과 본인 질의가 동일한 원본 타건(`occ_id`)을 절대 재사용하지 않도록 분리(`disjoint_occ_enforced=True`)했습니다.\n"
+        "- **선택 기록 확인**: `password_encoder_selection`의 실제 검증 선택 비용과 선택 결과를 아래에 출력합니다. 단일 인코더 비교와 최종 듀얼 배포 설정은 구분하며, 선택 결론을 고정 문구로 대신하지 않습니다.\n"
+        "- **디그래프 합성 표본 격리**: 각 피험자·문자열에서 세션 1의 등록용·본인 질의용 원시 키 이벤트를 먼저 분리하고 실제 교집합을 검사합니다.\n"
         "- **대문자 습관 배포 임계값 일치**: 브라우저(`biometrics.js`)와 동일하게 `base_tau + tau_offset`에서 평가합니다."
     ))
     cells.append(nbf.v4.new_code_cell(
         "print('=== [Validation 전용 인코더 선택 기록] ===')\n"
         "print(json.dumps(fu['password_encoder_selection'], indent=2, ensure_ascii=False))\n\n"
+        "print('=== [실제 웹 배포 설정: 듀얼 점수 / 자동 갱신 여부] ===')\n"
+        "print(json.dumps(web_cfg.get('password_dual', {}), indent=2, ensure_ascii=False))\n\n"
         "us = fu['password_user_strings']\n"
-        "print('\\n=== [§5.6] 디그래프 합성 메타데이터 (동일 세션 occ_id 완전 분리) ===')\n"
+        "print('\\n=== [§5.6] 디그래프 합성 메타데이터 (동일 세션 원시 키 이벤트 분리) ===')\n"
         "print(json.dumps(us['synthesis_metadata'], indent=2, ensure_ascii=False))\n\n"
         "cm = fu['password_capital_method']\n"
         "print('\\n=== [§5.7] 대문자 입력 습관 결합 (배포 임계값 base_tau + tau_offset 일치 평가) ===')\n"
@@ -311,21 +431,25 @@ def create_notebook(nb_path: Path) -> None:
     cells.append(nbf.v4.new_markdown_cell("## 6. 웹 배포용 ONNX 가변 길이 정밀도(`max_err < 1e-5`) 및 스키마 `v4` 해시 무결성 검증"))
     cells.append(nbf.v4.new_code_cell(
         "assert web_cfg['schema_version'] == 4 and web_cfg['preprocess_version'] == 'kp-preproc-v4'\n"
-        "sha17 = hashlib.sha256((OUT_ROOT / 'web/public/models/keyprint_net.onnx').read_bytes()).hexdigest()\n"
-        "sha9 = hashlib.sha256((OUT_ROOT / 'web/public/models/keyprint_net_password.onnx').read_bytes()).hexdigest()\n"
-        "expected_hash = hashlib.sha256(f'{sha17}:{sha9}'.encode('utf-8')).hexdigest()[:16]\n"
-        "assert web_cfg['onnx_sha256'] == {'sentence_17ch': sha17, 'password_9ch': sha9}\n"
-        "assert web_cfg['model_hash'] == expected_hash\n"
+        "web_models = OUT_ROOT / 'web/public/models'\n"
+        "chosen = web_cfg['sentence_model']['encoder']\n"
+        "assert chosen == fu['sentence_model_selection']['chosen_encoder']\n"
+        "sentence_pt, sentence_type = {'keyprint_17ch': ('models/keyprint_net.pt', KeyPrintNet), 'vanilla_17ch_aug': ('models/vanilla_1dcnn_aug.pt', Vanilla1DCNN)}[chosen]\n"
+        "artifacts = [('sentence_17ch', web_cfg['sentence_model']['file'], sentence_pt, sentence_type, N_CHANNELS),\n"
+        "             ('password_9ch', web_cfg['password_model']['file'], 'models/legacy/keyprint_net_9ch.pt', KeyPrintNet, N_TIMING_CHANNELS)]\n"
+        "if 'password_aux_model' in web_cfg:\n"
+        "    artifacts.append(('password_17ch', web_cfg['password_aux_model']['file'], 'models/keyprint_net.pt', KeyPrintNet, N_CHANNELS))\n"
+        "hashes = {name: hashlib.sha256((web_models / filename).read_bytes()).hexdigest() for name, filename, *_ in artifacts}\n"
+        "expected_hash = hashlib.sha256(':'.join(hashes.values()).encode()).hexdigest()[:16]\n"
+        "assert web_cfg['onnx_sha256'] == hashes and web_cfg['model_hash'] == expected_hash\n"
         "for sp in web_cfg['mvp_sample_profiles']:\n"
         "    assert sp['schemaVersion'] == 4 and sp['preprocessVersion'] == 'kp-preproc-v4' and sp['modelHash'] == expected_hash\n"
         "print(f'Schema v4 & ONNX SHA-256 검증 통과 | model_hash={expected_hash}')\n\n"
-        "for title, onnx_file, pt_file, n_ch in [\n"
-        "    ('문장용 KeyPrintNet 17채널', OUT_ROOT / 'web/public/models/keyprint_net.onnx', OUT_ROOT / 'models/keyprint_net.pt', N_CHANNELS),\n"
-        "    ('비밀번호용 KeyPrintNet 9채널', OUT_ROOT / 'web/public/models/keyprint_net_password.onnx', OUT_ROOT / 'models/legacy/keyprint_net_9ch.pt', N_TIMING_CHANNELS),\n"
-        "]:\n"
+        "for title, filename, weights, model_type, n_ch in artifacts:\n"
+        "    onnx_file = web_models / filename\n"
         "    sess = ort.InferenceSession(str(onnx_file), providers=['CPUExecutionProvider'])\n"
-        "    cpu_net = KeyPrintNet(in_channels=n_ch, hidden_channels=80, embed_dim=64, dropout=0.0)\n"
-        "    cpu_net.load_state_dict(torch.load(pt_file, map_location='cpu', weights_only=True))\n"
+        "    cpu_net = model_type(in_channels=n_ch)\n"
+        "    cpu_net.load_state_dict(torch.load(OUT_ROOT / weights, map_location='cpu', weights_only=True))\n"
         "    cpu_net.eval()\n"
         "    print(f'[{title}] ONNX 파일 크기: {onnx_file.stat().st_size / 1024:.2f} KB')\n"
         "    for seq_len in [5, 10, 18, 24, 32]:\n"
@@ -340,6 +464,11 @@ def create_notebook(nb_path: Path) -> None:
         "        print(f'  L={seq_len:2d} ({seq_len+1:2d}자) -> 출력 {ort_emb.shape} | PyTorch-ONNX 최대 오차: {max_err:.2e} | 추론 {dt_ms:.3f} ms')"
     ))
 
+    code_cells = [cell for cell in cells if cell.cell_type == "code"]
+    assert len(code_cells) == len(NOTEBOOK_SECTIONS)
+    for cell, section in zip(code_cells, NOTEBOOK_SECTIONS):
+        cell.metadata["verification_section"] = section
+        cell.source += f"\nprint('KEYPRINT_VERIFIED:{section}')"
     nb["cells"] = cells
     nb["metadata"] = {
         "kernelspec": {
@@ -358,8 +487,18 @@ def create_notebook(nb_path: Path) -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Build the verification notebook; --execute retains all outputs without retraining.")
+    parser.add_argument("--execute", action="store_true", help="Execute with this Python interpreter and save every output atomically.")
+    parser.add_argument("--timeout", type=int, default=900, help="Per-cell execution timeout in seconds (default: 900).")
+    args = parser.parse_args()
     repo_root = Path(__file__).resolve().parent.parent
     out_root = Path(os.environ["KEYPRINT_OUTPUT_ROOT"]).resolve() if os.environ.get("KEYPRINT_OUTPUT_ROOT") else repo_root
     out = out_root / "notebooks" / "keyprint_training_pipeline.ipynb"
-    create_notebook(out)
-    print(f"Created {out}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".tmp_notebook_", dir=out.parent) as tmp_dir:
+        candidate = Path(tmp_dir) / out.name
+        create_notebook(candidate)
+        if args.execute:
+            execute_notebook(candidate, repo_root, out_root, timeout=args.timeout)
+        os.replace(candidate, out)
+    print(f'{"Executed and saved" if args.execute else "Created (unexecuted)"} {out}')

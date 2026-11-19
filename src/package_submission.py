@@ -3,14 +3,16 @@ Creates and clean-room validates the final CyberCampus submission archive:
   기말-201935607-김대현.zip
 
 Clean-room 4-step gate (--verify-cleanroom, enabled by default):
-  Step 1: Static, <100MB budget, executed error-free notebook, zero b"file://" in PDF,
+  Step 1: Static, <100MB budget, fully executed notebook with tables, figures and input hashes,
+          zero b"file://" in PDF,
           and 100% file-by-file SHA-256 parity on a fresh temporary directory extraction.
   Step 2: As-shipped Web & Parity gate BEFORE any Python script overwrites files:
-          `node web/scripts/parity_check.mjs` -> `npm ci` -> `npm run build` -> `node scripts/offline_smoke.mjs`.
+          `npm ci` -> parity check -> production build -> functional tests -> offline smoke
+          -> existing adversarial regression.
   Step 3: Standalone Python reproducibility gate AFTER Step 2 inside the isolated temp dir
           (`cwd=extracted_dir`, `PYTHONPATH=extracted_dir/src`, `KEYPRINT_REUSE_WEIGHTS=1`):
           re-runs `visualize_and_run.py`, `eval_password_calibration.py`, `eval_typing_style.py`
-          and asserts key test metrics match shipped JSON snapshots within 1e-4.
+          and asserts all reported numeric metrics match shipped JSON snapshots within 1e-4.
   Step 4: Atomic `os.replace(tmp_zip, final_zip)` ONLY when Steps 1..3 all succeed.
 """
 
@@ -30,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import nbformat
+from build_notebook import notebook_input_hashes, validate_notebook_outputs
 
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024  # Strict < 100 MB budget
 METRIC_ATOL = 1e-4
@@ -59,6 +62,23 @@ MANDATORY_ARCHIVE_FILES = [
     "web/public/models/keyprint_net.onnx",
     "web/public/models/keyprint_net_password.onnx",
     "web/public/models/model_config.json",
+    "models/timestamp_sensitivity.json",
+    "models/trial_sensitivity.json",
+    "models/legacy/keyprint_net_17ch_published_dd.pt",
+    "models/legacy/keyprint_net_17ch_published_dd.json",
+    "src/eval_trial_sensitivity.py",
+    "web/ime-debug.html",
+    "web/korean-study.html",
+    "models/korean_fact_ab.json",
+    "research/korean-typing/README.md",
+    "research/korean-typing/reproduce.py",
+    "research/korean-typing/results.json",
+    "research/korean-typing/margin-sweep.json",
+    "research/korean-typing/ranking-pilot.json",
+    "research/korean-typing/aihub-71518-audit.json",
+    "research/korean-typing/fact-en-ko-comparison.json",
+    "research/korean-typing/fact-early-cutoff-review.json",
+    "web/src/assets/margin-sweep.png",
 ]
 
 NON_METRIC_METADATA_KEYS = {
@@ -141,6 +161,14 @@ def collect_archive_sources(root: Path, pdf_override: Path | None = None) -> dic
     if (root / "tests").exists():
         add_tree(root / "tests", suffixes=(".py", ".mjs", ".js", ".json"))
 
+    # The AI Hub archives require approval. Include the reproducible analysis and
+    # its named aggregate outputs, even if a user keeps other local results nearby.
+    research = root / "research" / "korean-typing"
+    add_tree(research, suffixes=(".py", ".mjs"))
+    for name in MANDATORY_ARCHIVE_FILES:
+        if name.startswith("research/korean-typing/"):
+            add_file(root / name)
+
     # 4. Executed Jupyter notebook
     add_file(root / "notebooks" / "keyprint_training_pipeline.ipynb")
 
@@ -152,7 +180,7 @@ def collect_archive_sources(root: Path, pdf_override: Path | None = None) -> dic
     add_tree(root / "assets" / "screenshots", suffixes=(".png",))
 
     # 7. Web application source, lockfile, public models/assets, and verification scripts
-    for web_file in ("package.json", "package-lock.json", "vite.config.js", "index.html"):
+    for web_file in ("package.json", "package-lock.json", "vite.config.js", "index.html", "ime-debug.html", "korean-study.html"):
         add_file(root / "web" / web_file)
     add_tree(root / "web" / "src")
     add_tree(root / "web" / "public")
@@ -221,6 +249,19 @@ def _assert_numeric_tree_close(
     return 0
 
 
+def validate_submission_metric(submission: dict, report: dict) -> None:
+    """Prevent stale submission metadata from disagreeing with the official comparison."""
+    primary = submission.get("primary_metric")
+    value = primary.get("value") if isinstance(primary, dict) else None
+    expected = report["models"]["KeyPrintNet"]["macro_f1"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise AssertionError("submission.json primary_metric.value must be a finite number")
+    if not math.isclose(value, expected, rel_tol=0.0, abs_tol=1e-12):
+        raise AssertionError(
+            f"Stale submission.json primary_metric.value: {value} != official KeyPrintNet macro_f1 {expected}"
+        )
+
+
 def step1_static_and_hash_gate(tmp_zip: Path, extracted_dir: Path, sources: dict[str, Path]) -> None:
     print("[Step 1/4] Running Static, Budget, Notebook, PDF & SHA-256 Parity Gate...", flush=True)
     archive_bytes = tmp_zip.stat().st_size
@@ -246,20 +287,18 @@ def step1_static_and_hash_gate(tmp_zip: Path, extracted_dir: Path, sources: dict
     for key in REQUIRED_SUBMISSION_KEYS:
         if key not in sub_data or sub_data[key] in (None, ""):
             raise AssertionError(f"Missing or empty required key in submission.json: {key}")
+    official_report = json.loads((extracted_dir / "models/evaluation_report.json").read_text(encoding="utf-8"))
+    validate_submission_metric(sub_data, official_report)
+    _run_checked([sys.executable, "src/refresh_portfolio.py", "--check"], cwd=extracted_dir,
+                 step_label="Step 1 portfolio metrics")
 
     # 3. Executed notebook & zero error outputs check
     nb = nbformat.read(extracted_dir / "notebooks" / "keyprint_training_pipeline.ipynb", as_version=4)
     code_cells = [c for c in nb.cells if c.cell_type == "code"]
-    executed_cells = [c for c in code_cells if len(c.get("outputs", [])) > 0]
-    if len(executed_cells) < 1:
-        raise AssertionError("Notebook must contain >= 1 executed code cell with non-empty outputs")
-    error_cells = [
-        idx
-        for idx, c in enumerate(code_cells)
-        if any(out.get("output_type") == "error" for out in c.get("outputs", []))
-    ]
-    if error_cells:
-        raise AssertionError(f"Notebook contains cell(s) with output_type=='error' at code cell indices: {error_cells}")
+    inputs = notebook_input_hashes(extracted_dir)
+    executed_count = validate_notebook_outputs(nb, inputs)
+    if dict(nb.metadata.get("verification_input_sha256", {})) != inputs:
+        raise AssertionError("Notebook inputs differ from shipped artifacts; run python src/build_notebook.py --execute")
 
     # 4. Zero local file:// URIs in rendered portfolio PDF
     pdf_bytes = (extracted_dir / "포트폴리오_201935607_김대현.pdf").read_bytes()
@@ -291,7 +330,7 @@ def step1_static_and_hash_gate(tmp_zip: Path, extracted_dir: Path, sources: dict
 
     print(
         f"[Step 1/4] PASSED ({archive_bytes / (1024 * 1024):.2f} MB, {len(extracted_files)} files SHA-256 verified, "
-        f"{len(executed_cells)}/{len(code_cells)} executed notebook cells, 0 errors, 0 file:// URIs).",
+        f"{executed_count}/{len(code_cells)} executed notebook cells with required tables/figures, 0 errors, 0 file:// URIs).",
         flush=True,
     )
 
@@ -302,12 +341,89 @@ def step2_as_shipped_web_and_parity_gate(extracted_dir: Path) -> None:
     _run_checked(["npm", "ci"], cwd=web_dir, step_label="Step 2.1 npm-ci")
     _run_checked(["node", "web/scripts/parity_check.mjs"], cwd=extracted_dir, step_label="Step 2.2 parity")
     _run_checked(["npm", "run", "build"], cwd=web_dir, step_label="Step 2.3 build")
-    _run_checked(["node", "scripts/offline_smoke.mjs"], cwd=web_dir, step_label="Step 2.4 smoke")
-    _run_checked(["node", "scripts/adversarial_regression.mjs"], cwd=web_dir, step_label="Step 2.5 adversarial")
+    if list((web_dir / "dist").rglob("ime-debug.html")):
+        raise AssertionError("IME diagnostic page must remain source-only, outside the production build")
+    _run_checked(["node", "scripts/functional_state.mjs"], cwd=web_dir, step_label="Step 2.4 state")
+    _run_checked(["node", "scripts/functional_browser.mjs"], cwd=web_dir, step_label="Step 2.5 browser")
+    _run_checked(["node", "scripts/offline_smoke.mjs"], cwd=web_dir, step_label="Step 2.6 smoke")
+    _run_checked(["node", "scripts/adversarial_regression.mjs"], cwd=web_dir, step_label="Step 2.7 adversarial")
     print(
-        "[Step 2/4] PASSED (npm ci + as-shipped parity_check + vite build + offline_smoke + adversarial_regression).",
+        "[Step 2/4] PASSED (npm ci + parity + build + functional state/browser + offline smoke + adversarial regression).",
         flush=True,
     )
+
+
+def password_source_audits(feature: dict) -> dict[str, dict]:
+    audits = {}
+    for split in ("val", "test"):
+        audits[f"{split}/base"] = feature["password_user_strings"]["synthesis_metadata"][split]
+        audits[f"{split}/capital"] = feature["password_capital_method"]["synthesis_metadata"][split]
+        for length, record in feature["password_length_calibration"]["synthesis_metadata"][split].items():
+            audits[f"{split}/length/{length}"] = record
+    return audits
+
+
+def validate_evaluation_protocol(report: dict, config: dict, sensitivity: dict) -> None:
+    """Check the meaning of the revised protocols in addition to numeric reproducibility."""
+    audit = report["bot_split_audit"]
+    if audit["shared_raw_bot_inputs"] != 0 or audit["validation_seed"] == audit["test_seed"]:
+        raise AssertionError("Validation/Test synthetic bot banks are not independent")
+    comparison = report["proposed_vs_augmented_control"]
+    if comparison["num_subjects"] < 2 or comparison["n_resamples"] < 1:
+        raise AssertionError("Paired model comparison has no valid subject bootstrap")
+    for metric in ("roc_auc", "eer", "macro_f1"):
+        ci = comparison["metrics"][metric]["ci95"]
+        if len(ci) != 2 or not all(math.isfinite(x) for x in ci) or ci[0] > ci[1]:
+            raise AssertionError(f"Invalid paired confidence interval: {metric}")
+    feature = report["feature_upgrade"]
+    selection = feature["sentence_model_selection"]
+    val = selection["clean_25_char_cross_session"]["validation"]
+    winner = max(selection["tie_priority"], key=lambda name: val[name]["top1_accuracy"])
+    if selection["selection_split"] != "val_only" or selection["chosen_encoder"] != winner or config["sentence_model"]["encoder"] != winner:
+        raise AssertionError("Deployed sentence encoder differs from the Validation selection rule")
+    synthetic = feature["password_user_strings"]
+    if synthetic["calibration_split"] != "val_only" or synthetic["vocabulary_splits"] != ["train", "val"]:
+        raise AssertionError("Password calibration did not freeze Validation before Test")
+    for stage, record in password_source_audits(feature).items():
+        if not record["disjoint_source_events_enforced"] or not record["same_day_generated_inputs_verified"]:
+            raise AssertionError(f"Missing input-level enrollment/query separation audit at {stage}")
+    words = {}
+    for split in ("val", "test"):
+        groups = list(synthetic["strings"][split].values()) + list(feature["password_length_calibration"]["strings"][split].values())
+        groups.append(feature["password_capital_method"]["strings"][split])
+        words[split] = {word for group in groups for word in group}
+    if words["val"] & words["test"]:
+        raise AssertionError("Validation and Test synthesis words overlap")
+    for split_key in ("password_transfer_val", "password_transfer_other_content"):
+        words = feature[split_key]["repeated_words_unseen"]
+        if words["sampling"]["rule"] != "equal_quota_all_eligible_other_people":
+            raise AssertionError(f"Unbalanced repeated-word trial rule: {split_key}")
+        if not words["sampling"]["impostor_trials_by_person"]:
+            raise AssertionError(f"No recorded repeated-word impostor participants: {split_key}")
+        if words["auc_diff_first_minus_second"]["method"] != "paired_participant_bootstrap_target_query_weights":
+            raise AssertionError(f"Incorrect repeated-word uncertainty unit: {split_key}")
+    adaptation = feature["password_adaptation"]
+    costs = adaptation["validation_policy_costs"]
+    chosen = adaptation["chosen_policy"]
+    if adaptation["selection_split"] != "val_only" or costs[chosen] != min(costs.values()):
+        raise AssertionError("Adaptation policy is not the Validation cost minimum")
+    enabled = chosen != "dual_no_adapt"
+    if adaptation["enabled"] is not enabled or config["password_dual"]["adapt_enabled"] is not enabled:
+        raise AssertionError("Reported and deployed adaptation policies differ")
+    for split in ("val", "test"):
+        for mode, policies in adaptation[split].items():
+            hashes = {values["paired_impostor_sha256"] for values in policies.values()}
+            counts = {values["num_impostor_trials"] for values in policies.values()}
+            if len(hashes) != 1 or len(counts) != 1:
+                raise AssertionError(f"Adaptation policies do not share paired attack trials: {split}/{mode}")
+    train_audit = sensitivity["fixed_text_column_identity_audit"]
+    if train_audit["selection_split"] != "train_only" or not sensitivity["matched_17ch_training_comparison"]["reference_available"]:
+        raise AssertionError("Missing Train-only timing audit or matched 17ch training comparison")
+    for scenario in ("published_labels", "release_label_swap"):
+        values = sensitivity["fixed_text_frozen_model_sensitivity"][scenario]
+        for model in ("legacy_9ch", "keyprint_17ch"):
+            if not all(math.isfinite(values[model][k]) for k in ("roc_auc", "eer", "far_at_deployed_threshold")):
+                raise AssertionError(f"Missing/invalid DD-UU sensitivity metrics: {scenario}/{model}")
 
 
 def step3_python_reproducibility_gate(extracted_dir: Path, python_bin: Path) -> None:
@@ -315,8 +431,10 @@ def step3_python_reproducibility_gate(extracted_dir: Path, python_bin: Path) -> 
     eval_path = extracted_dir / "models" / "evaluation_report.json"
     pw_path = extracted_dir / "models" / "password_calibration.json"
     style_path = extracted_dir / "models" / "typing_style_analysis.json"
+    sensitivity_path = extracted_dir / "models" / "timestamp_sensitivity.json"
+    trial_path = extracted_dir / "models" / "trial_sensitivity.json"
 
-    for report_p in (eval_path, pw_path, style_path):
+    for report_p in (eval_path, pw_path, style_path, sensitivity_path, trial_path):
         if not report_p.exists():
             raise AssertionError(f"Missing shipped JSON report prior to Step 3: {report_p.name}")
 
@@ -324,11 +442,17 @@ def step3_python_reproducibility_gate(extracted_dir: Path, python_bin: Path) -> 
     shipped_eval = json.loads(eval_path.read_text(encoding="utf-8"))
     shipped_pw = json.loads(pw_path.read_text(encoding="utf-8"))
     shipped_style = json.loads(style_path.read_text(encoding="utf-8"))
+    shipped_sensitivity = json.loads(sensitivity_path.read_text(encoding="utf-8"))
+    shipped_trials = json.loads(trial_path.read_text(encoding="utf-8"))
+    shipped_config = json.loads((extracted_dir / "web/public/models/model_config.json").read_text(encoding="utf-8"))
+    validate_evaluation_protocol(shipped_eval, shipped_config, shipped_sensitivity)
 
     clean_env = os.environ.copy()
     clean_env["PYTHONPATH"] = str(extracted_dir / "src")
     clean_env["PYTHONNOUSERSITE"] = "1"
     clean_env["MPLBACKEND"] = "Agg"
+    clean_env["KEYPRINT_REPO_ROOT"] = str(extracted_dir)
+    clean_env["KEYPRINT_OUTPUT_ROOT"] = str(extracted_dir)
 
     reuse_env = {**clean_env, "KEYPRINT_REUSE_WEIGHTS": "1"}
     _run_checked(
@@ -349,10 +473,37 @@ def step3_python_reproducibility_gate(extracted_dir: Path, python_bin: Path) -> 
         env=clean_env,
         step_label="Step 3.3 eval_typing_style",
     )
+    _run_checked(
+        [str(python_bin), "src/eval_timestamp_sensitivity.py"],
+        cwd=extracted_dir,
+        env=clean_env,
+        step_label="Step 3.4 eval_timestamp_sensitivity",
+    )
+    _run_checked(
+        [str(python_bin), "src/eval_trial_sensitivity.py"],
+        cwd=extracted_dir,
+        env=clean_env,
+        step_label="Step 3.5 eval_trial_sensitivity",
+    )
 
     repro_eval = json.loads(eval_path.read_text(encoding="utf-8"))
     repro_pw = json.loads(pw_path.read_text(encoding="utf-8"))
     repro_style = json.loads(style_path.read_text(encoding="utf-8"))
+    repro_sensitivity = json.loads(sensitivity_path.read_text(encoding="utf-8"))
+    repro_trials = json.loads(trial_path.read_text(encoding="utf-8"))
+    repro_config = json.loads((extracted_dir / "web/public/models/model_config.json").read_text(encoding="utf-8"))
+    validate_evaluation_protocol(repro_eval, repro_config, repro_sensitivity)
+    if shipped_config["onnx_sha256"] != repro_config["onnx_sha256"]:
+        raise AssertionError("Re-exported ONNX model bytes do not match the shipped models")
+    reproduced_audits = password_source_audits(repro_eval["feature_upgrade"])
+    for stage, record in password_source_audits(shipped_eval["feature_upgrade"]).items():
+        reproduced = reproduced_audits[stage]
+        if reproduced["source_trial_sha256"] != record["source_trial_sha256"]:
+            raise AssertionError(f"Different raw keystrokes used on re-evaluation at {stage}")
+    shipped_policy = shipped_eval["feature_upgrade"]["password_adaptation"]
+    repro_policy = repro_eval["feature_upgrade"]["password_adaptation"]
+    if (shipped_policy["chosen_policy"], shipped_policy["enabled"]) != (repro_policy["chosen_policy"], repro_policy["enabled"]):
+        raise AssertionError("Adaptation selection changed during clean-room reproduction")
 
     # Explicit key presence assertions + 1e-4 numeric parity checks
     kp_shipped = shipped_eval["models"]["KeyPrintNet"]
@@ -362,12 +513,8 @@ def step3_python_reproducibility_gate(extracted_dir: Path, python_bin: Path) -> 
             raise AssertionError(f"Missing models.KeyPrintNet.{req_metric}")
 
     checked_leaves = 0
-    checked_leaves += _assert_numeric_tree_close(kp_shipped, kp_repro, "evaluation_report.models.KeyPrintNet")
-    checked_leaves += _assert_numeric_tree_close(
-        shipped_eval["feature_upgrade"]["web_faithful_identification"],
-        repro_eval["feature_upgrade"]["web_faithful_identification"],
-        "evaluation_report.feature_upgrade.web_faithful_identification",
-    )
+    # Include every baseline, protocol, uncertainty interval and ablation, not just the proposed model.
+    checked_leaves += _assert_numeric_tree_close(shipped_eval, repro_eval, "evaluation_report")
     checked_leaves += _assert_numeric_tree_close(
         shipped_pw,
         repro_pw,
@@ -378,6 +525,8 @@ def step3_python_reproducibility_gate(extracted_dir: Path, python_bin: Path) -> 
         repro_style,
         "typing_style_analysis",
     )
+    checked_leaves += _assert_numeric_tree_close(shipped_sensitivity, repro_sensitivity, "timestamp_sensitivity")
+    checked_leaves += _assert_numeric_tree_close(shipped_trials, repro_trials, "trial_sensitivity")
 
     print(
         f"[Step 3/4] PASSED ({checked_leaves} clean-room numeric metrics matched shipped JSON snapshots within {METRIC_ATOL}).",

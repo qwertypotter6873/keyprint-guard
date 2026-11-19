@@ -3,15 +3,15 @@ name: Deploy KeyPrint Guard to GitHub Pages
 on:
   push:
     branches: ["main"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: "pages"
+  group: ${{ github.ref == 'refs/heads/main' && 'pages' || format('web-check-{0}', github.ref) }}
   cancel-in-progress: true
 
 jobs:
@@ -28,14 +28,20 @@ jobs:
           cache: "npm"
           cache-dependency-path: "web/package-lock.json"
 
-      - name: Install web dependencies & prepare ONNX Runtime WASM
+      - name: Build and verify the submitted web app
         working-directory: ./web
         run: |
+          python3 ../src/refresh_portfolio.py --check
           npm ci
-          mkdir -p public/ort
-          cp node_modules/onnxruntime-web/dist/*.wasm public/ort/
-          cp node_modules/onnxruntime-web/dist/*.mjs public/ort/ || true
+          node scripts/parity_check.mjs
+          node scripts/sentence_sampling.mjs
           npm run build
+          node scripts/functional_state.mjs
+          node scripts/functional_browser.mjs
+
+      - name: Record source revision and model checksums
+        working-directory: ./web
+        run: node scripts/write_build_info.mjs
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -43,6 +49,10 @@ jobs:
           path: ./web/dist
 
   deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -52,3 +62,32 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+      - name: Verify the published revision and model files
+        env:
+          DEMO_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          node --input-type=module <<'JS'
+          import { createHash } from 'node:crypto';
+          import { setTimeout } from 'node:timers/promises';
+          const base = process.env.DEMO_URL.replace(/\/?$/, '/');
+          async function get(path, attempt) {
+            const response = await fetch(base + path + '?build=' + process.env.GITHUB_SHA + '-' + attempt);
+            if (!response.ok) throw new Error(path + ' HTTP ' + response.status);
+            return response;
+          }
+          for (let attempt = 1; ; attempt++) {
+            try {
+              const receipt = await (await get('build-info.json', attempt)).json();
+              if (receipt.revision !== process.env.GITHUB_SHA) throw new Error('Waiting for the new Pages revision');
+              for (const [file, expected] of Object.entries(receipt.models)) {
+                const bytes = await (await get('models/' + file, attempt)).arrayBuffer();
+                if (createHash('sha256').update(Buffer.from(bytes)).digest('hex') !== expected) throw new Error('Model hash differs for ' + file);
+              }
+              console.log('Verified public Pages revision', receipt.revision);
+              break;
+            } catch (error) {
+              if (attempt === 12) throw error;
+              await setTimeout(5000);
+            }
+          }
+          JS

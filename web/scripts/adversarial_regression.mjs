@@ -598,6 +598,9 @@ async function typeRealisticInInput(page, selector, text, { baseDdMs = 112, base
     },
     { sel: selector, str: text, ddMs: baseDdMs, holdMs: baseHoldMs, submitEnter: pressEnter }
   );
+  if (pressEnter) {
+    await page.waitForFunction((sel) => !document.querySelector(sel).readOnly, selector);
+  }
 }
 
 async function waitForEngineReady(page) {
@@ -606,6 +609,12 @@ async function waitForEngineReady(page) {
     null,
     { timeout: 25000 }
   );
+  // Shared-room tests explicitly opt in through the same consent flow as users.
+  if (await page.locator('#room-dialog[open]').count()) {
+    await page.check('#share-room-consent');
+    await page.locator('#change-room-form button[type="submit"]').click();
+    await page.click('#close-room-btn');
+  }
 }
 
 function attachPageErrorCollector(page, label) {
@@ -741,6 +750,7 @@ try {
 
     // Visit every view & modal that renders profile names, colors, IDs, counts, and SVG tooltips
     await page.click('#nav-arena-btn');
+    await page.click('#lang-ko-btn');
     await page.click('#nav-guard-btn');
     await page.click('#nav-principles-btn');
     await page.click('#open-room-btn');
@@ -881,13 +891,16 @@ try {
     await page.click('#nav-principles-btn');
 
     const bootState = await page.evaluate(() => {
-      const stored = JSON.parse(localStorage.getItem('keyprint_mvp_v4_room_SURVIVE') || '{}');
+      const sync = window.__keyprintTestApi.roomSync;
+      const records = Object.keys(localStorage)
+        .filter((key) => key.startsWith(sync._recordsPrefix()))
+        .map((key) => JSON.parse(localStorage.getItem(key)));
       return {
         ready: window.__keyprintTestApi.state.ready,
         polluted: ({}).pollutedBoot,
         liveIds: window.__keyprintTestApi.state.profiles.map((p) => p.id),
-        storedIds: (stored.profiles || []).map((p) => p.id),
-        storedTombKeys: Object.keys(stored.tombstones || {}),
+        legacyRetired: localStorage.getItem('keyprint_mvp_v4_room_SURVIVE') === null,
+        records: records.map((record) => [record.type, record.profile?.id ?? record.id]).sort(),
       };
     });
 
@@ -898,9 +911,9 @@ try {
       `Only valid profile survived in memory: ${JSON.stringify(bootState.liveIds)}`
     );
     check(
-      JSON.stringify(bootState.storedIds) === JSON.stringify(['good_survivor']) &&
-        JSON.stringify(bootState.storedTombKeys) === JSON.stringify(['valid_tomb']),
-      `Corrupt entries pruned from localStorage: profiles=${JSON.stringify(bootState.storedIds)}`
+      bootState.legacyRetired &&
+        JSON.stringify(bootState.records) === JSON.stringify([['delete', 'valid_tomb'], ['upsert', 'good_survivor']]),
+      `Only valid records migrated in localStorage: records=${JSON.stringify(bootState.records)}, legacyRetired=${bootState.legacyRetired}`
     );
     check(pageErrors.length === 0, `Suite 2 zero pageerrors (${pageErrors.join('; ')})`);
     console.log('  ✓ Corrupt profiles pruned before render & persisted cleanly; reload survived with 0 errors');
@@ -1083,7 +1096,7 @@ try {
       const detailsText = document.querySelector('#view-principles .viz-details')?.textContent || '';
       return {
         noticeCount: notices.length,
-        hasWarningText: notices.every((t) => t.includes('실제 사용하는 개인 비밀번호는 절대 입력하지 마세요')),
+        hasWarningText: notices.every((t) => t.includes('실제 개인 비밀번호는 입력하지 마세요')),
         hasDualEncoderDoc:
           detailsText.includes('듀얼 인코더 아키텍처') &&
           detailsText.includes('9채널') &&
@@ -1222,7 +1235,7 @@ try {
     }));
     check(
       afterSandboxType.active === null &&
-        afterSandboxType.bannerText === '실시간 탐색 미리보기 (공식 인증 판정 전)' &&
+        afterSandboxType.bannerText === '실시간 탐색 미리보기 (비교 결과 확정 전)' &&
         afterSandboxType.adaptBadgeHidden === true,
       `Typing new input invalidated stale verdict -> "${afterSandboxType.bannerText}"`
     );
@@ -1254,7 +1267,7 @@ try {
     );
 
     // Switch language ko -> en -> MUST invalidate Arena ko verdict!
-    await page.evaluate(() => document.getElementById('lang-en-btn').click());
+    await page.evaluate(() => document.getElementById('lang-ko-btn').click());
     await page.click('#nav-principles-btn');
     const arenaVizAfterLang = await page.evaluate(() => ({
       active: window.__keyprintTestApi.getActiveVerdictForViz(),
@@ -1262,7 +1275,7 @@ try {
     }));
     check(
       arenaVizAfterLang.active === null &&
-        arenaVizAfterLang.bannerText === '실시간 탐색 미리보기 (공식 인증 판정 전)',
+        arenaVizAfterLang.bannerText === '실시간 탐색 미리보기 (비교 결과 확정 전)',
       `Language switch invalidated Arena verdict -> "${arenaVizAfterLang.bannerText}"`
     );
 
@@ -1287,7 +1300,7 @@ try {
     // 5e) Undistorted 2D PCA Coordinates Check (two nearly identical centroids NOT pushed apart by 66px!)
     const pcaCheck = await page.evaluate(() => {
       const rs = window.__keyprintTestApi.roomSync;
-      rs.connect('PCATEST');
+      rs.connect('PCATEST', { shared: true });
       const cA = Array.from({ length: 64 }, (_, i) => (i === 0 ? 0.9999 : i === 1 ? 0.01414 : 0));
       const cB = Array.from({ length: 64 }, (_, i) => (i === 0 ? 0.9998 : i === 1 ? 0.01999 : 0));
       const cC = Array.from({ length: 64 }, (_, i) => (i === 2 ? 1.0 : 0));
@@ -1373,7 +1386,7 @@ try {
       await route.continue();
     });
 
-    await page.goto(`${baseUrl}/?room=BLOCKEDWS`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#arena-enroll-input');
 
     // Press Enter while state.ready === false in Arena and Guard
@@ -1397,6 +1410,11 @@ try {
     // Release .onnx and verify ONNX initializes cleanly & local mode works despite throwing WebSocket!
     releaseOnnx();
     await waitForEngineReady(page);
+    await page.click('#open-room-btn');
+    await page.fill('#room-code-input', 'BLOCKEDWS');
+    await page.check('#share-room-consent');
+    await page.locator('#change-room-form button[type="submit"]').click();
+    await page.click('#close-room-btn');
     const wsResilience = await page.evaluate(async () => {
       const api = window.__keyprintTestApi;
       const sampleStroke = api.state.viz.capture.stroke;

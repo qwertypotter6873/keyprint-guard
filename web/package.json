@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "sync-ort": "node -e \"const fs=require('fs'),p=require('path');fs.mkdirSync('public/ort',{recursive:true});for(const f of fs.readdirSync('node_modules/onnxruntime-web/dist')){if(f.endsWith('.wasm')||f.endsWith('.mjs'))fs.copyFileSync(p.join('node_modules/onnxruntime-web/dist',f),p.join('public/ort',f));}\"",
+    "sync-ort": "node scripts/sync_ort.mjs",
     "predev": "npm run sync-ort",
     "dev": "vite",
     "prebuild": "npm run sync-ort",
