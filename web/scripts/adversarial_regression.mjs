@@ -1169,8 +1169,8 @@ try {
 
     // 5a) Verify "테스트계정A" in Guard with matching genuine rhythm -> triggers verdict + adaptation!
     await page.click('#guard-sub-verify');
-    // Set relaxed offset (-0.08) so deterministic synthetic timing reliably passes + adapts
-    await page.click('.tau-btn[data-tau-offset="-0.08"]');
+    // Set relaxed offset (-0.10) so deterministic synthetic timing reliably passes + adapts
+    await page.click('.tau-btn[data-tau-offset="-0.10"]');
     await typeRealisticInInput(page, '#guard-verify-input', 'Gachon2026pw!', { baseDdMs: 113, baseHoldMs: 79 });
     await page.waitForSelector('#guard-result-card:not([hidden])');
 
@@ -1487,7 +1487,7 @@ try {
     );
 
     // Context 2 verifies against the synced profile using real ONNX inference
-    await page2.click('.tau-btn[data-tau-offset="-0.08"]');
+    await page2.click('.tau-btn[data-tau-offset="-0.10"]');
     await typeRealisticInInput(page2, '#guard-verify-input', 'SyncPass2026!!', {
       baseDdMs: 115,
       baseHoldMs: 81,

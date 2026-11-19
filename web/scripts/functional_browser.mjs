@@ -32,6 +32,52 @@ const server = http.createServer((req, res) => {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const browser = await chromium.launch({ executablePath: findChromeExecutable(chromium), headless: true });
 
+const CHO = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+const JUNG = 'ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ';
+const JONG = ['', ...'ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ'];
+const V_FIRST = { ㅘ: 'ㅗ', ㅙ: 'ㅗ', ㅚ: 'ㅗ', ㅝ: 'ㅜ', ㅞ: 'ㅜ', ㅟ: 'ㅜ', ㅢ: 'ㅡ' };
+const J_FIRST = { ㄳ: 'ㄱ', ㄵ: 'ㄴ', ㄶ: 'ㄴ', ㄺ: 'ㄹ', ㄻ: 'ㄹ', ㄼ: 'ㄹ', ㄽ: 'ㄹ', ㄾ: 'ㄹ', ㄿ: 'ㄹ', ㅀ: 'ㄹ', ㅄ: 'ㅂ' };
+const syl = (c, v, j = 0) => String.fromCodePoint(0xac00 + c * 588 + v * 28 + j);
+
+function compositionStates(ch) {
+  const cp = ch.codePointAt(0);
+  if (cp < 0xac00 || cp > 0xd7a3) return [ch];
+  const idx = cp - 0xac00;
+  const c = Math.floor(idx / 588);
+  const v = Math.floor((idx % 588) / 28);
+  const j = idx % 28;
+  const states = [CHO[c]];
+  const vowel = JUNG[v];
+  if (V_FIRST[vowel]) states.push(syl(c, JUNG.indexOf(V_FIRST[vowel])));
+  states.push(syl(c, v));
+  if (j) {
+    const fin = JONG[j];
+    if (J_FIRST[fin]) states.push(syl(c, v, JONG.indexOf(J_FIRST[fin])));
+    states.push(syl(c, v, j));
+  }
+  return states;
+}
+
+async function typeSoftSentence(tab, selector, text) {
+  let committed = '';
+  for (const ch of text) {
+    const states = compositionStates(ch);
+    for (const st of states) {
+      const value = committed + st;
+      const inputType = /^[ㄱ-ㆎ가-힣]$/.test(st) ? 'insertCompositionText' : 'insertText';
+      await tab.evaluate(({ sel, val, type }) => {
+        const el = document.querySelector(sel);
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Unidentified', code: '', bubbles: true }));
+        el.value = val;
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: type, data: val.slice(-1) }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Unidentified', code: '', bubbles: true }));
+      }, { sel: selector, val: value, type: inputType });
+      await tab.waitForTimeout(20);
+    }
+    committed += ch;
+  }
+}
+
 async function typeWithHold(tab, text) {
   for (const key of text) {
     await tab.keyboard.down(key);
@@ -94,10 +140,7 @@ async function assertArenaResult(page, candidateCount, inputMode = 'keyboard') {
     const sentence = await prompt.textContent();
     await input.focus();
     if (inputMode === 'touch') {
-      for (const character of sentence) {
-        await page.keyboard.insertText(character);
-        await page.waitForTimeout(20);
-      }
+      await typeSoftSentence(page, '#arena-blind-input', sentence);
     } else {
       await typeWithHold(page, sentence);
     }
@@ -177,7 +220,8 @@ try {
   assert.equal(await page.evaluate(() => window.__keyprintTestApi.state.arenaSub), 'blind');
   assert.equal(await page.locator('#arena-roster-list [data-sample="1"]').count(), 4);
   await page.click('#lang-ko-btn');
-  assert.equal(await page.locator('#arena-roster-list [data-sample="1"]').count(), 0, 'English samples are excluded from Korean comparisons');
+  assert.equal(await page.locator('#arena-roster-list [data-sample="1"]').count(), 4, 'Korean samples are available in Korean mode');
+  assert.equal(await page.textContent('#arena-sample-start-btn'), '한국어 샘플로 체험');
   assert.match(await page.textContent('#arena-language-notice'), /공개 스마트폰 타건.*PC 한글 입력은 체험용/);
 
   const studyPage = await ctx.newPage();
@@ -199,7 +243,7 @@ try {
   assert.equal(await studyPage.locator('#lang-ko-btn').getAttribute('aria-pressed'), 'true');
   await studyPage.close();
 
-  // Use one local Korean profile alongside the four English samples from the demo.
+  // Use one local Korean-only profile alongside the four bilingual (KO + EN) samples from the demo.
   await page.evaluate(() => {
     const centroid = [1, ...Array(63).fill(0)];
     window.__keyprintTestApi.roomSync.upsertProfile({
@@ -215,8 +259,12 @@ try {
       const korean = lang === 'ko';
       assert.equal(await page.getAttribute(`#lang-${lang}-btn`, 'aria-pressed'), 'true');
       assert.equal(await page.locator('#arena-korean-study-link').isVisible(), korean);
-      assert.equal(await page.locator('#arena-roster-list .user-chip').count(), korean ? 1 : 4);
-      assert.match(await page.textContent('#arena-roster-note'), korean ? /4명.*제외.*2명 이상 등록/ : /1명.*제외/);
+      assert.equal(await page.locator('#arena-roster-list .user-chip').count(), korean ? 5 : 4);
+      if (korean) {
+        assert.equal(await page.locator('#arena-roster-note').isVisible(), false);
+      } else {
+        assert.match(await page.textContent('#arena-roster-note'), /1명.*제외/);
+      }
       await assertArenaLayout(page, `${lang} comparison at ${width}px`);
       await page.click('#arena-sub-enroll');
       await assertArenaLayout(page, `${lang} enrollment at ${width}px`);
@@ -275,9 +323,11 @@ try {
   assert.equal(await page.evaluate(() => window.__keyprintTestApi.roomSync.shared), false);
   await page.click('#close-room-btn');
   await page.click('#arena-sample-start-btn');
-  assert.equal(await page.evaluate(() => window.__keyprintTestApi.state.lang), 'en');
+  assert.equal(await page.evaluate(() => window.__keyprintTestApi.state.lang), 'ko');
   await page.setViewportSize({ ...viewport, width: 320 });
-  await assertArenaResult(page, 4);
+  await assertArenaResult(page, 4, 'touch');
+  await page.click('#lang-en-btn');
+  await assertArenaResult(page, 4, 'keyboard');
   await page.evaluate(() => window.__keyprintTestApi.roomSync.removeSamples());
 
   // Fix only the query embeddings to cover every gate with production ranking and real input submissions.

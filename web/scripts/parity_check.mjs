@@ -307,8 +307,50 @@ if (fixture.sample_password_cases?.length) {
       const centroid = combineEmbeddings(byEncoder[key]);
       check(centroid.length === 64 && centroid.every((v, j) => close(v, expected?.[j], 2e-5)), `${sample.id}: ${key} template centroid`);
     }
+    const strictRes = engine.scoreTemplate(sample.genuine_query.embedding9, template, {
+      domain: 'password',
+      thresholdOffset: 0.20,
+      inputMode: 'keyboard',
+      embedding17: sample.genuine_query.embedding17,
+      lockAdaptation: true,
+    });
+    check(
+      strictRes.accepted && strictRes.similarity >= 0.70,
+      `${sample.id}: genuine S8 query passes even at strict (+0.20) threshold (sim=${strictRes.similarity.toFixed(4)})`,
+    );
   }
-  console.log(`  ✓ ${fixture.sample_password_cases.length} sample passwords: Enter submission and both ONNX encoders`);
+  check(
+    config.password_dual?.sample_fixed?.target === '.tie5Roanl' &&
+      Boolean(config.password_dual?.sample_fixed?.keyboard) &&
+      Boolean(config.password_dual?.sample_fixed?.touch),
+    'model_config.json has Validation-calibrated sample_fixed (.tie5Roanl) parameters',
+  );
+  const koCandidates = config.mvp_sample_profiles.map((p) => ({
+    id: p.id,
+    name: p.name,
+    color: p.color,
+    isSample: true,
+    template: p.arena?.ko,
+  }));
+  check(
+    koCandidates.length === 4 && koCandidates.every((c) => c.template?.inputMode === 'touch' && c.template?.count === 5),
+    'all four sample profiles carry 5-shot touch Korean Arena templates (FACT Korean)',
+  );
+  for (const p of config.mvp_sample_profiles) {
+    const schemaRes = validateProfileSchema(p, { modelHash: config.model_hash });
+    check(schemaRes.ok, `${p.id}: sample profile with arena.en + arena.ko passes validateProfileSchema`);
+    const qStroke = p.arena?.ko?.testQueryStroke;
+    check(Boolean(qStroke?.dds?.length >= 60), `${p.id}: bundled Korean testQueryStroke present`);
+    if (qStroke) {
+      const { embedding: qEmb } = await engine.embedStroke(qStroke);
+      const idRes = engine.identifyTypist(qEmb, koCandidates, { inputMode: 'touch', domain: 'sentence' });
+      check(
+        idRes?.winner?.id === p.id,
+        `${p.id}: Korean sample self-identifies Top-1 (winner=${idRes?.winner?.id}, sim=${idRes?.winner?.similarity?.toFixed(4)})`,
+      );
+    }
+  }
+  console.log(`  ✓ ${fixture.sample_password_cases.length} sample passwords (strict S7→S8 calibrated) + 4 Korean Arena samples verified`);
 }
 
 // ---------------------------------------------------------------------------------------
