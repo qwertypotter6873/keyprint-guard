@@ -44,6 +44,8 @@ const MIME = {
   '.onnx': 'application/octet-stream',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
 function serve(root) {
