@@ -208,6 +208,8 @@ if (
   window.__KEYPRINT_MQTT_BROKERS = [`${wsProto}//${window.location.host}/mqtt`];
 }
 
+let dismissedCompatSkipCount = 0;
+
 const roomSync = new RoomProfileSync({
   onChange: (profiles) => {
     state.profiles = Array.isArray(profiles) ? profiles : [];
@@ -251,14 +253,17 @@ const roomSync = new RoomProfileSync({
               ? '연결 끊김 · 변경은 로컬 보관 후 재연결 시 동기화'
               : '실시간 서버 연결 중…';
 
+    if (compatSkipCount === 0) {
+      dismissedCompatSkipCount = 0;
+    }
     const compatNotice = $('compat-isolation-notice');
     if (compatNotice) {
-      compatNotice.hidden = !(compatSkipCount > 0);
+      compatNotice.hidden = !(compatSkipCount > dismissedCompatSkipCount);
     }
   },
-  onCompatibilitySkip: () => {
+  onCompatibilitySkip: ({ count }) => {
     const compatNotice = $('compat-isolation-notice');
-    if (compatNotice) {
+    if (compatNotice && count > dismissedCompatSkipCount) {
       compatNotice.hidden = false;
     }
   },
@@ -2272,6 +2277,11 @@ function bindEvents() {
   });
 
   $('use-local-btn').addEventListener('click', () => changeWorkspace('LOCAL', false));
+  $('dismiss-compat-notice-btn')?.addEventListener('click', () => {
+    dismissedCompatSkipCount = roomSync.compatSkipCount;
+    const compatNotice = $('compat-isolation-notice');
+    if (compatNotice) compatNotice.hidden = true;
+  });
   $('arena-sample-start-btn').addEventListener('click', startEnglishSampleExperience);
   $('sample-start-btn').addEventListener('click', startEnglishSampleExperience);
 
@@ -2685,6 +2695,11 @@ async function bootstrap() {
     }
     ({ enroll: TARGET_ARENA_SHOTS, query: TARGET_BLIND_SHOTS } = engine.arenaProtocol());
     roomSync.setCompatibility({
+      schemaVersion: engine.schemaVersion,
+      preprocessVersion: engine.preprocessVersion,
+      modelHash: engine.modelHash,
+    });
+    await evalStudy.purgeOutdatedRecords({
       schemaVersion: engine.schemaVersion,
       preprocessVersion: engine.preprocessVersion,
       modelHash: engine.modelHash,

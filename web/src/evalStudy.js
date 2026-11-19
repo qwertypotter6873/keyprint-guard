@@ -633,6 +633,74 @@ export class EvalStudyManager {
     this._emit();
   }
 
+  /**
+   * Automatically deletes local IndexedDB evaluation records and enrollment environments
+   * recorded under an outdated `{ schemaVersion, preprocessVersion, modelHash }` tuple.
+   */
+  async purgeOutdatedRecords({ schemaVersion, preprocessVersion, modelHash } = {}) {
+    if (!preprocessVersion || !modelHash) return 0;
+    const isOutdatedEnv = (env) => {
+      if (!env || typeof env !== 'object') return false;
+      if (env.modelHash != null && env.modelHash !== modelHash) return true;
+      if (env.preprocessVersion != null && env.preprocessVersion !== preprocessVersion) return true;
+      if (schemaVersion != null && env.schemaVersion != null && env.schemaVersion !== schemaVersion) return true;
+      return false;
+    };
+
+    const removedRecordIds = [];
+    for (const rec of this.records) {
+      if (rec?.recordId && (isOutdatedEnv(rec.env) || isOutdatedEnv(rec.enrollEnv))) {
+        removedRecordIds.push(rec.recordId);
+      }
+    }
+
+    const removedEnvKeys = [];
+    const removedProfileIds = new Set();
+    for (const [key, env] of this.enrollEnvs.entries()) {
+      if (isOutdatedEnv(env)) {
+        removedEnvKeys.push(key);
+        const parts = String(key).split('::');
+        if (parts.length >= 2 && parts[1]) removedProfileIds.add(parts[1]);
+      }
+    }
+
+    if (removedRecordIds.length === 0 && removedEnvKeys.length === 0) return 0;
+
+    const removedRecordSet = new Set(removedRecordIds);
+    this.records = this.records.filter((rec) => !removedRecordSet.has(rec.recordId));
+    for (const key of removedEnvKeys) {
+      this.enrollEnvs.delete(key);
+    }
+
+    if (typeof this.settings.groundTruthRole === 'string' && this.settings.groundTruthRole.startsWith('enrolled:')) {
+      const targetId = this.settings.groundTruthRole.slice('enrolled:'.length);
+      const stillHasEnv = Array.from(this.enrollEnvs.keys()).some((k) => String(k).split('::')[1] === targetId);
+      if (removedProfileIds.has(targetId) && !stillHasEnv) {
+        this.settings = { ...this.settings, groundTruthRole: 'unspecified' };
+        this._saveSettings();
+      }
+    }
+
+    if (this.db) {
+      try {
+        await new Promise((resolve, reject) => {
+          const tx = this.db.transaction(['records', 'enroll_envs'], 'readwrite');
+          const recStore = tx.objectStore('records');
+          const envStore = tx.objectStore('enroll_envs');
+          for (const id of removedRecordIds) recStore.delete(id);
+          for (const key of removedEnvKeys) envStore.delete(key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch {
+        // Ignore IndexedDB deletion errors in restricted contexts
+      }
+    }
+
+    this._emit();
+    return removedRecordIds.length + removedEnvKeys.length;
+  }
+
   currentEnvSnapshot({ engine, lang, inputMode }) {
     const sys = detectSystemEnvironment();
     const layoutMismatch = lang === 'ko' && isNon2BeolsikLayout(this.settings.hangulLayout);

@@ -246,6 +246,58 @@ try {
   assert.equal(attempts.length, 4, 'Leaving a shared room cancels its connection attempts');
   assert.equal(retrying.status, 'local');
   assert.deepEqual(retrying.getProfiles().map((p) => p.id), ['local_person']);
+
+  // Outdated storage keys (v1..v3, mismatched v4 snapshots, mismatched v4 upsert/delete records)
+  // and outdated retained MQTT profile/deletion/peer messages are permanently deleted without triggering isolation warnings.
+  const purgeBroker = new MockBroker();
+  const outdatedCompat = { schemaVersion: 4, preprocessVersion: 'kp-preproc-v4', modelHash: 'outdated-00000000' };
+  const outdatedPrefix = `keyprint_mvp_v4_room_PURGE_records_${encodeURIComponent(
+    JSON.stringify([outdatedCompat.schemaVersion, outdatedCompat.preprocessVersion, outdatedCompat.modelHash])
+  )}/`;
+  const outdatedKeys = [
+    'keyprint_mvp_profiles',
+    'keyprint_mvp_v3_room_PURGE',
+    'keyprint_mvp_v4_room_OTHER_OLD',
+    'keyprint_mvp_v4_room_PURGE',
+    `${outdatedPrefix}old_p/upsert/100/legacy`,
+    `${outdatedPrefix}old_d/delete/200`,
+  ];
+  storage.set('keyprint_mvp_profiles', JSON.stringify([{ id: 'legacy_v0' }]));
+  storage.set('keyprint_mvp_v3_room_PURGE', JSON.stringify([{ id: 'legacy_v3' }]));
+  storage.set(
+    'keyprint_mvp_v4_room_OTHER_OLD',
+    JSON.stringify({ ...outdatedCompat, profiles: [{ ...profile('old_other'), ...outdatedCompat, createdAt: 10, updatedAt: 10 }], tombstones: { old_t: 20 } })
+  );
+  storage.set(
+    'keyprint_mvp_v4_room_PURGE',
+    JSON.stringify({ ...outdatedCompat, profiles: [{ ...profile('old_room_p'), ...outdatedCompat, createdAt: 10, updatedAt: 10 }], tombstones: { old_t2: 30 } })
+  );
+  storage.set(
+    `${outdatedPrefix}old_p/upsert/100/legacy`,
+    JSON.stringify({ type: 'upsert', profile: { ...profile('old_p'), ...outdatedCompat, createdAt: 100, updatedAt: 100 }, pending: false })
+  );
+  storage.set(`${outdatedPrefix}old_d/delete/200`, JSON.stringify({ type: 'delete', id: 'old_d', ts: 200 }));
+
+  const outdatedTopics = [
+    ['keyprint-agy-mvp-v4/room/PURGE/profiles/old_ret', JSON.stringify({ ...profile('old_ret'), ...outdatedCompat, createdAt: 50, updatedAt: 50 })],
+    ['keyprint-agy-mvp-v4/room/PURGE/profiles/old_rev/60/rev_a', JSON.stringify({ ...profile('old_rev'), ...outdatedCompat, createdAt: 60, updatedAt: 60, revisionId: 'rev_a' })],
+    ['keyprint-agy-mvp-v4/room/PURGE/deletions/old_del/70', JSON.stringify({ ...outdatedCompat, type: 'delete', id: 'old_del', ts: 70 })],
+    ['keyprint-agy-mvp-v4/room/PURGE/peers/kp_oldpeer1', JSON.stringify({ ...outdatedCompat, cid: 'kp_oldpeer1', ts: 80 })],
+  ];
+  for (const [topic, payload] of outdatedTopics) purgeBroker.retained.set(topic, payload);
+
+  const purger = makeRoom(purgeBroker.open);
+  purger.connect('PURGE', { shared: true });
+  purgeBroker.newest.accept();
+  for (const k of outdatedKeys) {
+    assert.equal(storage.has(k), false, `Outdated localStorage key ${k} was permanently deleted`);
+  }
+  for (const [topic] of outdatedTopics) {
+    assert.equal(purgeBroker.retained.has(topic), false, `Outdated retained MQTT topic ${topic} was cleared`);
+  }
+  assert.equal(purger.getProfiles().length, 0, 'Outdated profiles were not imported');
+  assert.equal(purger.tombstones.size, 0, 'Outdated deletion events were not imported');
+  assert.equal(purger.compatSkipCount, 0, 'Purging outdated persisted/retained state does not raise compatibility warning');
 } finally {
   for (const sync of instances) sync.disconnect();
   mock.timers.reset();
