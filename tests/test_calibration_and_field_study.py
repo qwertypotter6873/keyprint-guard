@@ -602,5 +602,36 @@ class CalibrationAndFieldStudyTests(unittest.TestCase):
         self.assertEqual(tm["sensor_fusion_ab"]["on_desk_flat"]["keystroke_plus_motion_posture_gated"]["genuine_accept_rate"], 1.0)
 
 
+class PackageSubmissionManifestTests(unittest.TestCase):
+    def test_archive_manifest_includes_all_mandatory_and_git_tracked_files(self) -> None:
+        import subprocess
+        import unicodedata
+        from package_submission import MANDATORY_ARCHIVE_FILES, collect_archive_sources
+
+        sources = collect_archive_sources(REPO_ROOT)
+        for req in (
+            "data/raw/FACT-korean-sample-4writers.json",
+            "models/calibration_and_cross_device_study.json",
+            "web/public/models/string_cohort_calibration.json",
+            "research/cross-device-and-calibration/README.md",
+        ):
+            self.assertIn(req, MANDATORY_ARCHIVE_FILES)
+            self.assertIn(req, sources)
+
+        for rel in MANDATORY_ARCHIVE_FILES:
+            self.assertIn(rel, sources, msg=f"Mandatory file missing from collect_archive_sources: {rel}")
+            self.assertTrue(sources[rel].is_file() and sources[rel].stat().st_size > 0, msg=f"Empty or missing file: {rel}")
+
+        if (REPO_ROOT / ".git").exists():
+            git_files = {
+                unicodedata.normalize("NFC", p)
+                for p in subprocess.check_output(["git", "ls-files", "-z"], cwd=str(REPO_ROOT)).decode("utf-8").split("\0")
+                if p
+            }
+            expected = {p for p in git_files if not p.endswith(".zip")}
+            missing = sorted(expected - set(sources.keys()))
+            self.assertEqual(missing, [], msg=f"Tracked git files missing from submission archive: {missing}")
+
+
 if __name__ == "__main__":
     unittest.main()
