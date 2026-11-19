@@ -3,7 +3,7 @@
 > **비밀번호 문자열이 유출되어 타인이 똑같이 입력하더라도, 키를 누르고 떼는 미세한 손가락 리듬만으로 구별할 수 있을까?**
 > 직접 설계·학습한 `64차원` 단위 초구면 인코더 두 개(`KeyPrintNet` 17채널·9채널)를 브라우저 내부(`ONNX Runtime Web WASM`)에서 실시간 구동해 **① 유출 암호 침입 차단**(1:1 검증)과 **② 자유 문장 작성자 식별**(1:N 분류)을 서버 전송 없이 수행하는 행동 생체인식 프로젝트입니다.
 
-[정식 데모 · GitHub Pages](https://qwertypotter6873.github.io/keyprint-guard/) · [PR #5 미리보기](https://keyprint-guard-pr5.bookend-dev.chatgpt.site/) · [검증 완료 학습·평가 노트북](notebooks/keyprint_training_pipeline.ipynb) · [공식 평가 리포트](models/evaluation_report.json) · [한국어 타건 연구 기록](research/korean-typing/README.md)
+[정식 데모 · GitHub Pages](https://qwertypotter6873.github.io/keyprint-guard/) · [PR #5 미리보기](https://keyprint-guard-pr5.bookend-dev.chatgpt.site/) · [검증 완료 학습·평가 노트북](notebooks/keyprint_training_pipeline.ipynb) · [공식 평가 리포트](models/evaluation_report.json) · [한국어 타건 연구 기록](research/korean-typing/README.md) · [다기기 실측 · 문자열 보정 연구](research/cross-device-and-calibration/README.md)
 
 ---
 
@@ -417,6 +417,27 @@ AI Hub 중학생 국어 서술형 답안(평가용 `VS` 분할 `46`명)에서도
 
 <!-- korean-ranking:end -->
 
+### 5.10 교차 기기 4종 직접 실측 · 물리 일관 홀드 보정 · 문자열별 암호 코호트 보정
+
+학습된 두 인코더(`17채널`·`9채널`) 가중치를 동결한 상태에서 **① 사용자 지정 암호의 문자열별 사칭 분포 편향**, **② 물리 스위치 변경 시 홀드 시간 이동($\Delta h$)**, **③ 실제 스마트폰 터치 및 `DeviceMotion` 가속도·자이로 센서 활용성**을 오프라인 벤치마크와 4종 실기기 직접 타이핑(`총 147건`)으로 후속 검증했습니다([상세 프로토콜·수식·전체 표](research/cross-device-and-calibration/README.md) · [오프라인 검증 JSON](models/calibration_and_cross_device_study.json)).
+
+1. **사전 오프라인 정량 검증 (`Test` 미관측 18명 × 미관측 문자열 64종)**
+   - **사용자 지정 암호 문자열별 경량 코호트 보정 ([`src/string_calibration.py`](src/string_calibration.py) · `20.6 KiB`)**: `Train` 68명 자유 타건의 388개 디그래프 통계표와 길이 직교 7차원 문자열 구조 특징(연속 반복·동일 손가락·양손 교차 비율 등)으로 문자열별 기대 타인 점수 잔차 $(\Delta\mu, \Delta\ln\sigma)$ 를 추정하고 관측 지지율에 따라 기존 길이별 보정으로 자동 수축합니다. 스마트폰 터치 `L ≥ 12`(`29,922`회)에서 **`FRR @ FAR=5%` `60.21% → 58.05%` (`-2.16%p`**, 95% 군집 부트스트랩 CI `[-3.27%p, -1.00%p]`), 문자열 간 `FAR` 표준편차 **`-15.4%`**, 최악 문자열 `FAR` **`82.08% → 74.79%` (`-7.29%p`)** 를 달성했으며, 물리 키보드는 `Validation`에서 $\gamma=0.0$으로 자동 수축되어 회귀를 원천 차단했습니다.
+   - **물리 일관성(`UD' = DD − H'_{curr}`) 스위치 홀드 보정**: 스위치 변경 편차 $\Delta h = +35\text{ ms}$ 조건에서 단순 `H` 이동(`31.46%`)이 남기는 `UD` 물리 모순을 해소해 문장 오픈셋 수락률을 원래 수준(**`35.68%`**, 무보정 `19.29%`)으로 복원했습니다.
+   - **스마트폰 행동 가중치 검증**: `Val FAR ≤ 2%` 제약 아래 최적값이 현재 배포값 **$\beta^* = 0.20$** 과 일치함을 확인했습니다(`Test` 외부인 오수락 `0.47%` 억제, 본인 수락률 `5.62% → 16.92%` `3.0배` 향상).
+
+2. **4종 실기기 직접 타이핑 실측 (`P01` · `기계식 넌클릭 · 기계식 리니어 · 노트북 내장 팬터그래프 · iOS/Android 스마트폰` · 총 `147`건)**
+   - 로컬 Wi-Fi 다기기 실측 허브([`web/scripts/serve_field_study.mjs`](web/scripts/serve_field_study.mjs))와 브라우저 평가 모듈([`web/src/evalStudy.js`](web/src/evalStudy.js), `?eval=1` 활성화 · 비공개 암호 원문/키쌍 자동 마스킹 위반 `0건` · 평가 중 `adapt` 잠금 위반 `0건`)로 **등록 `9`건 · 문장 판별 `39`건 · 암호 검증 `99`건 · 모션 센서 `14`건**을 수집·분석했습니다([`src/analyze_field_study.py`](src/analyze_field_study.py)).
+
+| 검증 항목 | 실측 표본 및 조건 | 핵심 정량 결과 |
+| :--- | :--- | :--- |
+| **자유 문장 판별 (`Arena`)** | 라벨링 `37`건 (미지정 `2`건 별도, 한·영 통합) | 전 기기 **1위 정답률 `100.0%` (`37/37`)** · 동일 기기 수락 `60.9%` · 교차 스위치(`n=14`) 수락 `50.0% →` **물리 일관 홀드 보정 시 `57.1%`** |
+| **스위치별 실측 홀드 편차** | 동일 맥북 · 동일 두벌식 배열 3종 스위치 | `넌클릭 69.39 ms` · `노트북 내장 76.69 ms` (`+7.30 ms`) · `리니어 82.52 ms` (`+13.13 ms`) |
+| **암호 침입 방어 (`Guard`)** | 총 `99`건 (본인 `52` · 외부 샘플 침입 `47`) | 전체 **`ROC-AUC = 0.9259`**, 본인 수락 **`94.2%`** (`49/52`) · 물리 키보드(`n=73`) **`ROC-AUC = 0.9751`, `FRR @ FAR=10% = 5.1%`** · 교차 스위치(`n=22`) 홀드 보정 시 본인 수락 **`95.5% → 100.0%`** |
+| **스마트폰 암호 문자열 보정** | 터치 암호 `26`건 (본인 `13` · 타인 `13`, 자동 `ON`) | 동일 `FAR`(`30.8%`)에서 본인 거부율(`FRR`) **`23.1% → 15.4%` (`-7.7%p`)**, `FRR @ FAR=5%` **`23.1% → 15.4%`** (지연 중앙값 `0.0 ms`) |
+| **모바일 터치 행동 가중치 $\beta$** | 터치 문장 라벨링 `16`건 (`iOS` · `Android`) | $\beta = 0.00$ 수락 `37.5%` → 배포값 $\beta = 0.20$ **`56.2%` (`+18.8%p`)** → 실측 최적 $\beta^* = 0.25$ **`62.5%`** (전 구간 1위 `100.0%`) |
+| **`DeviceMotion` 자세 게이팅 융합** | `Android` 6건(`59.9 Hz`) + `iOS` 8건(`58.8 Hz`) | 중력 경사각·각속도 기반 **선언 자세 일치율 `100.0%` (`14/14`)** · 동일 자세(`손 파지→손 파지`) 평균 점수 `0.8488 → 0.8685` 상승(`100%` 수락), 교차 자세(`손 파지→책상 거치`) 단순 결합 시 오거부 악화(`25% → 0%`)를 **`posture_gated` 설계로 무손실 보존(`25%`)** |
+
 ---
 
 ## 6. 서비스 프로토타입
@@ -504,7 +525,7 @@ AI Hub 중학생 국어 서술형 답안(평가용 `VS` 분할 `46`명)에서도
   - **문장용 17채널 `KeyPrintNet` (최종 채택)**: [`models/keyprint_net.pt`](models/keyprint_net.pt) · [`models/keyprint_net.onnx`](models/keyprint_net.onnx) · 웹 배포본 [`web/public/models/keyprint_net.onnx`](web/public/models/keyprint_net.onnx) (`599 KiB`)
   - **비밀번호용 9채널 `KeyPrintNet` (최종 채택)**: [`models/legacy/keyprint_net_9ch.pt`](models/legacy/keyprint_net_9ch.pt) · [`models/legacy/keyprint_net_9ch.onnx`](models/legacy/keyprint_net_9ch.onnx) · 웹 배포본 [`web/public/models/keyprint_net_password.onnx`](web/public/models/keyprint_net_password.onnx) (`592 KiB`)
   - **딥러닝 베이스라인 (`Vanilla1DCNN` 기본 / 증강)**: [`models/vanilla_1dcnn.pt`](models/vanilla_1dcnn.pt) · [`models/vanilla_1dcnn_aug.pt`](models/vanilla_1dcnn_aug.pt)
-  - **웹 서빙 설정 및 코호트 통계**: [`web/public/models/model_config.json`](web/public/models/model_config.json)
+  - **웹 서빙 설정 및 코호트 통계**: [`web/public/models/model_config.json`](web/public/models/model_config.json) · 문자열별 암호 보정표 [`web/public/models/string_cohort_calibration.json`](web/public/models/string_cohort_calibration.json) (`20.6 KiB`)
 
 ```text
 keyprint-guard/
@@ -520,15 +541,20 @@ keyprint-guard/
 │   ├── capture_sim.py, behavior_profile.py    # 브라우저 녹화기 Python 복제본 및 행동 프로필 LLR
 │   ├── models.py, train_and_evaluate.py       # 베이스라인·KeyPrintNet 모델 및 35-Epoch 학습·평가
 │   ├── feature_eval.py, password_synth.py     # 68자 웹 프로토콜 검증 및 원시 이벤트 분리 암호 합성
+│   ├── string_calibration.py                  # 사용자 지정 암호 문자열별 경량 코호트 보정 및 물리 일관 홀드 보정
+│   ├── eval_calibration_and_cross_device.py   # 문자열 보정 · 스위치 홀드 보정 · 모바일 β 오프라인 검증
+│   ├── analyze_field_study.py                 # 다기기 실측 JSONL 병합 · 홀드 재채점 · DeviceMotion 분석기
 │   ├── visualize_and_run.py                   # 통합 학습·평가 실행, 8종 그래프 및 ONNX 내보내기
 │   ├── eval_password_calibration.py, eval_typing_style.py, eval_korean_fact.py
 │   ├── eval_timestamp_sensitivity.py, eval_trial_sensitivity.py
 │   └── refresh_portfolio.py, build_notebook.py, package_submission.py
-├── research/korean-typing/                    # 한국어 타건(AI Hub · FACT) 외부 검증 코드 및 집계
+├── research/
+│   ├── korean-typing/                         # 한국어 타건(AI Hub · FACT) 외부 검증 코드 및 집계
+│   └── cross-device-and-calibration/          # 4기기 교차 실측 프로토콜 · 홀드/터치/문자열 보정 리포트
 ├── notebooks/keyprint_training_pipeline.ipynb # 전 셀 실행 출력이 보존된 공식 검증 노트북
-├── models/                                    # .pt / .onnx 가중치 및 평가 리포트 JSON 6종
+├── models/                                    # .pt / .onnx 가중치 및 평가 리포트 JSON 7종
 ├── assets/ (figures/ 8종, screenshots/ 6종)    # 분석 그래프 및 웹 프로토타입 캡처
-└── web/                                       # Vite + ONNX Runtime Web 프런트엔드 및 회귀 테스트
+└── web/                                       # Vite + ONNX Runtime Web 프런트엔드, 다기기 실측 허브 및 회귀 테스트
 ```
 
 ### 8.2 머신러닝 파이프라인 재현 (전처리 · 학습 · 평가 · 노트북 · 패키징)
@@ -566,14 +592,15 @@ python src/package_submission.py
 cd web
 npm ci
 
-# 로컬 개발 서버 실행 (스마트폰 동일 Wi-Fi 접속 시: npm run dev -- --host)
+# 로컬 개발 서버 실행 (다기기 실측 및 스마트폰 HTTPS 모션 센서 연동 시: npm run field-study)
 npm run dev
 
-# Python↔JS 수치 일치성, 프로덕션 빌드 및 브라우저 회귀 테스트
+# Python↔JS 수치 일치성(8,129개 항목), 프로덕션 빌드 및 브라우저 회귀 테스트
 node scripts/parity_check.mjs
 npm run build
 node scripts/functional_state.mjs
 node scripts/functional_browser.mjs
+node scripts/eval_study_e2e.mjs
 node scripts/offline_smoke.mjs
 node scripts/adversarial_regression.mjs
 ```
@@ -585,11 +612,11 @@ node scripts/adversarial_regression.mjs
 ### 9.1 PMI 회고 (Plus · Minus · Interesting)
 - **Plus (좋았던 점)**
   1. **증강·후처리를 분리한 엄격한 통제 비교**: `Vanilla1DCNN`에도 동일한 증강과 `AS-Norm`을 적용해 비교한 덕분에, 고정 암호에서는 통제 베이스라인과 대등하지만 자유 문장 교차 세션 식별(`Top-1 +3.47%p`)과 오픈셋 오수락 억제에서 `KeyPrintNet` 구조가 실질적 우위를 보인다는 점을 명확히 검증했습니다(§5.1·§5.3).
-  2. **학습(Python)↔서빙(JS) 수치 완전 일치 검증**: 전처리·봉합·특징 추출 수식을 양쪽에 동일하게 구현해 `7,421개` 자동 대조 항목을 통과시켰고, 가변 길이 5개 조건에서 PyTorch와 ONNX 출력 차이를 `4.85 × 10⁻⁷` 미만으로 맞췄습니다.
+  2. **학습(Python)↔서빙(JS) 수치 완전 일치 검증**: 전처리·봉합·특징 추출·홀드/문자열 보정 수식을 양쪽에 동일하게 구현해 `8,129개` 자동 대조 항목을 통과시켰고, 가변 길이 5개 조건에서 PyTorch와 ONNX 출력 차이를 `4.85 × 10⁻⁷` 미만으로 맞췄습니다.
   3. **판정 스냅샷과 직결된 3단계 설명가능성(XAI)**: 단순 승인·차단 표시에 그치지 않고 피아노롤 파형, `64차원` 바코드 중심점 수렴, 무왜곡 `2D PCA` 지도를 연동해 생체 인식 원리를 직관적으로 전달했습니다.
 - **Minus (아쉬웠던 점)**
   1. **짧은 비밀번호의 본질적 정보량 한계**: 96명 타이밍 분산 분해 결과 전체 타속을 제외한 순수 개인 리듬 비중이 눌림 간격 `14.8%`·홀드 `10.4%` 수준이어서, 전이 수가 적은 짧은 암호에서는 비슷한 속도의 사칭자를 완벽히 걸러내기 어려웠고 신규 등록 하한을 `12자 이상`으로 두어야 했습니다.
-  2. **키보드 하드웨어 변경에 따른 잠재적 편차**: 학습 데이터가 참가자별 단일 기기에서 수집되어, 기계식 키보드에서 노트북 팬터그래프로 기기를 바꿀 때 절대 홀드 시간(`H_curr`) 분포가 이동할 수 있는 한계가 남아 있습니다.
+  2. **키보드 하드웨어 변경에 따른 잠재적 편차**: 기본 학습 코퍼스가 참가자별 단일 기기에서 수집되어 기기 변경 시 절대 홀드 시간(`H_curr`)이 이동할 수 있으며, §5.10에서 단일 참가자 4종 기기 파일럿(`147`건)으로 물리 일관 홀드 보정 효과를 확인했으나 다수 피험자 규모의 교차 기기 코퍼스 확장이 추가로 필요합니다.
   3. **모바일·한국어 오픈셋 수락률의 보수성**: 홀드와 물리 키 좌표가 빠지는 스마트폰 환경에서는 외부인 오수락을 막기 위해 `1·2위 점수 간격(12점)` 조건을 두자 실제 작성자도 상당수 `보류`로 분류되는 한계가 확인되었습니다(§5.8\~5.9).
 - **Interesting (흥미로웠던 발견)**
   1. **같은 문장을 쳐도 극명하게 갈리는 무의식적 롤오버 습관**: 동일한 문구를 입력해도 어떤 참가자(`p003`)는 전체 전이 중 **`48%` 구간**에서 앞 키를 떼기 전 다음 키를 겹쳐 누른(`UD < 0`) 반면, 다른 참가자(`p023`)는 **단 `1%` 구간**만 겹쳐 누르는 뚜렷한 신경근육 차이가 관찰되었습니다.
@@ -641,6 +668,6 @@ node scripts/adversarial_regression.mjs
 - **결과**: 미등록 외부인 오수락 억제는 그대로 유지하면서도, 등록된 참가자끼리 체험할 때는 `58`\~`75%` 수준의 1위 리듬 매칭 결과를 직관적으로 확인할 수 있게 개선했습니다.
 
 ### 9.3 향후 개선 계획 (데이터 · 모델 · 서비스)
-1. **[데이터 측면] 다기종 키보드 교차 수집 및 실기기 스마트폰 코퍼스 확장**: 동일 참가자가 기계식·팬터그래프·실제 스마트폰을 번갈아 사용하는 교차 기기 데이터를 수집해 스위치 반발력 차이에 따른 홀드 편차를 보정하고, 시뮬레이션에 머물러 있는 모바일 터치 가중치를 실측 데이터로 고도화할 계획입니다.
-2. **[모델 측면] 사용자 지정 암호 맞춤형 경량 코호트 생성기**: 현재의 전역 사칭 분포 표준화를 넘어, 디그래프 통계 요약표로부터 **사용자가 설정한 특정 암호 문자열의 기대 사칭 점수 분포(`맞춤 μ, σ`)를 로컬에서 즉시 추정**해 짧은 암호와 터치 환경의 변별력을 높일 계획입니다.
+1. **[데이터 측면] 다수 참가자·다일간 교차 기기 코퍼스 확장 및 무지도 스위치 적응**: §5.10에서 구축한 4종 기기 실측 파이프라인(`147`건 파일럿: 물리 일관 홀드 보정 및 `iOS`·`Android` 자세 게이팅 `DeviceMotion` 융합 검증 완료)을 바탕으로, `20명 이상` 다수 피험자와 다일(Multi-day) 세션으로 표본을 확대하고 사용자 선언 없이 타건 초기 수 타만으로 스위치 편차($\Delta h$)를 자동 추정하는 무지도 온라인 적응으로 확장할 계획입니다.
+2. **[모델 측면] 문자열별 코호트 보정의 비두벌식 한글 자판 및 다중 모달 확장**: §5.10에서 `388개` 디그래프 요약표 기반 경량 문자열별 코호트 보정기(`20.6 KiB`, 스마트폰 터치 `FRR @ FAR=5%` `-2.16%p` 유의 개선)를 구현·검증한 데 이어, 천지인·나랏글 등 비두벌식 모바일 자판 전용 전이 기하 피처와 자세별 멀티 프로토타입 템플릿을 결합할 계획입니다.
 3. **[서비스·보안 측면] 오염 방지 게이트 · 시도 제한 및 서버 측 검증 API 전환**: [§7.2](#72-보안-시스템으로-쓸-때-고려할-점-현재는-시연용)에서 정리한 시연용 한계를 해소하기 위해 ① 직전 실패 이력 시 템플릿 갱신을 멈추는 오염 방지 게이트, ② 서버 기반 연속 실패 잠금 및 실패 응답 단순화, ③ 비밀번호 해시 저장 + 서버 측 ONNX 검증 API를 갖춘 실제 인증 플러그인으로 발전시킬 계획입니다.
