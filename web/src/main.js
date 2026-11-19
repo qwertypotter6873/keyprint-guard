@@ -67,6 +67,10 @@ const state = {
   // Current prompts
   arenaEnrollSentence: '',
   arenaBlindSentence: '',
+  pendingArenaPrompts: {
+    ko: { enroll: '', blind: '' },
+    en: { enroll: '', blind: '' },
+  },
 
   // In-progress enrollment buffers
   arenaEnrollBuffer: { name: '', lang: 'en', items: [] },
@@ -208,6 +212,8 @@ if (
   window.__KEYPRINT_MQTT_BROKERS = [`${wsProto}//${window.location.host}/mqtt`];
 }
 
+let dismissedCompatSkipCount = 0;
+
 const roomSync = new RoomProfileSync({
   onChange: (profiles) => {
     state.profiles = Array.isArray(profiles) ? profiles : [];
@@ -251,14 +257,17 @@ const roomSync = new RoomProfileSync({
               ? '연결 끊김 · 변경은 로컬 보관 후 재연결 시 동기화'
               : '실시간 서버 연결 중…';
 
+    if (compatSkipCount === 0) {
+      dismissedCompatSkipCount = 0;
+    }
     const compatNotice = $('compat-isolation-notice');
     if (compatNotice) {
-      compatNotice.hidden = !(compatSkipCount > 0);
+      compatNotice.hidden = !(compatSkipCount > dismissedCompatSkipCount);
     }
   },
-  onCompatibilitySkip: () => {
+  onCompatibilitySkip: ({ count }) => {
     const compatNotice = $('compat-isolation-notice');
-    if (compatNotice) {
+    if (compatNotice && count > dismissedCompatSkipCount) {
       compatNotice.hidden = false;
     }
   },
@@ -591,15 +600,40 @@ function setArenaSentence(sub, sentence) {
   $(`${slot}-edit-hint`).textContent = isEnroll ? '오타 시 백스페이스 수정 가능' : '백스페이스 자유 사용';
 }
 
+function siblingArenaPrompt(sub, lang = state.lang) {
+  return state.pendingArenaPrompts[lang]?.[sub === 'enroll' ? 'blind' : 'enroll'] || '';
+}
+
 function dealArenaSentence(sub) {
+  const lang = state.lang === 'ko' ? 'ko' : 'en';
+  const previous =
+    (sub === 'enroll' ? state.arenaEnrollSentence : state.arenaBlindSentence) ||
+    state.pendingArenaPrompts[lang][sub];
   const active = state.mode === 'arena' && state.arenaSub === sub && !$('room-dialog').open;
-  setArenaSentence(sub, active ? deck.next(state.lang) : '');
+  if (!active) {
+    state.pendingArenaPrompts[lang][sub] = '';
+    setArenaSentence(sub, '');
+    return;
+  }
+  const exclude = [siblingArenaPrompt(sub, lang), previous].filter(Boolean);
+  const nextSentence = deck.next(lang, { exclude });
+  state.pendingArenaPrompts[lang][sub] = nextSentence;
+  setArenaSentence(sub, nextSentence);
 }
 
 function ensureActiveArenaSentence() {
-  if (state.mode !== 'arena') return;
-  const sentence = state.arenaSub === 'enroll' ? state.arenaEnrollSentence : state.arenaBlindSentence;
-  if (!sentence) dealArenaSentence(state.arenaSub);
+  if (state.mode !== 'arena' || $('room-dialog').open) return;
+  const lang = state.lang === 'ko' ? 'ko' : 'en';
+  const sub = state.arenaSub;
+  const current = sub === 'enroll' ? state.arenaEnrollSentence : state.arenaBlindSentence;
+  if (current) return;
+  let pending = state.pendingArenaPrompts[lang][sub];
+  if (!pending) {
+    const exclude = [siblingArenaPrompt(sub, lang)].filter(Boolean);
+    pending = deck.next(lang, { exclude });
+    state.pendingArenaPrompts[lang][sub] = pending;
+  }
+  setArenaSentence(sub, pending);
 }
 
 function resetArenaSentences() {
@@ -2279,6 +2313,11 @@ function bindEvents() {
   });
 
   $('use-local-btn').addEventListener('click', () => changeWorkspace('LOCAL', false));
+  $('dismiss-compat-notice-btn')?.addEventListener('click', () => {
+    dismissedCompatSkipCount = roomSync.compatSkipCount;
+    const compatNotice = $('compat-isolation-notice');
+    if (compatNotice) compatNotice.hidden = true;
+  });
   $('arena-sample-start-btn').addEventListener('click', startSampleExperience);
   $('sample-start-btn').addEventListener('click', startSampleExperience);
 
@@ -2692,6 +2731,11 @@ async function bootstrap() {
     }
     ({ enroll: TARGET_ARENA_SHOTS, query: TARGET_BLIND_SHOTS } = engine.arenaProtocol());
     roomSync.setCompatibility({
+      schemaVersion: engine.schemaVersion,
+      preprocessVersion: engine.preprocessVersion,
+      modelHash: engine.modelHash,
+    });
+    await evalStudy.purgeOutdatedRecords({
       schemaVersion: engine.schemaVersion,
       preprocessVersion: engine.preprocessVersion,
       modelHash: engine.modelHash,

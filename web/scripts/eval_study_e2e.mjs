@@ -256,6 +256,55 @@ try {
   const countAfterDupImport = await page.evaluate(() => window.__keyprintTestApi.evalStudy.records.length);
   assert.equal(countAfterDupImport, 6, '3 enrollments + 1 arena query + 2 password queries = 6 deduplicated records');
 
+  // Verify outdated IndexedDB records/enroll_envs and outdated localStorage snapshots are automatically deleted on reload
+  await page.evaluate(async () => {
+    const es = window.__keyprintTestApi.evalStudy;
+    await es._putStore('records', {
+      recordId: 'ev_outdated_legacy_model',
+      eventType: 'query',
+      recordedAt: '2025-01-01T00:00:00.000Z',
+      env: { modelHash: '00000000outdated', preprocessVersion: 'kp-preproc-v4', schemaVersion: 4 },
+    });
+    await es._putStore('enroll_envs', {
+      key: 'LOCAL::outdated_prof::arena_en',
+      env: { modelHash: '00000000outdated', preprocessVersion: 'kp-preproc-v4', schemaVersion: 4 },
+    });
+    localStorage.setItem(
+      'keyprint_mvp_v4_room_OUTDATED',
+      JSON.stringify({
+        schemaVersion: 4,
+        preprocessVersion: 'kp-preproc-v4',
+        modelHash: '00000000outdated',
+        profiles: [],
+        tombstones: {},
+      })
+    );
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.__keyprintTestApi?.engine?.session !== null);
+  const afterPurge = await page.evaluate(async () => {
+    const es = window.__keyprintTestApi.evalStudy;
+    const dbRecIds = await new Promise((resolve) => {
+      const tx = es.db.transaction('records', 'readonly');
+      const req = tx.objectStore('records').getAllKeys();
+      req.onsuccess = () => resolve(req.result || []);
+    });
+    return {
+      memCount: es.records.length,
+      hasOutdatedRecInMem: es.records.some((r) => r.recordId === 'ev_outdated_legacy_model'),
+      hasOutdatedRecInDb: dbRecIds.includes('ev_outdated_legacy_model'),
+      hasOutdatedEnv: es.enrollEnvs.has('LOCAL::outdated_prof::arena_en'),
+      outdatedRoomLs: localStorage.getItem('keyprint_mvp_v4_room_OUTDATED'),
+      compatHidden: document.getElementById('compat-isolation-notice')?.hidden,
+    };
+  });
+  assert.equal(afterPurge.memCount, 6, 'Valid current-hash IndexedDB records preserved across reload');
+  assert.equal(afterPurge.hasOutdatedRecInMem, false, 'Outdated IndexedDB record purged from memory');
+  assert.equal(afterPurge.hasOutdatedRecInDb, false, 'Outdated IndexedDB record physically deleted from IndexedDB');
+  assert.equal(afterPurge.hasOutdatedEnv, false, 'Outdated enroll_envs entry deleted from IndexedDB');
+  assert.equal(afterPurge.outdatedRoomLs, null, 'Outdated localStorage room snapshot physically deleted');
+  assert.equal(afterPurge.compatHidden, true, 'Outdated purge does not trigger #compat-isolation-notice');
+
   // Run standalone Python offline analyzer on the real browser-exported JSONL!
   const pyBin = fs.existsSync(path.join(repoRoot, '.venv', 'bin', 'python'))
     ? path.join(repoRoot, '.venv', 'bin', 'python')

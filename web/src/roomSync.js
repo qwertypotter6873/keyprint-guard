@@ -482,6 +482,7 @@ export class RoomProfileSync {
     this.inFlightProfiles = new Set();
     this.retainedRevisions = new Map();
     this.retainedDeletionTimes = new Map();
+    this.outdatedRetainedTopics = new Map();
     this.status = 'local'; // 'connecting' | 'online' | 'local'
     this.compatSkipCount = 0;
   }
@@ -533,21 +534,19 @@ export class RoomProfileSync {
     this.schemaVersion = schemaVersion;
     if (preprocessVersion) this.preprocessVersion = preprocessVersion;
     if (modelHash) this.modelHash = modelHash;
+    this.purgeOutdatedStorage();
     if (this.shared && this.session && !this._isCompatibleEnvelope(previous)) {
       this.connect(this.roomCode, { shared: true });
       return;
     }
 
-    // Re-validate any already-loaded profiles against the updated compatibility tuple
+    // Remove any already-loaded outdated/invalid profiles against the updated compatibility tuple
     let pruned = false;
     for (const [id, p] of this.profiles.entries()) {
       const check = validateProfileSchema(p, this._compatEnvelope());
       if (!check.ok) {
         this.profiles.delete(id);
         pruned = true;
-        if (check.reason === 'VERSION_MISMATCH') {
-          this._notifyCompatibilitySkip('revalidation', p);
-        }
       } else {
         this.profiles.set(id, check.profile);
       }
@@ -590,6 +589,7 @@ export class RoomProfileSync {
     this.peers.clear();
     this.peers.set(this.clientId, Date.now());
 
+    this.purgeOutdatedStorage();
     if (this.shared) {
       this._loadSharedStorage();
       this._listenToSharedStorage();
@@ -625,6 +625,7 @@ export class RoomProfileSync {
     this.inFlightProfiles.clear();
     this.retainedRevisions.clear();
     this.retainedDeletionTimes.clear();
+    this.outdatedRetainedTopics.clear();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -667,6 +668,95 @@ export class RoomProfileSync {
     return `${TOPIC_NS}/room/${this.roomCode}/peers/${cid}`;
   }
 
+  _removeStorageKey() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(this._storageKey());
+      }
+    } catch {
+      // Ignore storage sandbox errors
+    }
+  }
+
+  /**
+   * Permanently deletes outdated profiles, deletion events, snapshots, and pre-v4 keys
+   * from localStorage across local and shared-room namespaces whenever their
+   * `{ schemaVersion, preprocessVersion, modelHash }` does not match the active model.
+   */
+  purgeOutdatedStorage() {
+    if (!this.preprocessVersion || !this.modelHash) return 0;
+    if (typeof localStorage === 'undefined') return 0;
+    let removed = 0;
+    const activeCompatSeg = `_records_${encodeURIComponent(
+      JSON.stringify([this.schemaVersion, this.preprocessVersion, this.modelHash])
+    )}/`;
+
+    const keys = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k) keys.push(k);
+      }
+    } catch {
+      return 0;
+    }
+
+    for (const key of keys) {
+      try {
+        if (
+          key === 'keyprint_mvp_profiles' ||
+          key.startsWith('keyprint_mvp_v1') ||
+          key.startsWith('keyprint_mvp_v2') ||
+          key.startsWith('keyprint_mvp_v3')
+        ) {
+          localStorage.removeItem(key);
+          removed += 1;
+          continue;
+        }
+
+        if (key.startsWith('keyprint_mvp_v4_') && key.includes('_records_')) {
+          if (!key.includes(activeCompatSeg)) {
+            localStorage.removeItem(key);
+            removed += 1;
+          }
+          continue;
+        }
+
+        if (
+          key === 'keyprint_mvp_v4_local' ||
+          (key.startsWith('keyprint_mvp_v4_room_') && !key.includes('_records_'))
+        ) {
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+          let parsed;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            localStorage.removeItem(key);
+            removed += 1;
+            continue;
+          }
+          if (!isSafePlainObject(parsed)) {
+            localStorage.removeItem(key);
+            removed += 1;
+            continue;
+          }
+          const hasTopEnvelope =
+            parsed.schemaVersion !== undefined ||
+            parsed.preprocessVersion !== undefined ||
+            parsed.modelHash !== undefined;
+          if (hasTopEnvelope && !this._isCompatibleEnvelope(parsed)) {
+            localStorage.removeItem(key);
+            removed += 1;
+          }
+        }
+      } catch {
+        // Ignore per-key storage sandbox errors
+      }
+    }
+    return removed;
+  }
+
   _loadFromLocalStorage() {
     if (!this.preprocessVersion || !this.modelHash) return;
     let raw = null;
@@ -683,11 +773,13 @@ export class RoomProfileSync {
     try {
       parsed = JSON.parse(raw);
     } catch {
+      this._removeStorageKey();
       this._saveToLocalStorage();
       return;
     }
 
     if (!isSafePlainObject(parsed)) {
+      this._removeStorageKey();
       this._saveToLocalStorage();
       return;
     }
@@ -697,7 +789,7 @@ export class RoomProfileSync {
       parsed.preprocessVersion !== undefined ||
       parsed.modelHash !== undefined;
     if (hasTopEnvelope && !this._isCompatibleEnvelope(parsed)) {
-      this._notifyCompatibilitySkip('storage_envelope', parsed);
+      this._removeStorageKey();
       this._saveToLocalStorage();
       return;
     }
@@ -710,9 +802,6 @@ export class RoomProfileSync {
           this.profiles.set(check.profile.id, check.profile);
         } else {
           hadInvalid = true;
-          if (check.reason === 'VERSION_MISMATCH') {
-            this._notifyCompatibilitySkip('storage_profile', p);
-          }
         }
       }
     } else if (parsed.profiles !== undefined) {
@@ -836,15 +925,30 @@ export class RoomProfileSync {
 
   _applyStoredRecord(key, raw, { emit = true } = {}) {
     let record;
-    try { record = JSON.parse(raw); } catch { return; }
-    if (!isSafePlainObject(record)) return;
+    try {
+      record = JSON.parse(raw);
+    } catch {
+      try { localStorage.removeItem(key); } catch { /* Ignore storage errors */ }
+      return;
+    }
+    if (!isSafePlainObject(record)) {
+      try { localStorage.removeItem(key); } catch { /* Ignore storage errors */ }
+      return;
+    }
     if (record.type === 'upsert' && isSafePlainObject(record.profile) && this._recordKey(record) === key) {
-      this._mergeIncomingProfile(record.profile, 'storage', { pending: Boolean(record.pending), persist: false, emit });
-      if (emit && record.pending) this._publishPendingProfile(record.profile.id);
-    } else if (record.type === 'delete' && typeof record.id === 'string' && typeof record.ts === 'number' &&
-        Number.isFinite(record.ts) && record.ts >= 0 && this._recordKey(record) === key) {
+      const check = validateProfileSchema(record.profile, this._compatEnvelope());
+      if (!check.ok) {
+        try { localStorage.removeItem(key); } catch { /* Ignore storage errors */ }
+        return;
+      }
+      this._acceptProfile(check.profile, { pending: Boolean(record.pending), persist: false, emit });
+      if (emit && record.pending) this._publishPendingProfile(check.profile.id);
+    } else if (record.type === 'delete' && typeof record.id === 'string' && ID_RE.test(record.id) &&
+        typeof record.ts === 'number' && Number.isFinite(record.ts) && record.ts >= 0 && this._recordKey(record) === key) {
       const applied = this._applyDelete(record.id, record.ts, { persist: false, emit });
       if (emit && applied && record.pending) this._publishDeletion(record.id, record.ts);
+    } else {
+      try { localStorage.removeItem(key); } catch { /* Ignore storage errors */ }
     }
   }
 
@@ -991,6 +1095,7 @@ export class RoomProfileSync {
             this.mqttReady = true;
             this._setStatus('online');
             if (!isCurrent()) return;
+            this._flushOutdatedRetainedTopics();
             this._flushMqtt();
             for (const id of this.retainedRevisions.keys()) this._pruneRetainedRevisions(id);
             if (isCurrent()) this.heartbeatTimer = setInterval(() => this._flushMqtt(), 18000);
@@ -1025,8 +1130,29 @@ export class RoomProfileSync {
     }, delay);
   }
 
+  _queueOutdatedRetainedCleanup(topic, qos = 1) {
+    if (!this.preprocessVersion || !this.modelHash) return;
+    this.outdatedRetainedTopics.set(topic, qos);
+    this._flushOutdatedRetainedTopics();
+  }
+
+  _flushOutdatedRetainedTopics() {
+    const client = this.client;
+    if (!this.mqttReady || !client?.connected || this.outdatedRetainedTopics.size === 0) return;
+    for (const [topic, qos] of [...this.outdatedRetainedTopics.entries()]) {
+      this.outdatedRetainedTopics.delete(topic);
+      try {
+        client.publish(topic, '', { qos, retain: true });
+      } catch {
+        // Ignore transient publish errors; next reconnect will re-clear if still retained.
+      }
+    }
+  }
+
   _onMqttMessage(topic, text, packet) {
     const client = this.client;
+    const isRetained = Boolean(packet?.retain);
+    const hasCompatReady = Boolean(this.preprocessVersion && this.modelHash);
     const prefix = `${TOPIC_NS}/room/${this.roomCode}/`;
     if (!topic.startsWith(prefix)) return;
     const [kind, id, timestamp, revisionId, ...extra] = topic.slice(prefix.length).split('/');
@@ -1039,8 +1165,14 @@ export class RoomProfileSync {
           const data = JSON.parse(text);
           if (isSafePlainObject(data) && this._isCompatibleEnvelope(data) && data.cid === id) {
             this.peers.set(id, finiteTs(data.ts));
+          } else if (isRetained && hasCompatReady && id !== this.clientId) {
+            this._queueOutdatedRetainedCleanup(topic, 0);
           }
-        } catch { /* Ignore malformed presence messages. */ }
+        } catch {
+          if (isRetained && hasCompatReady && id !== this.clientId) {
+            this._queueOutdatedRetainedCleanup(topic, 0);
+          }
+        }
       }
       this._emitStatus();
       return;
@@ -1049,30 +1181,68 @@ export class RoomProfileSync {
     if (!text) return;
     try {
       const payload = JSON.parse(text);
-      if (!isSafePlainObject(payload)) return;
+      if (!isSafePlainObject(payload)) {
+        if (isRetained && hasCompatReady && (kind === 'profiles' || (kind === 'deletions' && revisionId === undefined))) {
+          this._queueOutdatedRetainedCleanup(topic, 1);
+        }
+        return;
+      }
       if (kind === 'deletions' && revisionId === undefined) {
         if (this._isCompatibleEnvelope(payload) && payload.type === 'delete' && payload.id === id &&
             String(payload.ts) === timestamp && Number.isFinite(payload.ts) && payload.ts >= 0) {
           this._applyDelete(id, payload.ts);
-          if (this.client === client && packet?.retain) this._rememberRetainedDeletion(id, payload.ts);
+          if (this.client === client && isRetained) this._rememberRetainedDeletion(id, payload.ts);
+        } else if (isRetained && hasCompatReady) {
+          this._queueOutdatedRetainedCleanup(topic, 1);
         }
       } else if (topic === this._eventTopic()) {
-        if (!this._isCompatibleEnvelope(payload)) {
+        if (isRetained && hasCompatReady && !this._isCompatibleEnvelope(payload)) {
+          this._queueOutdatedRetainedCleanup(topic, 1);
+        } else if (!this._isCompatibleEnvelope(payload)) {
           this._notifyCompatibilitySkip('mqtt_event', payload);
         } else if (payload.type === 'delete') {
           this._applyDelete(payload.id, finiteTs(payload.ts));
         } else if (payload.type === 'clear_all') {
           this._applyClearAll(finiteTs(payload.ts));
         }
-      } else if (kind === 'profiles' && payload.id === id) {
-        const profile = this._validateIncomingProfile(payload, 'mqtt');
-        if (!profile) return;
-        const versioned = revisionId !== undefined;
-        if (timestamp !== undefined && (!versioned || this._profileRevisionTopic(profile) !== topic)) return;
-        this._acceptProfile(profile);
-        if (this.client === client && versioned) this._rememberRetainedRevision(profile, Boolean(packet?.retain));
+      } else if (kind === 'profiles') {
+        if (payload.id !== id) {
+          if (isRetained && hasCompatReady) this._queueOutdatedRetainedCleanup(topic, 1);
+          return;
+        }
+        if (isRetained) {
+          if (!hasCompatReady) return;
+          if (!this._isCompatibleEnvelope(payload)) {
+            this._queueOutdatedRetainedCleanup(topic, 1);
+            return;
+          }
+          const validated = validateProfileSchema(payload, this._compatEnvelope());
+          if (!validated.ok) {
+            this._queueOutdatedRetainedCleanup(topic, 1);
+            return;
+          }
+          const profile = validated.profile;
+          const versioned = revisionId !== undefined;
+          if (timestamp !== undefined && (!versioned || this._profileRevisionTopic(profile) !== topic)) {
+            this._queueOutdatedRetainedCleanup(topic, 1);
+            return;
+          }
+          this._acceptProfile(profile);
+          if (this.client === client && versioned) this._rememberRetainedRevision(profile, true);
+        } else {
+          const profile = this._validateIncomingProfile(payload, 'mqtt');
+          if (!profile) return;
+          const versioned = revisionId !== undefined;
+          if (timestamp !== undefined && (!versioned || this._profileRevisionTopic(profile) !== topic)) return;
+          this._acceptProfile(profile);
+          if (this.client === client && versioned) this._rememberRetainedRevision(profile, false);
+        }
       }
-    } catch { /* Ignore malformed MQTT messages. */ }
+    } catch {
+      if (isRetained && hasCompatReady && (kind === 'profiles' || (kind === 'deletions' && revisionId === undefined))) {
+        this._queueOutdatedRetainedCleanup(topic, 1);
+      }
+    }
   }
 
   _rememberRetainedDeletion(id, ts) {
