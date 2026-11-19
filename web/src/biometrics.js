@@ -1,5 +1,6 @@
 import * as ort from 'onnxruntime-web/wasm';
 import {
+  applyHoldCalibration,
   attemptCapitalMethod,
   behaviorLlr,
   buildInputTensor,
@@ -9,9 +10,16 @@ import {
   fuseScore,
   mergeBehavior,
   openSetAccept,
+  stringCalibratedDualParams,
 } from './features.js';
 
-export { combineEmbeddings } from './features.js';
+export {
+  applyHoldCalibration,
+  combineEmbeddings,
+  extractStringCalibrationFeatures,
+  stringCalibratedDualParams,
+  stringToCodes,
+} from './features.js';
 
 export { SmartKeystrokeRecorder } from './recorder.js';
 export { describeBehavior } from './features.js';
@@ -219,6 +227,7 @@ export class KeyPrintEngine {
     this.passwordSession = null; // timing-only encoder: user-chosen passwords (content-agnostic)
     this.passwordAuxSession = null; // dedicated 17-channel session when the sentence encoder differs
     this.config = null;
+    this.calibrationStudy = null; // optional companion calibration bundle (string_cohort_calibration.json)
     this.loadTimeMs = 0;
     this.schemaVersion = SCHEMA_VERSION;
     this.preprocessVersion = DEFAULT_PREPROCESS_VERSION;
@@ -256,7 +265,14 @@ export class KeyPrintEngine {
       });
       return new Uint8Array(response);
     };
-    const [bytes9, bytesAux] = await Promise.all([loadPasswordModel(pm), loadPasswordModel(aux)]);
+    const [bytes9, bytesAux, calibStudy] = await Promise.all([
+      loadPasswordModel(pm),
+      loadPasswordModel(aux),
+      fetch(new URL('./string_cohort_calibration.json', modelBase).href)
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+    ]);
+    this.calibrationStudy = calibStudy;
 
     const bytes17 = new Uint8Array(buf17);
     const sha17 = await sha256Hex(bytes17);
@@ -308,9 +324,10 @@ export class KeyPrintEngine {
    * 64-D embedding of a clean stroke. `domain: 'password'` uses the timing-only password encoder
    * (its inputs are channels 0..8 of the same tensor, laid out channel-major, so a prefix slice).
    */
-  async embedStroke(stroke, { domain = 'sentence' } = {}) {
+  async embedStroke(stroke, { domain = 'sentence', holdCalibration = null } = {}) {
     const t0 = performance.now();
-    const { tensorData, dims, cleanStroke } = buildInputTensor(stroke, this.config);
+    const effectiveStroke = holdCalibration ? applyHoldCalibration(stroke, holdCalibration) : stroke;
+    const { tensorData, dims, cleanStroke } = buildInputTensor(effectiveStroke, this.config);
     const [, nCh, m] = dims;
     if (m === 0) {
       throw new Error('추출된 연속 리듬 구간이 없습니다.');
@@ -330,10 +347,14 @@ export class KeyPrintEngine {
   }
 
   /** The sentence and timing embeddings plus the 17-channel password embedding used for dual scoring. */
-  async embedAll(stroke) {
-    const sentence = await this.embedStroke(stroke, { domain: 'sentence' });
-    const password = this.passwordSession ? await this.embedStroke(stroke, { domain: 'password' }) : sentence;
-    const passwordAux = this.passwordAuxSession ? await this.embedStroke(stroke, { domain: 'password_aux' }) : sentence;
+  async embedAll(stroke, { holdCalibration = null } = {}) {
+    const sentence = await this.embedStroke(stroke, { domain: 'sentence', holdCalibration });
+    const password = this.passwordSession
+      ? await this.embedStroke(stroke, { domain: 'password', holdCalibration })
+      : sentence;
+    const passwordAux = this.passwordAuxSession
+      ? await this.embedStroke(stroke, { domain: 'password_aux', holdCalibration })
+      : sentence;
     return {
       sentence: sentence.embedding,
       password: password.embedding,
@@ -407,15 +428,37 @@ export class KeyPrintEngine {
       inputMode = 'keyboard',
       embedding17 = null,
       capitalMethods = null,
+      lockAdaptation = false,
+      useStringCalibration = null,
+      behaviorWeightOverride = null,
+      useTouchBehaviorProfile = null,
     } = {}
   ) {
     const dual = this.config?.password_dual;
     if (domain === 'password' && dual && embedding17 && template?.enc17) {
       // User-chosen passwords: both encoders, impostor-standardised on many real-typist strings,
-      // with parameters for this password's length (README §5.6–5.7)
-      const prm = { ...dualParamsForLength(dual, inputMode, template.target?.length) };
-      const base = dualPasswordScore(embedding, embedding17, template, template.enc17, prm, dual.slope ?? 1.0);
-      let z = base.z;
+      // with both length-only baseline and string-specific cohort calibration computed side-by-side.
+      const slope = dual.slope ?? 1.0;
+      const thr = threshold ?? 0.5 + thresholdOffset;
+      const prmLen = { ...dualParamsForLength(dual, inputMode, template.target?.length) };
+      const baseLen = dualPasswordScore(embedding, embedding17, template, template.enc17, prmLen, slope);
+
+      const tCal0 = performance.now();
+      const prmStr = {
+        ...stringCalibratedDualParams(
+          template.target || '',
+          inputMode,
+          dual,
+          this.config?.keyboard_layout,
+          this.calibrationStudy,
+          { minShrinkScale: useStringCalibration === true ? 0.7 : 0.0 }
+        ),
+      };
+      const baseStr = dualPasswordScore(embedding, embedding17, template, template.enc17, prmStr, slope);
+      const calibLatencyMs = Math.round((performance.now() - tCal0) * 1000) / 1000;
+
+      let zLen = baseLen.z;
+      let zStr = baseStr.z;
       let capitalLlr = 0;
       const cm = dual.capital_method;
       const qMethod = attemptCapitalMethod(capitalMethods);
@@ -423,26 +466,71 @@ export class KeyPrintEngine {
       if (cm && inputMode === 'keyboard' && qMethod && used > 0) {
         // Shift vs CapsLock habit for capitals (keyboard only: phones hide modifier keys)
         capitalLlr = capitalMethodLlr(qMethod === 'caps', template.capsUse[0], used, cm.caps_share, cm.alpha ?? 2.0);
-        z += cm.weight * capitalLlr;
-        prm.tau += cm.tau_offset ?? 0;
+        zLen += cm.weight * capitalLlr;
+        prmLen.tau += cm.tau_offset ?? 0;
+        zStr += cm.weight * capitalLlr;
+        prmStr.tau += cm.tau_offset ?? 0;
       }
-      const r = { ...base, z, similarity: 1 / (1 + Math.exp(-(dual.slope ?? 1.0) * (z - prm.tau))) };
-      const thr = threshold ?? 0.5 + thresholdOffset;
+
+      const simLen = 1 / (1 + Math.exp(-slope * (zLen - prmLen.tau)));
+      const simStr = 1 / (1 + Math.exp(-slope * (zStr - prmStr.tau)));
+      const modeKey = inputMode === 'touch' ? 'touch' : 'keyboard';
+      const activeStr =
+        useStringCalibration !== null
+          ? Boolean(useStringCalibration)
+          : Boolean(this.calibrationStudy?.adopted?.[modeKey]);
+
+      const activeZ = activeStr ? zStr : zLen;
+      const activeSim = activeStr ? simStr : simLen;
+      const activeTau = activeStr ? prmStr.tau : prmLen.tau;
+
       return {
         method: 'dual',
+        stringCalibrationActive: activeStr,
         capitalLlr,
-        similarity: r.similarity,
-        embeddingSimilarity: r.similarity,
+        raw9: baseLen.raw9,
+        raw17: baseLen.raw17,
+        similarity: activeSim,
+        embeddingSimilarity: activeSim,
         behaviorLlr: 0,
         behaviorWeight: 0,
         behaviorParts: {},
-        centroidSim: r.centroidSim,
+        centroidSim: baseLen.centroidSim,
         exemplarSim: null,
-        z: r.z,
-        accepted: r.similarity >= thr,
+        z: activeZ,
+        accepted: activeSim >= thr,
         threshold: thr,
-        // template adaptation only on a confident accept (guards against an impostor drifting in)
-        adapt: dual.adapt_enabled !== false && r.similarity >= thr && r.z >= prm.tau + (dual.adapt_margin ?? 1.0),
+        lengthBaseline: {
+          z: zLen,
+          similarity: simLen,
+          accepted: simLen >= thr,
+          threshold: thr,
+          mu9: prmLen.mu9,
+          sd9: prmLen.sd9,
+          mu17: prmLen.mu17,
+          sd17: prmLen.sd17,
+          tau: prmLen.tau,
+        },
+        stringCalibrated: {
+          z: zStr,
+          similarity: simStr,
+          accepted: simStr >= thr,
+          threshold: thr,
+          mu9: prmStr.mu9,
+          sd9: prmStr.sd9,
+          mu17: prmStr.mu17,
+          sd17: prmStr.sd17,
+          tau: prmStr.tau,
+          shrinkWeight: prmStr.shrinkWeight ?? 0,
+          support: prmStr.support ?? 0,
+          latencyMs: calibLatencyMs,
+        },
+        // template adaptation only on a confident accept (and disabled when Evaluation Mode locks templates)
+        adapt:
+          !lockAdaptation &&
+          dual.adapt_enabled !== false &&
+          activeSim >= thr &&
+          activeZ >= activeTau + (dual.adapt_margin ?? 1.0),
       };
     }
 
@@ -457,6 +545,7 @@ export class KeyPrintEngine {
     }
     const raw = 0.65 * cSim + 0.35 * maxExSim;
     let similarity = raw;
+    let zAs = null;
 
     const touch = inputMode === 'touch';
     const cfg = this.config || {};
@@ -485,19 +574,31 @@ export class KeyPrintEngine {
       const muQ = meanArr(qScores);
       const sdQ = stdArr(qScores, muQ);
 
-      const zAs = (raw - 0.5 * (muU + muQ)) / (0.5 * (sdU + sdQ));
+      zAs = (raw - 0.5 * (muU + muQ)) / (0.5 * (sdU + sdQ));
       similarity = 1.0 / (1.0 + Math.exp(-0.85 * (zAs - 0.15)));
     }
 
     const embeddingSimilarity = similarity;
     let behaviorLlrTotal = 0;
     let behaviorParts = {};
-    const beta = this.behaviorWeight(domain, inputMode);
-    if (beta > 0 && behavior && template.behavior) {
-      const res = behaviorLlr(behavior, template.behavior, cfg.behavior_profile);
+    const beta =
+      behaviorWeightOverride !== null && behaviorWeightOverride !== undefined
+        ? Number(behaviorWeightOverride)
+        : this.behaviorWeight(domain, inputMode);
+    const touchProfile = this.calibrationStudy?.touch_behavior_profile;
+    const activeBehCfg =
+      touch &&
+      (useTouchBehaviorProfile !== null ? Boolean(useTouchBehaviorProfile) : Boolean(touchProfile?.adopted)) &&
+      touchProfile?.features
+        ? touchProfile
+        : cfg.behavior_profile;
+    if (behavior && template.behavior && activeBehCfg) {
+      const res = behaviorLlr(behavior, template.behavior, activeBehCfg);
       behaviorLlrTotal = res.total;
       behaviorParts = res.parts;
-      similarity = fuseScore(similarity, res.total, beta);
+      if (beta > 0) {
+        similarity = fuseScore(similarity, res.total, beta);
+      }
     }
 
     const thr =
@@ -505,6 +606,8 @@ export class KeyPrintEngine {
     return {
       method: 'as_norm',
       adapt: false,
+      rawSimilarity: raw,
+      zAs,
       similarity,
       embeddingSimilarity,
       behaviorLlr: behaviorLlrTotal,
@@ -520,7 +623,15 @@ export class KeyPrintEngine {
   identifyTypist(
     embedding,
     candidates,
-    { openSetThreshold = null, margin = null, behavior = null, inputMode = 'keyboard', domain = 'sentence' } = {}
+    {
+      openSetThreshold = null,
+      margin = null,
+      behavior = null,
+      inputMode = 'keyboard',
+      domain = 'sentence',
+      behaviorWeightOverride = null,
+      useTouchBehaviorProfile = null,
+    } = {}
   ) {
     if (!Array.isArray(candidates) || candidates.length === 0) return null;
     if (openSetThreshold === null) {
@@ -534,6 +645,8 @@ export class KeyPrintEngine {
         threshold: openSetThreshold,
         behavior,
         inputMode,
+        behaviorWeightOverride,
+        useTouchBehaviorProfile,
       });
       return {
         id: cand.id,
@@ -542,8 +655,11 @@ export class KeyPrintEngine {
         isSample: Boolean(cand.isSample),
         similarity: res.similarity,
         embeddingSimilarity: res.embeddingSimilarity,
+        rawSimilarity: res.rawSimilarity,
+        zAs: res.zAs,
         behaviorLlr: res.behaviorLlr,
         behaviorWeight: res.behaviorWeight,
+        behaviorParts: res.behaviorParts,
         centroidSim: res.centroidSim,
         template: cand.template,
       };

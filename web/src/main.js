@@ -12,6 +12,16 @@ import {
 } from './biometrics.js';
 import { mergeBehavior } from './features.js';
 import {
+  EvalStudyManager,
+  HANGUL_LAYOUTS,
+  KEYBOARD_TYPES,
+  POSTURE_OPTIONS,
+  SESSION_SLOTS,
+  detectSystemEnvironment,
+  isNon2BeolsikLayout,
+  recommendDeviceOrder,
+} from './evalStudy.js';
+import {
   RoomProfileSync,
   getInitialRoomCode,
   normalizeProfileName,
@@ -35,10 +45,14 @@ const TARGET_PW_SHOTS = 4;
 const engine = new KeyPrintEngine();
 const deck = new SentenceDeck();
 const submissionGate = new ActionGate();
+const evalStudy = new EvalStudyManager({
+  onChange: () => renderEvalStudyPanel(),
+});
 
 const state = {
   ready: false,
   loadError: null,
+  evalPanelOpen: false,
   mode: 'arena', // 'arena' | 'guard' | 'principles'
   arenaSub: 'enroll', // 'enroll' | 'blind'
   guardSub: 'verify', // 'verify' | 'enroll'
@@ -182,11 +196,27 @@ function renderStepDots(containerEl, labelEl, completedCount, totalCount, prefix
 }
 
 // ================= ROOM SYNC SETUP =================
+const FIELD_HUB_BOOT =
+  typeof window !== 'undefined' && window.__KEYPRINT_FIELD_HUB?.active ? window.__KEYPRINT_FIELD_HUB : null;
+
+if (
+  FIELD_HUB_BOOT &&
+  typeof window !== 'undefined' &&
+  (!Array.isArray(window.__KEYPRINT_MQTT_BROKERS) || window.__KEYPRINT_MQTT_BROKERS.length === 0)
+) {
+  const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  window.__KEYPRINT_MQTT_BROKERS = [`${wsProto}//${window.location.host}/mqtt`];
+}
+
 const roomSync = new RoomProfileSync({
   onChange: (profiles) => {
     state.profiles = Array.isArray(profiles) ? profiles : [];
+    if (evalStudy.hubActive) {
+      evalStudy.scheduleHubPull(120);
+    }
     ensureSelectedGuardAccount();
     renderAllRosters();
+    renderEvalStudyPanel();
     if (state.ready) renderEnrollMode();
     renderModalProfiles();
     if (state.mode === 'principles') {
@@ -200,19 +230,26 @@ const roomSync = new RoomProfileSync({
       (status === 'online' ? 'is-online' : status === 'local' ? 'is-local' : 'is-connecting');
 
     const peerLabel = status === 'online' ? `기기 ${safeInt(peerCount, 1)}대` : '로컬';
+    const roomKind = FIELD_HUB_BOOT ? '로컬 Wi-Fi' : '공유 방';
     $('room-pill-label').textContent = shared
-      ? `공유 방 #${roomCode} · ${peerLabel} · 프로필 ${safeInt(profileCount, 0)}명`
+      ? `${roomKind} #${roomCode} · ${peerLabel} · 프로필 ${safeInt(profileCount, 0)}명`
       : `이 브라우저만 · 프로필 ${safeInt(profileCount, 0)}명`;
 
-    $('modal-room-code').textContent = shared ? `공유 방 #${roomCode}` : '이 브라우저만';
+    $('modal-room-code').textContent = shared ? `${roomKind} #${roomCode}` : '이 브라우저만';
     $('copy-invite-btn').disabled = !shared;
     $('use-local-btn').hidden = !shared;
     $('modal-sync-badge').textContent =
-      !shared ? '외부 전송 없이 로컬 저장' : status === 'online'
-        ? `실시간 연결됨 · 현재 기기 ${safeInt(peerCount, 1)}대 접속`
-        : status === 'local'
-          ? '연결 끊김 · 변경은 로컬 보관 후 재연결 시 동기화'
-          : '실시간 서버 연결 중…';
+      !shared
+        ? '외부 전송 없이 로컬 저장'
+        : FIELD_HUB_BOOT
+          ? status === 'online'
+            ? `노트북 로컬 Wi-Fi 허브 동기화 중 (외부 서버 미전송) · 기기 ${safeInt(peerCount, 1)}대`
+            : '노트북 로컬 허브 연결 중…'
+          : status === 'online'
+            ? `실시간 연결됨 · 현재 기기 ${safeInt(peerCount, 1)}대 접속`
+            : status === 'local'
+              ? '연결 끊김 · 변경은 로컬 보관 후 재연결 시 동기화'
+              : '실시간 서버 연결 중…';
 
     const compatNotice = $('compat-isolation-notice');
     if (compatNotice) {
@@ -637,6 +674,7 @@ function switchLanguage(lang, { deferPrompt = false } = {}) {
   setFeedback($('arena-enroll-feedback'), '');
   setFeedback($('arena-blind-feedback'), '');
   renderAllRosters();
+  renderEvalStudyPanel();
   if (state.mode === 'principles') {
     renderPrinciplesView();
   } else if (!deferPrompt) {
@@ -841,6 +879,8 @@ async function handleArenaEnrollSubmit(isCurrent) {
     return;
   }
 
+  const enrollMotion = evalStudy._captureMotionWindow(arenaEnrollRecorder);
+  const enrollPrompt = state.arenaEnrollSentence;
   const { embedding } = await engine.embedStroke(capture.stroke);
   if (!isCurrent()) return;
   const queryId = ++state.querySeq;
@@ -865,6 +905,9 @@ async function handleArenaEnrollSubmit(isCurrent) {
     backspaceCount: capture.backspaceCount,
     behavior: capture.behavior,
     inputMode: capture.inputMode,
+    _rawCapture: capture,
+    _prompt: enrollPrompt,
+    _motion: enrollMotion,
   });
 
   const done = state.arenaEnrollBuffer.items.length;
@@ -958,8 +1001,9 @@ async function handleArenaEnrollSubmit(isCurrent) {
     return;
   }
 
+  const enrolledItems = [...state.arenaEnrollBuffer.items];
   let tmpl = existing?.arena?.[state.lang] || null;
-  for (const item of state.arenaEnrollBuffer.items) {
+  for (const item of enrolledItems) {
     tmpl = mergeTemplateSample(tmpl, item);
   }
 
@@ -978,7 +1022,20 @@ async function handleArenaEnrollSubmit(isCurrent) {
         arena: { [state.lang]: tmpl },
       };
 
-  roomSync.upsertProfile(profileObj);
+  const savedArenaProfile = roomSync.upsertProfile(profileObj);
+  if (savedArenaProfile) {
+    await evalStudy.recordEnrollment({
+      domain: 'arena',
+      lang: state.lang,
+      roomCode: roomSync.roomCode,
+      profile: savedArenaProfile,
+      template: tmpl,
+      captures: enrolledItems.map((it) => it._rawCapture).filter(Boolean),
+      motionSnapshots: enrolledItems.map((it) => it._motion).filter(Boolean),
+      prompts: enrolledItems.map((it) => it._prompt).filter(Boolean),
+      engine,
+    });
+  }
 
   $('arena-name-input').value = '';
   resetArenaEnrollProgress();
@@ -1018,9 +1075,17 @@ async function handleArenaBlindSubmit(isCurrent) {
     return;
   }
 
+  const blindMotion = evalStudy._captureMotionWindow(arenaBlindRecorder);
+  const blindPrompt = state.arenaBlindSentence;
   const { embedding: oneEmbedding, latencyMs } = await engine.embedStroke(capture.stroke);
   if (!isCurrent()) return;
-  state.arenaBlindBuffer.push({ embedding: oneEmbedding, capture, accuracy: check.accuracy });
+  state.arenaBlindBuffer.push({
+    embedding: oneEmbedding,
+    capture,
+    accuracy: check.accuracy,
+    prompt: blindPrompt,
+    motion: blindMotion,
+  });
   const got = state.arenaBlindBuffer.length;
   if (got < TARGET_BLIND_SHOTS) {
     renderStepDots($('arena-blind-step-dots'), $('arena-blind-step-text'), got, TARGET_BLIND_SHOTS, '문장');
@@ -1096,6 +1161,21 @@ async function handleArenaBlindSubmit(isCurrent) {
     latencyMs,
     inputMode,
     sentences: items.length,
+  });
+
+  await evalStudy.recordArenaQuery({
+    lang: state.lang,
+    roomCode: roomSync.roomCode,
+    candidates,
+    res,
+    items,
+    combinedEmbedding: embedding,
+    mergedBehavior: behavior,
+    inputMode: effectiveMode,
+    latencyMs,
+    recorder: arenaBlindRecorder,
+    motionSnapshot: blindMotion,
+    engine,
   });
 
   dealArenaSentence('blind');
@@ -1214,6 +1294,7 @@ async function handleGuardEnrollSubmit(isCurrent) {
     return;
   }
 
+  const enrollPwMotion = evalStudy._captureMotionWindow(guardEnrollRecorder);
   const both = await engine.embedAll(capture.stroke);
   if (!isCurrent()) return;
   state.pwEnrollBuffer.items.push({
@@ -1225,6 +1306,8 @@ async function handleGuardEnrollSubmit(isCurrent) {
     rolloverPct: capture.rolloverPct,
     behavior: capture.behavior,
     inputMode: capture.inputMode,
+    _rawCapture: capture,
+    _motion: enrollPwMotion,
   });
 
   $('guard-enroll-input').value = '';
@@ -1257,8 +1340,9 @@ async function handleGuardEnrollSubmit(isCurrent) {
     return;
   }
 
+  const enrolledPwItems = [...state.pwEnrollBuffer.items];
   let pwTmpl = null;
-  for (const item of state.pwEnrollBuffer.items) {
+  for (const item of enrolledPwItems) {
     pwTmpl = mergeTemplateSample(pwTmpl, item);
   }
   pwTmpl.target = targetPw;
@@ -1280,6 +1364,17 @@ async function handleGuardEnrollSubmit(isCurrent) {
     setFeedback($('guard-enroll-feedback'), '프로필 스키마 검증에 실패했습니다. 입력 값을 확인해 주세요.', 'error');
     return;
   }
+
+  await evalStudy.recordEnrollment({
+    domain: 'password',
+    roomCode: roomSync.roomCode,
+    profile: saved,
+    template: pwTmpl,
+    captures: enrolledPwItems.map((it) => it._rawCapture).filter(Boolean),
+    motionSnapshots: enrolledPwItems.map((it) => it._motion).filter(Boolean),
+    passwordText: targetPw,
+    engine,
+  });
 
   state.pwEnrollBuffer = { name: '', targetPw: '', items: [] };
   $('guard-enroll-name').value = '';
@@ -1307,6 +1402,7 @@ async function handleGuardVerifySubmit(isCurrent) {
   const expectedPw = targetAcc.password.target;
 
   const capture = guardVerifyRecorder.extractCleanStroke();
+  const verifyMotionSnapshot = evalStudy._captureMotionWindow(guardVerifyRecorder);
   const check = validatePasswordCapture(capture, expectedPw, { minLength: 1 });
 
   $('guard-verify-input').value = '';
@@ -1339,6 +1435,8 @@ async function handleGuardVerifySubmit(isCurrent) {
     inputMode: capture.inputMode,
     embedding17,
     capitalMethods: capture.capitalMethods,
+    lockAdaptation: evalStudy.shouldLockAdaptation(),
+    useStringCalibration: evalStudy.stringCalibrationOverride(),
   };
 
   // Capture exact pre-adaptation templates BEFORE any automatic mergeTemplateSample!
@@ -1483,8 +1581,42 @@ async function handleGuardVerifySubmit(isCurrent) {
       : `홀드 ${capture.holdMs}ms · 롤오버 ${capture.rolloverPct}%`;
   const adaptTxt = adapted
     ? ` · 등록 리듬 갱신(최근 ${Math.min(12, (targetAcc.password.count || 0) + 1)}회 반영)`
-    : '';
+    : evalStudy.shouldLockAdaptation()
+      ? ' · 평가 잠금(템플릿 고정)'
+      : '';
   $('guard-result-meta').textContent = `${capture.cpm} 타/분 · ${holdTxt} · ${editTxt}${behaviorNote(res)}${deviceMismatchNote(targetAcc.password, capture.inputMode)}${adaptTxt} · 추론 ${latencyMs}ms`;
+
+  const calibCompareEl = $('guard-calib-compare');
+  if (calibCompareEl) {
+    if (res.lengthBaseline && res.stringCalibrated && (evalStudy.settings.enabled || res.stringCalibrationActive)) {
+      const lb = res.lengthBaseline;
+      const sc = res.stringCalibrated;
+      const activeTag = res.stringCalibrationActive ? '문자열 보정 적용 중' : '길이 보정 적용 중';
+      calibCompareEl.textContent = `[${activeTag}] 길이 기준 ${(lb.similarity * 100).toFixed(1)}% (z=${lb.z.toFixed(
+        2
+      )}) vs 문자열 보정 ${(sc.similarity * 100).toFixed(1)}% (z=${sc.z.toFixed(2)}, 지지도 w=${sc.shrinkWeight.toFixed(
+        2
+      )}, ${sc.latencyMs}ms)`;
+      calibCompareEl.hidden = false;
+    } else {
+      calibCompareEl.hidden = true;
+    }
+  }
+
+  await evalStudy.recordGuardQuery({
+    roomCode: roomSync.roomCode,
+    targetAccount: targetAcc,
+    passwordText: expectedPw,
+    capture,
+    bothEmbeddings: both,
+    res,
+    thresholdOffset: state.thresholdOffset,
+    adapted,
+    latencyMs,
+    recorder: guardVerifyRecorder,
+    motionSnapshot: verifyMotionSnapshot,
+    engine,
+  });
 }
 
 // ================= MODE C: VISUAL EXPLAINER & PROFILE FORMATION =================
@@ -2151,12 +2283,362 @@ function bindEvents() {
     }
     renderModalProfiles();
   });
+
+  bindEvalStudyEvents();
+}
+
+// ================= EVALUATION & CROSS-DEVICE FIELD LOGGER UI =================
+function populateEvalStaticSelects() {
+  const fillOptions = (sel, items) => {
+    if (!sel) return;
+    sel.innerHTML = items
+      .map((it) => `<option value="${escapeHtml(it.value)}">${escapeHtml(it.label)}</option>`)
+      .join('');
+  };
+  fillOptions($('eval-keyboard-type'), KEYBOARD_TYPES);
+  fillOptions($('eval-hangul-layout'), HANGUL_LAYOUTS);
+  fillOptions($('eval-posture'), POSTURE_OPTIONS);
+  fillOptions($('eval-session-slot'), SESSION_SLOTS);
+  populateGuardPresetSelect();
+}
+
+function populateGuardPresetSelect() {
+  const sel = $('guard-exp-preset-select');
+  if (!sel) return;
+  const list = evalStudy.publicStrings || [];
+  const core = list.filter((x) => x.tier === 'core');
+  const ext = list.filter((x) => x.tier !== 'core');
+  const renderOpt = (item) =>
+    `<option value="${escapeHtml(item.text)}">[${escapeHtml(item.id)}] ${escapeHtml(item.text)} — ${escapeHtml(
+      item.label
+    )}</option>`;
+  sel.innerHTML =
+    `<option value="">직접 입력 유지 (사용자 지정 문자열)</option>` +
+    (core.length ? `<optgroup label="핵심 6종 (빠른 4기기 교차 실측 권장)">${core.map(renderOpt).join('')}</optgroup>` : '') +
+    (ext.length ? `<optgroup label="확장 18종 (문자열 코호트 보정 실험)">${ext.map(renderOpt).join('')}</optgroup>` : '');
+}
+
+function renderEvalStudyPanel() {
+  const panel = $('eval-study-panel');
+  const toggleBtn = $('toggle-eval-btn');
+  if (!panel || !toggleBtn) return;
+
+  const s = evalStudy.settings;
+  panel.hidden = !state.evalPanelOpen;
+  toggleBtn.setAttribute('aria-expanded', String(state.evalPanelOpen));
+  toggleBtn.classList.toggle('is-recording', Boolean(s.enabled));
+  const dot = $('eval-dot');
+  if (dot) dot.className = `sync-dot ${s.enabled ? 'is-online' : 'is-local'}`;
+
+  const summary = evalStudy.computeLiveSummary();
+  const countBadge = $('eval-pill-count');
+  if (countBadge) {
+    countBadge.textContent = String(summary.totalRecords);
+    countBadge.hidden = summary.totalRecords === 0 && !s.enabled;
+  }
+
+  $('eval-enabled-chk').checked = Boolean(s.enabled);
+  if (document.activeElement !== $('eval-participant-id')) {
+    $('eval-participant-id').value = s.participantId || 'P01';
+  }
+  $('eval-keyboard-type').value = s.keyboardType;
+  $('eval-hangul-layout').value = s.hangulLayout;
+  $('eval-posture').value = s.posture;
+  $('eval-session-slot').value = s.sessionSlot;
+  $('eval-lock-adapt-chk').checked = Boolean(s.lockAdaptation);
+  $('eval-raw-consent-chk').checked = Boolean(s.rawConsent);
+  $('eval-string-calib-mode').value = s.stringCalibMode || 'auto';
+
+  // Populate ground-truth writer options from live profiles
+  const gtSelect = $('eval-gt-role');
+  const prevGt = s.groundTruthRole || 'unspecified';
+  const profOpts = state.profiles
+    .filter((p) => p && typeof p.name === 'string')
+    .map(
+      (p) =>
+        `<option value="${escapeHtml(`enrolled:${p.id}`)}">등록 작성자: ${escapeHtml(p.name)}${
+          p.isSample ? ' (샘플)' : ''
+        }</option>`
+    )
+    .join('');
+  gtSelect.innerHTML =
+    `<option value="unspecified">미지정 (일반 체험)</option>` +
+    `<option value="outsider">미등록 외부인 (타인·침입 테스트)</option>` +
+    profOpts;
+  const validGtValues = new Set(Array.from(gtSelect.options).map((o) => o.value));
+  gtSelect.value = validGtValues.has(prevGt) ? prevGt : 'unspecified';
+  if (gtSelect.value !== prevGt) {
+    evalStudy.settings.groundTruthRole = gtSelect.value;
+  }
+
+  const orderRec = recommendDeviceOrder(s.participantId);
+  $('eval-order-banner').textContent = `권장 기기 순서 (${s.participantId || 'P01'} · 라틴 방진 ${orderRec.cohortRow}열): ${
+    orderRec.formatted
+  }`;
+
+  const layoutWarn = state.lang === 'ko' && isNon2BeolsikLayout(s.hangulLayout);
+  $('eval-layout-warning').hidden = !layoutWarn;
+  $('eval-gt-warning').hidden = !(s.enabled && gtSelect.value === 'unspecified');
+
+  const motion = evalStudy.motion.getLiveStatus();
+  const motionEl = $('eval-motion-status');
+  const isTouchEnv = navigator.maxTouchPoints > 0 || s.keyboardType.startsWith('touch_');
+  const insecureHttp = typeof window !== 'undefined' && window.isSecureContext === false;
+  if (motion.permissionState === 'unsupported') {
+    motionEl.textContent =
+      isTouchEnv && insecureHttp
+        ? 'HTTP 접속 중 · HTTPS(:8443)로 이동 시 모션 활성'
+        : '모션 센서 미지원 기기 (PC 브라우저)';
+    motionEl.classList.remove('is-active');
+  } else if (motion.permissionState === 'denied') {
+    motionEl.textContent = '모션 센서 권한 거부됨';
+    motionEl.classList.remove('is-active');
+  } else if (motion.permissionState === 'active') {
+    const hzTxt = motion.effectiveHz ? `${motion.effectiveHz}Hz (${motion.medianIntervalMs}ms)` : `${motion.sampleCount}샘플`;
+    motionEl.textContent = `모션 측정 중 · ${hzTxt}`;
+    motionEl.classList.add('is-active');
+  } else if (motion.permissionState === 'granted') {
+    motionEl.textContent = '모션 권한 허용됨 · 이벤트 대기';
+    motionEl.classList.add('is-active');
+  } else {
+    motionEl.textContent = '모션 센서 대기 (스마트폰 클릭 시 권한 요청)';
+    motionEl.classList.remove('is-active');
+  }
+
+  const sys = detectSystemEnvironment();
+  $('eval-auto-env-meta').textContent = `자동 감지: ${sys.os} · ${sys.browser} · 타이머 해상도 ~${
+    sys.timerResolutionUs ?? '?'
+  }µs · 모델 ${engine.modelHash || '준비중'} (${engine.preprocessVersion})`;
+
+  const hubBox = $('eval-lan-hub-box');
+  if (hubBox) {
+    if (evalStudy.hubActive && evalStudy.hubInfo) {
+      const info = evalStudy.hubInfo;
+      hubBox.hidden = false;
+      $('eval-lan-hub-title').textContent = `로컬 Wi-Fi 다기기 실측 허브 연결됨 (#${roomSync.roomCode})`;
+      $('eval-lan-hub-sub').textContent = `노트북·외장 키보드·스마트폰 프로필이 동일 공유기 내에서 실시간 공유되며, 모든 평가 기록은 노트북의 ${
+        info.logFileRel || 'logs/field_study/field_study_merged.jsonl'
+      }에 자동 통합 저장됩니다 (현재 ${info.savedRecordCount ?? summary.totalRecords}건 · 외부 서버 미전송).`;
+
+      const qrDetails = $('eval-lan-qr-details');
+      if (qrDetails && !qrDetails.dataset.autoToggled) {
+        qrDetails.dataset.autoToggled = '1';
+        if (sys.os === 'iOS' || sys.os === 'Android') {
+          qrDetails.open = false;
+        }
+      }
+
+      const qrHttpsEl = $('eval-qr-https');
+      if (qrHttpsEl && info.qrSvgHttps && qrHttpsEl.dataset.renderedUrl !== info.httpsUrl) {
+        qrHttpsEl.innerHTML = info.qrSvgHttps;
+        qrHttpsEl.dataset.renderedUrl = info.httpsUrl;
+      }
+      const qrHttpEl = $('eval-qr-http');
+      if (qrHttpEl && info.qrSvgHttp && qrHttpEl.dataset.renderedUrl !== info.httpUrl) {
+        qrHttpEl.innerHTML = info.qrSvgHttp;
+        qrHttpEl.dataset.renderedUrl = info.httpUrl;
+      }
+
+      const linkHttps = $('eval-link-https');
+      if (linkHttps && info.httpsUrl) {
+        linkHttps.href = info.httpsUrl;
+        linkHttps.textContent = info.httpsUrl;
+      }
+      const linkHttp = $('eval-link-http');
+      if (linkHttp && info.httpUrl) {
+        linkHttp.href = info.httpUrl;
+        linkHttp.textContent = info.httpUrl;
+      }
+      const caLink = $('eval-hub-ca-link');
+      if (caLink) {
+        caLink.hidden = !info.hasCaCert;
+      }
+    } else {
+      hubBox.hidden = true;
+    }
+  }
+
+  const statParts = [
+    `누적 ${summary.totalRecords}건 (등록 ${summary.enrollCount} · 문장판별 ${summary.arenaQueryCount} · 암호판별 ${summary.pwQueryCount})`,
+  ];
+  if (summary.arenaTop1Pct !== null) statParts.push(`문장 1위 ${summary.arenaTop1Pct}%`);
+  if (summary.arenaAcceptPct !== null) statParts.push(`문장 수락 ${summary.arenaAcceptPct}%`);
+  if (summary.arenaOutsiderFarPct !== null) statParts.push(`외부인 오수락 ${summary.arenaOutsiderFarPct}%`);
+  if (summary.pwGenuineAcceptPct !== null) statParts.push(`암호 본인수락 ${summary.pwGenuineAcceptPct}%`);
+  if (summary.pwImpostorFarPct !== null) statParts.push(`암호 타인오수락 ${summary.pwImpostorFarPct}%`);
+  $('eval-live-stats').textContent = statParts.join(' · ');
+
+  $('eval-export-jsonl-btn').disabled = summary.totalRecords === 0;
+  $('eval-clear-logs-btn').disabled = summary.totalRecords === 0;
+}
+
+function bindEvalStudyEvents() {
+  populateEvalStaticSelects();
+
+  $('eval-config-form').addEventListener('submit', (e) => e.preventDefault());
+
+  $('toggle-eval-btn').addEventListener('click', () => {
+    state.evalPanelOpen = !state.evalPanelOpen;
+    renderEvalStudyPanel();
+  });
+
+  $('close-eval-panel-btn').addEventListener('click', () => {
+    state.evalPanelOpen = false;
+    renderEvalStudyPanel();
+  });
+
+  $('eval-enabled-chk').addEventListener('change', (e) => {
+    evalStudy.updateSettings({ enabled: e.target.checked });
+  });
+
+  $('eval-participant-id').addEventListener('input', (e) => {
+    const clean = e.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24);
+    if (clean !== e.target.value) e.target.value = clean;
+    evalStudy.updateSettings({ participantId: clean || 'P01' });
+  });
+
+  $('eval-gt-role').addEventListener('change', (e) => {
+    evalStudy.updateSettings({ groundTruthRole: e.target.value });
+  });
+
+  $('eval-keyboard-type').addEventListener('change', (e) => {
+    const kb = e.target.value;
+    const patch = { keyboardType: kb };
+    if (kb.startsWith('touch_') && evalStudy.settings.hangulLayout === 'pc_2beolsik') {
+      patch.hangulLayout = 'mobile_qwerty_2beolsik';
+      if (evalStudy.settings.posture === 'desk_keyboard') patch.posture = 'hand_two_thumbs';
+    } else if (!kb.startsWith('touch_') && evalStudy.settings.hangulLayout.startsWith('mobile_')) {
+      patch.hangulLayout = 'pc_2beolsik';
+      if (evalStudy.settings.posture.startsWith('hand_') || evalStudy.settings.posture === 'desk_phone_flat') {
+        patch.posture = 'desk_keyboard';
+      }
+    }
+    evalStudy.updateSettings(patch);
+  });
+
+  $('eval-hangul-layout').addEventListener('change', (e) => {
+    evalStudy.updateSettings({ hangulLayout: e.target.value });
+  });
+
+  $('eval-posture').addEventListener('change', (e) => {
+    evalStudy.updateSettings({ posture: e.target.value });
+  });
+
+  $('eval-session-slot').addEventListener('change', (e) => {
+    evalStudy.updateSettings({ sessionSlot: e.target.value });
+  });
+
+  $('eval-lock-adapt-chk').addEventListener('change', (e) => {
+    evalStudy.updateSettings({ lockAdaptation: e.target.checked });
+  });
+
+  $('eval-raw-consent-chk').addEventListener('change', (e) => {
+    evalStudy.updateSettings({ rawConsent: e.target.checked });
+  });
+
+  $('eval-string-calib-mode').addEventListener('change', (e) => {
+    evalStudy.updateSettings({ stringCalibMode: e.target.value });
+  });
+
+  $('eval-motion-btn').addEventListener('click', async () => {
+    const status = await evalStudy.motion.requestAndStart();
+    if (status.permissionState === 'unsupported') {
+      const httpsUrl = evalStudy.hubInfo?.urls?.https;
+      if (typeof window !== 'undefined' && window.isSecureContext === false && httpsUrl) {
+        setFeedback(
+          $('eval-action-feedback'),
+          `iOS Safari 등 모바일 브라우저는 HTTPS에서만 모션 센서를 허용합니다. ${httpsUrl} 로 이동합니다...`
+        );
+        window.location.href = httpsUrl;
+        return;
+      }
+      setFeedback($('eval-action-feedback'), '현재 브라우저는 DeviceMotion 이벤트를 제공하지 않습니다(스마트폰 HTTPS에서 사용).');
+    } else if (status.permissionState === 'denied') {
+      setFeedback($('eval-action-feedback'), '모션 센서 권한이 거부되었습니다. 브라우저 사이트 설정에서 동작 및 방향 접근을 허용해 주세요.', 'error');
+    } else {
+      setFeedback($('eval-action-feedback'), '스마트폰 모션 센서 수집을 시작했습니다. 기기를 움직이면 실제 샘플링 주기(Hz)가 표시됩니다.', 'success');
+    }
+    renderEvalStudyPanel();
+  });
+
+  $('eval-export-jsonl-btn').addEventListener('click', () => {
+    const content = evalStudy.toJsonl();
+    if (!content) return;
+    const blob = new Blob([content], { type: 'application/x-ndjson;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const pid = (evalStudy.settings.participantId || 'P01').replace(/[^A-Za-z0-9_-]/g, '');
+    const dateStr = detectSystemEnvironment().localDate;
+    const kb = evalStudy.settings.keyboardType || 'device';
+    a.href = url;
+    a.download = `keyprint-eval-${pid}-${kb}-${dateStr}.jsonl`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setFeedback($('eval-action-feedback'), `총 ${evalStudy.records.length}건의 기록을 JSONL 파일로 내보냈습니다.`, 'success');
+  });
+
+  $('eval-import-jsonl-input').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    let totalAdded = 0;
+    let totalSkipped = 0;
+    try {
+      for (const f of files) {
+        const txt = await f.text();
+        const r = await evalStudy.importJsonlText(txt);
+        totalAdded += r.added;
+        totalSkipped += r.skipped;
+      }
+      setFeedback(
+        $('eval-action-feedback'),
+        `파일 ${files.length}개 병합 완료: 신규 ${totalAdded}건 추가 (중복·무효 ${totalSkipped}건 건너뜀, 총 ${evalStudy.records.length}건).`,
+        'success'
+      );
+    } catch (err) {
+      setFeedback($('eval-action-feedback'), `JSONL 병합 오류: ${err?.message || '형식 확인 필요'}`, 'error');
+    } finally {
+      e.target.value = '';
+    }
+  });
+
+  $('eval-clear-logs-btn').addEventListener('click', async () => {
+    await evalStudy.clearAllLogs();
+    setFeedback($('eval-action-feedback'), '브라우저에 저장된 실측 평가 기록을 비웠습니다.');
+  });
+
+  const hubSyncBtn = $('eval-hub-sync-btn');
+  if (hubSyncBtn) {
+    hubSyncBtn.addEventListener('click', async () => {
+      const res = await evalStudy.syncWithHub();
+      if (res.ok) {
+        setFeedback(
+          $('eval-action-feedback'),
+          `노트북 로컬 허브 동기화 완료: 총 ${res.hubTotal}건 (${evalStudy.hubInfo?.logFileRel || 'field_study_merged.jsonl'})`,
+          'success'
+        );
+      } else {
+        setFeedback($('eval-action-feedback'), '로컬 허브 서버에 연결하지 못했습니다.', 'error');
+      }
+    });
+  }
+
+  $('guard-exp-preset-select').addEventListener('change', (e) => {
+    const chosen = e.target.value;
+    if (!chosen) return;
+    const targetInput = $('guard-enroll-pw-target');
+    targetInput.value = chosen;
+    targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+    $('guard-enroll-input').focus();
+  });
 }
 
 // Expose programmatic helper for E2E verification without adding UI clutter
 window.__keyprintTestApi = {
   engine,
   roomSync,
+  evalStudy,
   state,
   isSampleName,
   getActiveVerdictForViz,
@@ -2170,9 +2652,19 @@ async function bootstrap() {
   $('room-pill-label').textContent = '이 브라우저만 · 준비 중';
   $('modal-room-code').textContent = '이 브라우저만';
 
+  const hadSavedEvalSettings = evalStudy.hasStoredSettings();
+  await evalStudy.init();
+  if (params.get('eval') === '1' || FIELD_HUB_BOOT) {
+    state.evalPanelOpen = true;
+    if (params.get('eval') === '1' || !hadSavedEvalSettings) {
+      evalStudy.updateSettings({ enabled: true });
+    }
+  }
+
   bindEvents();
+  renderEvalStudyPanel();
   if (params.get('lang') === 'ko') switchLanguage('ko', { deferPrompt: true });
-  if (params.has('room')) {
+  if (params.has('room') && !FIELD_HUB_BOOT) {
     $('room-dialog').showModal();
     setFeedback($('room-feedback'), `#${initialRoom} 초대 링크입니다. 공개 공유에 동의하고 입장해야 연결됩니다.`);
   }
@@ -2187,6 +2679,10 @@ async function bootstrap() {
   // Initialize ONNX engine FIRST and independently of any network/WebSocket error
   try {
     await engine.init();
+    if (engine.calibrationStudy?.public_experiment_strings) {
+      evalStudy.setPublicStrings(engine.calibrationStudy.public_experiment_strings);
+      populateGuardPresetSelect();
+    }
     ({ enroll: TARGET_ARENA_SHOTS, query: TARGET_BLIND_SHOTS } = engine.arenaProtocol());
     roomSync.setCompatibility({
       schemaVersion: engine.schemaVersion,
@@ -2198,6 +2694,7 @@ async function bootstrap() {
     $('engine-pill').classList.remove('is-error');
     $('engine-pill').classList.add('is-ready');
     $('engine-status-text').textContent = `ONNX 준비 완료 (${engine.loadTimeMs}ms)`;
+    renderEvalStudyPanel();
   } catch (err) {
     state.ready = false;
     state.loadError = err?.message || '모델 로드 실패';
@@ -2208,14 +2705,27 @@ async function bootstrap() {
 
   // Connect RoomProfileSync safely even if window.WebSocket throws synchronously
   try {
-    roomSync.connect('LOCAL');
+    if (FIELD_HUB_BOOT) {
+      const hubRoom = sanitizeRoomCode(params.get('room') || FIELD_HUB_BOOT.defaultRoom || 'LOCALSTUDY');
+      $('room-code-input').value = hubRoom;
+      roomSync.connect(hubRoom, { shared: true });
+    } else {
+      roomSync.connect('LOCAL');
+    }
   } catch (syncErr) {
     console.warn('Room sync fallback to local mode:', syncErr);
+  }
+
+  if (FIELD_HUB_BOOT) {
+    evalStudy.connectLocalHub().then(() => {
+      renderEvalStudyPanel();
+    });
   }
 
   resetArenaEnrollProgress();
   resetArenaBlindProgress();
   renderAllRosters();
+  renderEvalStudyPanel();
 
   if (state.ready) {
     try {

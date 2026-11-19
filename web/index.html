@@ -31,10 +31,24 @@
         </button>
       </nav>
 
-      <button type="button" id="open-room-btn" class="room-pill">
-        <span id="sync-dot" class="sync-dot is-connecting" aria-hidden="true"></span>
-        <span id="room-pill-label">이 브라우저만 · 프로필 0명</span>
-      </button>
+      <div class="topbar-actions">
+        <button
+          type="button"
+          id="toggle-eval-btn"
+          class="room-pill eval-pill"
+          aria-expanded="false"
+          aria-controls="eval-study-panel"
+        >
+          <span id="eval-dot" class="sync-dot is-local" aria-hidden="true"></span>
+          <span>실측·평가</span>
+          <span id="eval-pill-count" class="eval-count-badge" hidden>0</span>
+        </button>
+
+        <button type="button" id="open-room-btn" class="room-pill">
+          <span id="sync-dot" class="sync-dot is-connecting" aria-hidden="true"></span>
+          <span id="room-pill-label">이 브라우저만 · 프로필 0명</span>
+        </button>
+      </div>
     </header>
 
     <main class="stage">
@@ -42,6 +56,182 @@
       <div id="compat-isolation-notice" class="compat-notice" role="status" hidden>
         구버전 또는 다른 모델 가중치로 생성된 호환 불가 프로필·이벤트를 자동 격리했습니다 (v4 임베딩 호환 보호).
       </div>
+
+      <!-- =========================================================
+           EVALUATION & CROSS-DEVICE FIELD LOGGER (On-demand / ?eval=1)
+           ========================================================= -->
+      <section id="eval-study-panel" class="surface-card eval-study-card" aria-labelledby="eval-study-heading" hidden>
+        <div class="eval-head">
+          <div>
+            <span class="step-kicker">FIELD EVALUATION LOGGER · LOCAL INDEXEDDB &amp; JSONL</span>
+            <h2 id="eval-study-heading" class="eval-study-title">교차 기기·스마트폰 실측 &amp; 평가 기록기</h2>
+          </div>
+          <div class="eval-head-actions">
+            <label class="eval-enable-toggle" for="eval-enabled-chk">
+              <input type="checkbox" id="eval-enabled-chk" name="eval_enabled">
+              <span>실측 기록 활성화</span>
+            </label>
+            <button type="button" id="close-eval-panel-btn" class="ghost-sm-btn">접기</button>
+          </div>
+        </div>
+
+        <div id="eval-order-banner" class="eval-order-banner" role="note"></div>
+
+        <div id="eval-lan-hub-box" class="eval-lan-hub" hidden>
+          <div class="eval-lan-hub-head">
+            <div>
+              <strong id="eval-lan-hub-title" class="eval-lan-hub-title">로컬 Wi-Fi 다기기 실측 허브 연결됨</strong>
+              <p id="eval-lan-hub-sub" class="eval-lan-hub-sub"></p>
+            </div>
+            <div class="eval-lan-hub-actions">
+              <button type="button" id="eval-hub-sync-btn" class="secondary-btn sm-btn">허브 기록 동기화</button>
+              <a id="eval-hub-ca-link" class="ghost-sm-btn" href="./api/field-study/ca.pem" hidden>루트 인증서(CA)</a>
+            </div>
+          </div>
+
+          <details id="eval-lan-qr-details" class="eval-lan-qr-details" open>
+            <summary class="eval-lan-qr-summary">스마트폰 카메라 스캔용 QR 코드 및 동일 Wi-Fi 접속 주소</summary>
+            <div class="eval-lan-qr-grid">
+              <div class="eval-qr-card">
+                <div id="eval-qr-https" class="eval-qr-svg" aria-hidden="true"></div>
+                <div class="eval-qr-copy">
+                  <span class="eval-qr-badge is-https">권장 · HTTPS (터치 + 모션센서)</span>
+                  <a id="eval-link-https" class="eval-qr-url mono-text" href="#" target="_blank" rel="noopener"></a>
+                  <p class="eval-qr-hint">
+                    스마트폰 카메라로 스캔 후 최초 1회 브라우저 <strong>고급 → 이동(웹사이트 방문)</strong>을 선택하면 터치 타건과 가속도·자이로 센서가 모두 작동합니다.
+                  </p>
+                </div>
+              </div>
+
+              <div class="eval-qr-card">
+                <div id="eval-qr-http" class="eval-qr-svg" aria-hidden="true"></div>
+                <div class="eval-qr-copy">
+                  <span class="eval-qr-badge">즉시 접속 · HTTP (경고창 없는 터치)</span>
+                  <a id="eval-link-http" class="eval-qr-url mono-text" href="#" target="_blank" rel="noopener"></a>
+                  <p class="eval-qr-hint">
+                    인증서 확인 없이 바로 열립니다. 스마트폰 터치 타건·노트북 프로필 공유·통합 로그 자동 저장이 동일하게 작동합니다(모션 센서만 제외).
+                  </p>
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <form id="eval-config-form" class="eval-form" aria-labelledby="eval-study-heading">
+          <fieldset class="eval-fieldset">
+            <legend class="eval-legend">1. 참가자 · 실제 작성자(정답) · 기기 환경</legend>
+            <div class="eval-grid">
+              <div class="stack-field">
+                <label class="field-label" for="eval-participant-id">연구용 참가자 ID</label>
+                <input
+                  type="text"
+                  id="eval-participant-id"
+                  name="participant_id"
+                  class="clean-input mono-text"
+                  value="P01"
+                  maxlength="24"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                >
+              </div>
+
+              <div class="stack-field">
+                <label class="field-label" for="eval-gt-role">판별 전 실제 입력자 (정답 라벨)</label>
+                <select id="eval-gt-role" name="ground_truth_role" class="clean-input">
+                  <option value="unspecified">미지정 (일반 체험)</option>
+                  <option value="outsider">미등록 외부인 (타인·침입 테스트)</option>
+                </select>
+              </div>
+
+              <div class="stack-field">
+                <label class="field-label" for="eval-keyboard-type">물리·화면 키보드 종류</label>
+                <select id="eval-keyboard-type" name="keyboard_type" class="clean-input"></select>
+              </div>
+
+              <div class="stack-field">
+                <label class="field-label" for="eval-hangul-layout">한글·영문 입력 방식</label>
+                <select id="eval-hangul-layout" name="hangul_layout" class="clean-input"></select>
+              </div>
+
+              <div class="stack-field">
+                <label class="field-label" for="eval-posture">파지·거치 자세</label>
+                <select id="eval-posture" name="posture" class="clean-input"></select>
+              </div>
+
+              <div class="stack-field">
+                <label class="field-label" for="eval-session-slot">세션·측정 순서</label>
+                <select id="eval-session-slot" name="session_slot" class="clean-input"></select>
+              </div>
+            </div>
+
+            <p id="eval-layout-warning" class="eval-callout is-warn" role="status" aria-live="polite" hidden>
+              선택한 한글 자판(천지인·나랏글·단모음·세벌식)은 기본 두벌식 자모 분해와 키 전이 수가 다릅니다. 로그에 <code>layoutMismatch2Beolsik=true</code>로 자동 기록됩니다.
+            </p>
+            <p id="eval-gt-warning" class="eval-callout" role="status" aria-live="polite" hidden>
+              판별([누가 쳤을까?] 또는 [로그인 방어 테스트]) 전에 위 <strong>실제 입력자(정답 라벨)</strong>를 지정하면 1위 정답률·본인 수락률·타인 오수락률(FAR)이 자동 계산됩니다.
+            </p>
+          </fieldset>
+
+          <fieldset class="eval-fieldset">
+            <legend class="eval-legend">2. 실험 통제 · 원시 타건 동의 · 모바일 모션 센서</legend>
+            <div class="eval-checks-grid">
+              <div class="eval-check-row">
+                <input type="checkbox" id="eval-lock-adapt-chk" name="lock_adaptation" checked>
+                <label for="eval-lock-adapt-chk">
+                  <strong>평가 중 템플릿 자동 적응(<code>adapt</code>) 잠금</strong> — 반복 판별 시 등록 템플릿이 변하지 않도록 고정합니다.
+                </label>
+              </div>
+
+              <div class="eval-check-row">
+                <input type="checkbox" id="eval-raw-consent-chk" name="raw_consent">
+                <label for="eval-raw-consent-chk">
+                  <strong>원시 타이밍·결측·수정/멈춤 통계 수집 동의</strong> — 홀드·DD·UD·행동 프로필·임베딩을 함께 저장합니다(허용 목록 밖 사용자 암호는 원문·키쌍을 자동 비식별화).
+                </label>
+              </div>
+            </div>
+
+            <div class="eval-sensor-row">
+              <div class="stack-field eval-calib-mode-field">
+                <label class="field-label" for="eval-string-calib-mode">암호 문자열별 코호트 보정 모드 (두 점수는 항상 동시 기록됨)</label>
+                <select id="eval-string-calib-mode" name="string_calib_mode" class="clean-input">
+                  <option value="auto">자동 (검증 채택 기준: 터치 ON · 물리 키보드 길이 보정 유지)</option>
+                  <option value="force_on">강제 ON (키보드·터치 모두 문자열별 보정 적용 실험)</option>
+                  <option value="force_off">강제 OFF (기존 길이별 보정만 적용)</option>
+                </select>
+              </div>
+
+              <div class="eval-motion-box">
+                <button type="button" id="eval-motion-btn" class="secondary-btn sm-btn">
+                  모션 센서 권한·측정 시작
+                </button>
+                <span id="eval-motion-status" class="eval-sensor-pill" aria-live="polite">모션 센서 대기</span>
+              </div>
+            </div>
+
+            <p id="eval-auto-env-meta" class="eval-env-meta"></p>
+          </fieldset>
+        </form>
+
+        <div class="eval-summary-bar">
+          <div id="eval-live-stats" class="eval-live-stats" aria-live="polite">저장된 기록 0건</div>
+          <div class="eval-export-actions">
+            <button type="button" id="eval-export-jsonl-btn" class="primary-btn sm-btn" disabled>JSONL 내보내기</button>
+            <label for="eval-import-jsonl-input" class="secondary-btn sm-btn eval-import-label">기기별 JSONL 합치기</label>
+            <input
+              type="file"
+              id="eval-import-jsonl-input"
+              name="import_jsonl"
+              accept=".jsonl,.json,application/json,text/plain"
+              multiple
+              hidden
+            >
+            <button type="button" id="eval-clear-logs-btn" class="danger-sm-btn" disabled>기록 비우기</button>
+          </div>
+        </div>
+        <p id="eval-action-feedback" class="feedback-line" role="status" aria-live="polite"></p>
+      </section>
 
       <!-- =========================================================
            MODE A: 타자연습 리듬 비교 (Diverse Sentences + Backspace OK)
@@ -301,6 +491,7 @@
                 </div>
               </div>
               <p id="guard-result-desc" class="result-desc"></p>
+              <p id="guard-calib-compare" class="result-meta" hidden></p>
               <div class="result-footer">
                 <span id="guard-result-meta" class="result-meta"></span>
                 <button type="button" id="guard-inspect-viz-btn" class="text-btn">원리 &amp; 내 지문 보기 →</button>
@@ -341,6 +532,15 @@
                 spellcheck="false"
               >
             </label>
+          </div>
+
+          <div class="eval-preset-row">
+            <label class="field-label" for="guard-exp-preset-select">
+              공개 실험용 문자열 프리셋 (선택 시 위 시연 문자열에 자동 입력 · 12·16·20자 24종)
+            </label>
+            <select id="guard-exp-preset-select" name="guard_exp_preset" class="clean-input mono-text">
+              <option value="">직접 입력 유지 (사용자 지정 문자열)</option>
+            </select>
           </div>
 
           <div class="typing-box">
