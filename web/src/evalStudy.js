@@ -932,6 +932,11 @@ export class EvalStudyManager {
   }) {
     if (!this.settings.enabled) return null;
     const env = this.currentEnvSnapshot({ engine, lang: 'en', inputMode: capture.inputMode });
+    if (this.hubActive && !this.getEnrollEnv(roomCode, targetAccount.id, 'password')) {
+      await this._pullFromHubOnce();
+    }
+    const targetEnrollEnv = this.getEnrollEnv(roomCode, targetAccount.id, 'password');
+
     const gt = this.settings.groundTruthRole || 'unspecified';
     let actualRole = 'unspecified';
     let isGenuine = null;
@@ -940,14 +945,18 @@ export class EvalStudyManager {
       isGenuine = false;
     } else if (gt.startsWith('enrolled:')) {
       const actualId = gt.slice('enrolled:'.length);
-      isGenuine = actualId === targetAccount.id;
+      const actualEnrollEnv =
+        this.getEnrollEnv(roomCode, actualId, 'password') ||
+        this.getEnrollEnv(roomCode, actualId, 'arena_ko') ||
+        this.getEnrollEnv(roomCode, actualId, 'arena_en');
+      const sameParticipant =
+        Boolean(actualEnrollEnv?.participantId) &&
+        Boolean(targetEnrollEnv?.participantId) &&
+        actualEnrollEnv.participantId === targetEnrollEnv.participantId;
+      isGenuine = actualId === targetAccount.id || sameParticipant;
       actualRole = isGenuine ? 'genuine' : 'impostor';
     }
 
-    if (this.hubActive && !this.getEnrollEnv(roomCode, targetAccount.id, 'password')) {
-      await this._pullFromHubOnce();
-    }
-    const targetEnrollEnv = this.getEnrollEnv(roomCode, targetAccount.id, 'password');
     const crossDevice =
       targetEnrollEnv && targetEnrollEnv.keyboardType ? targetEnrollEnv.keyboardType !== env.keyboardType : null;
 

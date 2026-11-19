@@ -155,6 +155,55 @@ def _lookup_enroll(
     return enroll_idx.get((room, profile_id, dom_key)) or enroll_idx.get(("*", profile_id, dom_key))
 
 
+def _lookup_any_participant_id(
+    enroll_idx: Dict[Tuple[str, str, str], Dict],
+    room: str,
+    profile_id: Optional[str],
+) -> Optional[str]:
+    if not profile_id:
+        return None
+    for dom_key in ("password", "arena_ko", "arena_en"):
+        rec = _lookup_enroll(enroll_idx, room, profile_id, dom_key)
+        pid = ((rec or {}).get("env") or {}).get("participantId")
+        if pid:
+            return str(pid)
+    return None
+
+
+def _normalize_same_participant_password_gt(
+    records: Sequence[Dict],
+    enroll_idx: Dict[Tuple[str, str, str], Dict],
+) -> List[Dict]:
+    """Reconcile multi-account password queries where a single participant (`participantId`)
+    selected one of their own enrolled profiles (`enrolled:<idA>`) while logging into another
+    account enrolled under the exact same `participantId` (`<idB>`)."""
+    out: List[Dict] = []
+    for rec in records:
+        if rec.get("eventType") != "query" or rec.get("domain") != "password":
+            out.append(rec)
+            continue
+        gt = rec.get("groundTruth") or {}
+        raw_sel = str(gt.get("selectedRoleRaw") or "")
+        if gt.get("isGenuine") is False and raw_sel.startswith("enrolled:"):
+            room = str(rec.get("roomCode") or "LOCAL")
+            actual_id = raw_sel.split("enrolled:", 1)[1]
+            tgt = rec.get("targetAccount") or {}
+            actual_pid = _lookup_any_participant_id(enroll_idx, room, actual_id)
+            target_pid = (tgt.get("enrollEnv") or {}).get("participantId") or _lookup_any_participant_id(
+                enroll_idx, room, tgt.get("id")
+            )
+            if actual_pid and target_pid and str(actual_pid) == str(target_pid):
+                fixed = dict(rec)
+                fixed["groundTruth"] = {**gt, "role": "genuine", "isGenuine": True}
+                vd = rec.get("verdict")
+                if isinstance(vd, dict) and "accepted" in vd:
+                    fixed["verdict"] = {**vd, "decisionCorrect": bool(vd.get("accepted"))}
+                out.append(fixed)
+                continue
+        out.append(rec)
+    return out
+
+
 # ---------------------------------------------------------------------------------------
 # Section 1: Environment & Cross-Device Error Matrix
 # ---------------------------------------------------------------------------------------
@@ -722,8 +771,8 @@ def analyze_hold_calibration(
                 e17 = _embed_stroke_pt(cal_rc, bundle, use_9ch=False)
                 if e9 is None or e17 is None:
                     continue
-                r9 = raw_similarity(e9, tmpl9)
-                r17 = raw_similarity(e17, tmpl17)
+                r9 = float(raw_similarity(e9[None, :], tmpl9)[0])
+                r17 = float(raw_similarity(e17[None, :], tmpl17)[0])
                 z = dual_z(r9, r17, prm) + cap_w * cap_llr_val
                 sim = 1.0 / (1.0 + math.exp(-slope * (z - tau_eff)))
                 pw_eval_rows[mode].append({"label": 1 if is_gen else 0, "z": z, "accepted": sim >= 0.5})
@@ -1064,6 +1113,7 @@ def analyze_jsonl_files(paths: Sequence[Path], repo_root: Optional[Path] = None)
     merged = load_and_merge_jsonl(paths)
     records = merged["records"]
     enroll_idx = _index_enrollments(records)
+    records = _normalize_same_participant_password_gt(records, enroll_idx)
 
     return {
         "meta": {

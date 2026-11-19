@@ -399,6 +399,121 @@ class CalibrationAndFieldStudyTests(unittest.TestCase):
         self.assertIn("비공개 암호 마스킹=정상", summary_txt)
         self.assertIn("물리 스위치 홀드 편차", summary_txt)
 
+    def test_password_cross_switch_rescore_and_same_participant_gt(self) -> None:
+        unit0 = [1.0] + [0.0] * 63
+        unit1 = [0.0, 1.0] + [0.0] * 62
+        raw_stroke = {
+            "cpm": 260,
+            "holdMs": 72,
+            "rolloverPct": 15,
+            "inputMode": "keyboard",
+            "holds": [0.072] * 9,
+            "holdValid": [True] * 9,
+            "hCurr": [0.072] * 8,
+            "hNext": [0.072] * 8,
+            "hvCurr": [True] * 8,
+            "hvNext": [True] * 8,
+            "dds": [0.18, 0.21, 0.16, 0.22, 0.19, 0.20, 0.17, 0.23],
+            "uds": [0.108, 0.138, 0.088, 0.148, 0.118, 0.128, 0.098, 0.158],
+            "stitchFlags": [False] * 8,
+            "pairKeys": [
+                ["KeyG", "KeyA"], ["KeyA", "KeyC"], ["KeyC", "KeyH"], ["KeyH", "KeyO"],
+                ["KeyO", "KeyN"], ["KeyN", "Digit2"], ["Digit2", "Digit0"], ["Digit0", "Digit2"],
+            ],
+            "pairKeysRedacted": False,
+        }
+        enr_p01_a = {
+            "schema": "kp-eval-log-v1",
+            "recordId": "ev_pw_enr_a",
+            "eventType": "enroll",
+            "recordedAt": "2026-11-19T01:00:00Z",
+            "domain": "password",
+            "roomCode": "STUDY1",
+            "profileId": "u_p01_a",
+            "profileName": "참가자1_A",
+            "env": {"participantId": "P01", "keyboardType": "mechanical_tactile", "detectedInputMode": "keyboard"},
+            "templateSummary": {
+                "count": 4,
+                "holdMs": 72,
+                "centroid": unit0,
+                "exemplars": [unit0],
+                "centroid17": unit0,
+                "exemplars17": [unit0],
+            },
+            "rawCaptures": [raw_stroke],
+        }
+        enr_p01_b = {
+            **enr_p01_a,
+            "recordId": "ev_pw_enr_b",
+            "profileId": "u_p01_b",
+            "profileName": "참가자1_B",
+        }
+        enr_p02 = {
+            **enr_p01_a,
+            "recordId": "ev_pw_enr_p02",
+            "profileId": "u_p02",
+            "profileName": "참가자2",
+            "env": {"participantId": "P02", "keyboardType": "mechanical_tactile", "detectedInputMode": "keyboard"},
+            "templateSummary": {
+                "count": 4,
+                "holdMs": 95,
+                "centroid": unit1,
+                "exemplars": [unit1],
+                "centroid17": unit1,
+                "exemplars17": [unit1],
+            },
+        }
+        # P01 logs into their own second account (u_p01_b) on mechanical_linear while dropdown stayed on enrolled:u_p01_a
+        q_same_subj = {
+            "schema": "kp-eval-log-v1",
+            "recordId": "ev_pw_q_same",
+            "eventType": "query",
+            "domain": "password",
+            "roomCode": "STUDY1",
+            "recordedAt": "2026-11-19T01:05:00Z",
+            "queryEnv": {"participantId": "P01", "keyboardType": "mechanical_linear", "detectedInputMode": "keyboard"},
+            "targetAccount": {"id": "u_p01_b", "name": "참가자1_B", "enrollEnv": enr_p01_b["env"]},
+            "groundTruth": {"role": "impostor", "isGenuine": False, "selectedRoleRaw": "enrolled:u_p01_a"},
+            "passwordMeta": {"length": 12, "publicExperimentId": "EXP12_ALT_A", "isPublicAllowlist": True},
+            "verdict": {
+                "accepted": True,
+                "z": 2.4,
+                "lengthBaseline": {"z": 2.2, "accepted": True},
+                "stringCalibrated": {"z": 2.4, "accepted": True, "latencyMs": 0.02},
+            },
+            "optInDiagnostics": {"rawCapture": {**raw_stroke, "holdMs": 88, "holds": [0.088] * 9, "hCurr": [0.088] * 8, "hNext": [0.088] * 8}},
+        }
+        # P01 attacks P02's account -> must remain impostor
+        q_diff_subj = {
+            **q_same_subj,
+            "recordId": "ev_pw_q_diff",
+            "recordedAt": "2026-11-19T01:06:00Z",
+            "targetAccount": {"id": "u_p02", "name": "참가자2", "enrollEnv": enr_p02["env"]},
+            "verdict": {
+                "accepted": False,
+                "z": -1.5,
+                "lengthBaseline": {"z": -1.4, "accepted": False},
+                "stringCalibrated": {"z": -1.5, "accepted": False, "latencyMs": 0.02},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "pw_cross.jsonl"
+            p.write_text(
+                "\n".join(json.dumps(r, ensure_ascii=False) for r in [enr_p01_a, enr_p01_b, enr_p02, q_same_subj, q_diff_subj]) + "\n",
+                encoding="utf-8",
+            )
+            rep = analyze_jsonl_files([p], repo_root=REPO_ROOT)
+
+        pw_all = rep["environment_and_errors"]["password"]["overall"]
+        self.assertEqual(pw_all["n_genuine"], 1)
+        self.assertEqual(pw_all["n_impostor"], 1)
+        self.assertEqual(pw_all["genuine_accept_rate"], 1.0)
+        self.assertEqual(pw_all["impostor_far"], 0.0)
+        pw_rescore = rep["hold_calibration"]["rescoring"]["password_cross_switch"]["physics_switch_plus_shrink"]
+        self.assertEqual(pw_rescore["n_cross_switch_queries"], 2)
+        self.assertEqual(pw_rescore["n_genuine"], 1)
+        self.assertEqual(pw_rescore["n_impostor"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
