@@ -67,6 +67,10 @@ const state = {
   // Current prompts
   arenaEnrollSentence: '',
   arenaBlindSentence: '',
+  pendingArenaPrompts: {
+    ko: { enroll: '', blind: '' },
+    en: { enroll: '', blind: '' },
+  },
 
   // In-progress enrollment buffers
   arenaEnrollBuffer: { name: '', lang: 'en', items: [] },
@@ -590,15 +594,40 @@ function setArenaSentence(sub, sentence) {
   $(`${slot}-edit-hint`).textContent = isEnroll ? '오타 시 백스페이스 수정 가능' : '백스페이스 자유 사용';
 }
 
+function siblingArenaPrompt(sub, lang = state.lang) {
+  return state.pendingArenaPrompts[lang]?.[sub === 'enroll' ? 'blind' : 'enroll'] || '';
+}
+
 function dealArenaSentence(sub) {
+  const lang = state.lang === 'ko' ? 'ko' : 'en';
+  const previous =
+    (sub === 'enroll' ? state.arenaEnrollSentence : state.arenaBlindSentence) ||
+    state.pendingArenaPrompts[lang][sub];
   const active = state.mode === 'arena' && state.arenaSub === sub && !$('room-dialog').open;
-  setArenaSentence(sub, active ? deck.next(state.lang) : '');
+  if (!active) {
+    state.pendingArenaPrompts[lang][sub] = '';
+    setArenaSentence(sub, '');
+    return;
+  }
+  const exclude = [siblingArenaPrompt(sub, lang), previous].filter(Boolean);
+  const nextSentence = deck.next(lang, { exclude });
+  state.pendingArenaPrompts[lang][sub] = nextSentence;
+  setArenaSentence(sub, nextSentence);
 }
 
 function ensureActiveArenaSentence() {
-  if (state.mode !== 'arena') return;
-  const sentence = state.arenaSub === 'enroll' ? state.arenaEnrollSentence : state.arenaBlindSentence;
-  if (!sentence) dealArenaSentence(state.arenaSub);
+  if (state.mode !== 'arena' || $('room-dialog').open) return;
+  const lang = state.lang === 'ko' ? 'ko' : 'en';
+  const sub = state.arenaSub;
+  const current = sub === 'enroll' ? state.arenaEnrollSentence : state.arenaBlindSentence;
+  if (current) return;
+  let pending = state.pendingArenaPrompts[lang][sub];
+  if (!pending) {
+    const exclude = [siblingArenaPrompt(sub, lang)].filter(Boolean);
+    pending = deck.next(lang, { exclude });
+    state.pendingArenaPrompts[lang][sub] = pending;
+  }
+  setArenaSentence(sub, pending);
 }
 
 function resetArenaSentences() {
