@@ -3,7 +3,7 @@
 > **비밀번호 문자열이 유출되어 타인이 똑같이 입력하더라도, 키를 누르고 떼는 미세한 손가락 리듬만으로 구별할 수 있을까?**
 > 직접 설계·학습한 `64차원` 단위 초구면 인코더 두 개(`KeyPrintNet` 17채널·9채널)를 브라우저 내부(`ONNX Runtime Web WASM`)에서 실시간 구동해 **① 유출 암호 침입 차단**(1:1 검증)과 **② 자유 문장 작성자 식별**(1:N 분류)을 서버 전송 없이 수행하는 행동 생체인식 프로젝트입니다.
 
-[정식 데모 · GitHub Pages](https://qwertypotter6873.github.io/keyprint-guard/) · [PR #5 미리보기](https://keyprint-guard-pr5.bookend-dev.chatgpt.site/) · [검증 완료 학습·평가 노트북](notebooks/keyprint_training_pipeline.ipynb) · [공식 평가 리포트](models/evaluation_report.json) · [한국어 타건 연구 기록](research/korean-typing/README.md) · [다기기 실측 · 문자열 보정 연구](research/cross-device-and-calibration/README.md)
+[정식 데모 · GitHub Pages](https://qwertypotter6873.github.io/keyprint-guard/) · [검증 완료 학습·평가 노트북](notebooks/keyprint_training_pipeline.ipynb) · [공식 평가 리포트](models/evaluation_report.json) · [한국어 타건 연구 기록](research/korean-typing/README.md) · [다기기 실측 · 문자열 보정 연구](research/cross-device-and-calibration/README.md)
 
 ---
 
@@ -14,8 +14,8 @@
 | **과목명** | 기계학습 프로그래밍 (기말 포트폴리오 프로젝트) |
 | **학번 / 이름** | `201935607` / **김대현** |
 | **프로젝트명** | **KeyPrint Guard & Arena**: 키스트로크 다이나믹스 생체 임베딩 기반 실시간 해커 침입 차단(1:1) 및 타자연습 인물 자동 분류(1:N) 시스템 |
-| **GitHub 저장소** | [공개 소스코드](https://github.com/qwertypotter6873/keyprint-guard) · [PR #5 검증 기록](https://github.com/qwertypotter6873/keyprint-guard/pull/5) |
-| **배포 데모 URL** | [정식 데모 · GitHub Pages](https://qwertypotter6873.github.io/keyprint-guard/) · [리뷰용 미리보기 데모](https://keyprint-guard-pr5.bookend-dev.chatgpt.site/) |
+| **GitHub 저장소** | [https://github.com/qwertypotter6873/keyprint-guard](https://github.com/qwertypotter6873/keyprint-guard) |
+| **배포 데모 URL** | [https://qwertypotter6873.github.io/keyprint-guard/](https://qwertypotter6873.github.io/keyprint-guard/) ([배포 리비전·ONNX 체크섬](https://qwertypotter6873.github.io/keyprint-guard/build-info.json)) |
 | **데이터 유형** | 시계열·정형 행동 생체 신호 (`Tabular & Temporal Behavioral Biometrics`) |
 | **학습 방식** | **직접 학습 (`Scratch + Deep Metric Learning`)** — 다중 코퍼스·가변 길이 시퀀스 통합 각도 메트릭 러닝 |
 | **비교 및 제안 모델** | ① `ScaledManhattanDetector` (통계 베이스라인) · ② `Vanilla1DCNN` 기본형 및 통제 변형(`+증강`, `+AS-Norm`) · ③ **`KeyPrintNet` 9채널 / 17채널** (제안 모델, 최종 채택) |
@@ -442,7 +442,7 @@ AI Hub 중학생 국어 서술형 답안(평가용 `VS` 분할 `46`명)에서도
 
 ## 6. 서비스 프로토타입
 
-별도 백엔드 추론 서버 없이 브라우저 내부에서 문장용 `17채널`(`599 KiB`)과 비밀번호용 `9채널`(`592 KiB`) ONNX 인코더를 직접 로드해 추론합니다. ([웹 소스코드](web) · [정식 배포 데모](https://qwertypotter6873.github.io/keyprint-guard/) · [PR #5 미리보기](https://keyprint-guard-pr5.bookend-dev.chatgpt.site/))
+별도 백엔드 추론 서버 없이 브라우저 내부에서 문장용 `17채널`(`599 KiB`)과 비밀번호용 `9채널`(`592 KiB`) ONNX 인코더를 직접 로드해 추론합니다. ([웹 소스코드](web) · [정식 배포 데모](https://qwertypotter6873.github.io/keyprint-guard/))
 
 **빠른 체험 순서**
 1. **타자연습 인물 식별 (`Arena` 탭)**: **영어 샘플로 체험**을 누르면 사전 등록된 샘플 4명과 즉시 비교할 수 있습니다. 직접 비교하려면 같은 언어로 2명 이상이 각 5문장을 등록한 뒤, 한 사람이 안내되는 새 문장 2개를 타이핑하면 **예상 작성자 1위 이름**과 미등록자 가능성을 반영한 **수락 / 보류** 판정이 함께 표시됩니다.
@@ -452,9 +452,9 @@ AI Hub 중학생 국어 서술형 답안(평가용 `VS` 분할 `46`명)에서도
 ### 6.1 주요 기능 및 화면 워크플로우
 
 #### ① 타자연습 인물 자동 식별 (`1:N` — 자유 문장 · 백스페이스 자동 복원)
-- **128개 한·영 문장 풀**: 한국어 64개·영어 64개 연습 문장을 언어별로 제공하며, 새로고침 후에도 진행 순서를 이어가고 64개를 모두 소진하면 다시 섞습니다([`web/src/sentences.js`](web/src/sentences.js)).
+- **256개 한·영 문장 풀(`일반 96 + 팬그램 32` × 2개 언어) 및 중복 방지 배정**: 한국어 `128개`·영어 `128개` 고유 연습 문장을 표준 어문 규범(문장 부호·영문 첫 글자 및 고유명사·`I` 대문자 표기 포함)에 맞춰 제공합니다. 언어별 팬그램 `32개`는 각각 **두벌식 알파벳 영역 `26개` 물리 키(`ㄱ`\~`ㅎ` 14자음 · `ㅏ`\~`ㅣ` 10단모음 · `ㅐ·ㅔ`)** 와 **영문 알파벳 `A`\~`Z` `26자`** 를 전수 커버하며, 4문장 버킷 균형 인터리빙으로 5문장 프로필 등록 시마다 **팬그램 `1`\~`2개` + 일반 문장 `3`\~`4개`** 가 자동 조합됩니다. 진행 순서는 `localStorage` 리비전 동기화로 새로고침·다중 탭·재접속 후에도 유지되며, `128개` 소진 후 재셔플 시 **최근 `48문장` 슬라이딩 쿨타임**(최소 `49회` 추출 간격 보장)과 한↔영 전환 시 미제출 문장 보존, 서브탭(`등록` ↔ `판별`) 간 동시 중복 차단으로 다수 참가자 연속 체험 시 체감 중복을 최소화했습니다([`web/src/sentences.js`](web/src/sentences.js)).
 - **백스페이스 자유 수정**: 오타를 지우더라도 입력을 초기화하지 않고, 삭제된 키 전이만 도려낸 뒤 전후 정상 리듬 구간을 봉합(`Local_Accel = 0` 리셋)해 자연스러운 타이핑에서 생체 지문을 추출합니다.
-- **데스크톱·모바일 통합 및 본인 확인 적응**: 스마트폰 소프트 키보드(한글 조합 포함)에서도 등록·판별이 가능하며, 기기 전환 안내와 행동 프로필 반영폭(`±%p`)을 함께 표시합니다. 추가 연습 시에는 1:1 본인 확인 기준을 통과한 문장만 최근 `12개` 슬라이딩 템플릿에 반영합니다.
+- **데스크톱·모바일 통합(`320px+` 반응형 · PWA 아이콘 규격) 및 본인 확인 적응**: 최소 `320px` 소형 화면부터 대화면 스마트폰(`safe-area`, iOS 입력 자동 확대 방지)·데스크톱까지 대응하며, 스마트폰 소프트 키보드(한글 조합 포함)에서도 등록·판별이 가능합니다. 기기 전환 안내·물리 일관 스위치 홀드 보정·행동 프로필 반영폭(`±%p`)을 함께 표시하며, 추가 연습 시에는 1:1 본인 확인 기준을 통과한 문장만 최근 `12개` 슬라이딩 템플릿에 반영합니다.
 - **순위와 오픈셋 수락의 명확한 분리**: 등록자끼리의 대결에서는 **예상 작성자 1위**를 바로 확인하고, 미등록 외부인 가능성까지 따지는 오픈셋 판정은 키보드 `92점`·터치 `78점` 이상이면서 2위보다 `12점` 이상 앞설 때만 **수락**으로 확정합니다.
 
 ![타자연습 다양한 문장 프로필 등록 화면](assets/screenshots/01_enrollment_template_ready.png)
@@ -463,7 +463,7 @@ AI Hub 중학생 국어 서술형 답안(평가용 `VS` 분할 `46`명)에서도
 
 #### ② 유출 암호 침입 차단 (`1:1` — 듀얼 인코더 보정)
 - **보호 계정 등록 (`12자 이상`) 및 덮어쓰기 차단**: 시연용 암호(`12자 이상`)를 4회 타이핑해 리듬 템플릿을 생성하며, 이미 등록된 이름이나 기본 샘플 이름으로는 무인증 재등록(덮어쓰기)을 차단합니다.
-- **듀얼 인코더 판정**: `9채널` 타이밍 인코더와 `17채널` 기하 인코더의 점수를 암호 길이별 사칭 분포로 표준화해 합산하고, 물리 키보드의 대문자 입력 습관(`Shift` vs `CapsLock`)을 결합해 최종 일치도(`기준 50%`)를 산출합니다.
+- **듀얼 인코더 및 문자열·습관 결합 판정**: `9채널` 타이밍 인코더와 `17채널` 기하 인코더의 점수를 암호 길이별 사칭 분포(스마트폰 터치 입력 시 문자열별 경량 코호트 보정 [`web/src/stringCalibration.js`](web/src/stringCalibration.js) 자동 결합)로 표준화해 합산하고, 물리 키보드의 대문자 입력 습관(`Shift` vs `CapsLock`) 및 선택적 스위치 홀드 보정을 결합해 최종 일치도(`기준 50%`)를 산출합니다.
 - **시연 관찰 한계 투명 고지**: 아래 두 화면은 동일 암호에 대해 본인이 통과하고 타인이 차단된 실제 캡처이며, 타속이 매우 비슷한 사칭자가 통과하는 한계 사례(기능 시험 중 타인 3건 수락 관찰)와 정량 오류율은 §5.6\~5.7에 숨김없이 함께 보고했습니다.
 
 ![정당 소유자 본인 인증 승인 화면](assets/screenshots/02_genuine_verification_granted.png)
@@ -488,7 +488,7 @@ AI Hub 중학생 국어 서술형 답안(평가용 `VS` 분할 `46`명)에서도
 | **오타 수정(`Backspace`) 및 긴 멈춤** | 오염된 경계 전이만 제외하고 앞뒤 정상 타이핑 리듬 구간을 봉합해 보존합니다. |
 | **복사·붙여넣기 및 자동완성** | 붙여넣기 이벤트를 차단하고, 일괄 문자열 치환은 유효 타건 측정에서 자동 배제합니다. |
 | **너무 짧은 입력 · 암호 불일치** | 문장은 유효 전이 `8개` 이상, 암호는 `4개` 이상(신규 암호 `12자 이상`) 조건 미달 시 즉시 안내합니다. |
-| **추론 중 연타 제출** | 진행 중 중복 제출을 잠그며, 방 변경·언어 전환 시 이전 비동기 추론 결과를 자동 폐기합니다. |
+| **추론 중 연타 제출 · 언어/탭 전환** | 진행 중 중복 제출을 잠그며, 방 변경·언어 전환 시 이전 비동기 추론 결과를 자동 폐기하고 미제출 연습 문장은 언어·서브탭별로 보존합니다. |
 | **구버전·비호환 모델 프로필 유입** | 스키마(`v4`), 전처리 버전, ONNX 해시가 일치하지 않는 외부 프로필은 비교 대상에서 격리합니다. |
 
 ![8자 시연용 암호 등록 시 표시되는 최소 12자 입력 안내](assets/screenshots/04_exception_handling_guard.png)
@@ -497,14 +497,13 @@ AI Hub 중학생 국어 서술형 답안(평가용 `VS` 분할 `46`명)에서도
 
 ## 7. 배포
 
-- **정식 공개 URL (`GitHub Pages`)**: [https://qwertypotter6873.github.io/keyprint-guard/](https://qwertypotter6873.github.io/keyprint-guard/) (`main` 브랜치 병합 시 GitHub Actions가 자동 빌드·검증·배포)
-- **PR #5 리뷰용 미리보기 URL**: [https://keyprint-guard-pr5.bookend-dev.chatgpt.site/](https://keyprint-guard-pr5.bookend-dev.chatgpt.site/) ([배포 커밋·ONNX 체크섬 확인](https://keyprint-guard-pr5.bookend-dev.chatgpt.site/build-info.json))
+- **정식 공개 URL (`GitHub Pages`)**: [https://qwertypotter6873.github.io/keyprint-guard/](https://qwertypotter6873.github.io/keyprint-guard/) (`main` 브랜치 병합 시 GitHub Actions가 자동 빌드·검증·배포, [배포 리비전·ONNX 체크섬 확인](https://qwertypotter6873.github.io/keyprint-guard/build-info.json))
 - **공개 GitHub 저장소**: [https://github.com/qwertypotter6873/keyprint-guard](https://github.com/qwertypotter6873/keyprint-guard)
 
 ### 7.1 Zero-Server 브라우저 로컬 추론 아키텍처 채택 이유
 1. **원시 타건 프라이버시 및 무서버 운영**: 학습한 두 모델을 `ONNX (Opset 17)`로 변환해 브라우저 `ONNX Runtime Web`(단일 스레드 `WASM SIMD`)에서 실행하므로, 별도 GPU/CPU 추론 서버 비용 없이 정적 호스팅만으로 상시 운영됩니다.
 2. **초저지연 실시간 응답**: 네트워크 왕복 지연 없이 기기 내부에서 `1.5`\~`5 ms` 수준으로 임베딩을 추출하며, 매 판정마다 실측 추론 시간을 화면에 투명하게 표시합니다.
-3. **자동화된 배포 무결성 검증**: GitHub Actions([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml))가 빌드 단계에서 Python↔JS 수치 일치성, 실제 헤드리스 브라우저 ONNX 추론, 배포본 SHA-256 대조를 모두 통과해야만 페이지를 갱신합니다.
+3. **자동화된 배포 무결성 검증**: GitHub Actions([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml))가 빌드 단계에서 포트폴리오 지표 정합성(`refresh_portfolio.py --check`), Python↔JS 수치 일치성(`8,129개`), 256문장 팬그램·쿨타임 샘플링 검증, 실제 헤드리스 브라우저 ONNX 추론 및 배포본 SHA-256 대조를 모두 통과해야만 페이지를 갱신합니다.
 
 ### 7.2 보안 시스템으로 쓸 때 고려할 점 (현재는 시연용)
 
@@ -572,6 +571,7 @@ python src/visualize_and_run.py
 # 3. 보조 평가 실행 및 포트폴리오·검증 노트북 갱신
 python src/eval_password_calibration.py
 python src/eval_typing_style.py
+python src/eval_calibration_and_cross_device.py
 python src/train_timestamp_control.py
 python src/eval_timestamp_sensitivity.py
 python src/eval_trial_sensitivity.py
@@ -595,8 +595,9 @@ npm ci
 # 로컬 개발 서버 실행 (다기기 실측 및 스마트폰 HTTPS 모션 센서 연동 시: npm run field-study)
 npm run dev
 
-# Python↔JS 수치 일치성(8,129개 항목), 프로덕션 빌드 및 브라우저 회귀 테스트
+# Python↔JS 수치 일치성(8,129개 항목), 256문장 팬그램·쿨타임 샘플링 검증, 프로덕션 빌드 및 브라우저 회귀 테스트
 node scripts/parity_check.mjs
+node scripts/sentence_sampling.mjs
 npm run build
 node scripts/functional_state.mjs
 node scripts/functional_browser.mjs
@@ -666,6 +667,12 @@ node scripts/adversarial_regression.mjs
 - **원인**: 터치 입력에서는 홀드·키 위치 정보가 빠져 1위와 2위 점수 간격이 좁게 형성되는데, 간격 하한(`0.12` → `0.08`)을 낮추면 AI Hub 검증에서 정답 수락(`12.75% → 19.05%`)과 함께 미등록자 오수락(`12.70% → 20.86%`)도 급증하는 구조적 상충이 있었기 때문이었습니다.
 - **시도**: 13개 간격 조건과 순위 가중치 학습 실험을 수행해 임계값 완화만으로는 두 오류를 동시에 줄일 수 없음을 정량 확인한 뒤, UI에서 **등록 후보 중 예상 1위 안내**와 **오픈셋 수락·보류 보안 판정**을 두 줄로 분리했습니다([상세 실험](research/korean-typing/README.md)).
 - **결과**: 미등록 외부인 오수락 억제는 그대로 유지하면서도, 등록된 참가자끼리 체험할 때는 `58`\~`75%` 수준의 1위 리듬 매칭 결과를 직관적으로 확인할 수 있게 개선했습니다.
+
+#### [사례 8] 다중 참가자 연속 체험 시 연습 문장 반복 및 물리 키 커버리지 편중 해결
+- **문제**: 한 기기에서 여러 참가자가 연달아 프로필을 등록하거나 블라인드 판별을 반복할 때 동일 문장이 빠르게 재등장하고, 일반 예문만 뽑힐 경우 `ㅋ·ㅌ·ㅊ·ㅍ`나 `q·x·z` 등 저빈도 물리 키 운지 정보가 등록 템플릿에서 비는 현상이 있었습니다.
+- **원인**: 기존 `SentenceDeck`이 탭 닫힘 시 초기화되는 `sessionStorage`에 의존하고 재셔플 경계에서 직전 `1문장`만 중복 검사했으며, 한↔영 전환 시 아직 제출하지 않은 대기 문장까지 소모 처리했기 때문이었습니다.
+- **시도**: 문장 풀을 언어별 `128개`(`일반 96 + 전 물리 키 커버 팬그램 32`, 총 `256개`)로 2배 확장하고, `localStorage` 다중 탭 리비전 동기화, 재셔플 경계 `최근 48문장 슬라이딩 쿨타임`, `4문장 버킷` 일반·팬그램 균형 인터리빙, 미제출 문장 보존을 적용했습니다([`web/src/sentences.js`](web/src/sentences.js)).
+- **결과**: 임의 시점의 5문장 등록마다 팬그램 `1`\~`2개`가 자동 포함되어 전 자판 영역 운지 특성을 고르게 포착하며, 5사이클(`640회`) 연속 추출 자동 검증에서 최소 **`49문장` 간격 무중복** 및 기존 타이핑 평가 로그(`IndexedDB`)와의 완전 격리를 확인했습니다.
 
 ### 9.3 향후 개선 계획 (데이터 · 모델 · 서비스)
 1. **[데이터 측면] 다수 참가자·다일간 교차 기기 코퍼스 확장 및 무지도 스위치 적응**: §5.10에서 구축한 4종 기기 실측 파이프라인(`147`건 파일럿: 물리 일관 홀드 보정 및 `iOS`·`Android` 자세 게이팅 `DeviceMotion` 융합 검증 완료)을 바탕으로, `20명 이상` 다수 피험자와 다일(Multi-day) 세션으로 표본을 확대하고 사용자 선언 없이 타건 초기 수 타만으로 스위치 편차($\Delta h$)를 자동 추정하는 무지도 온라인 적응으로 확장할 계획입니다.

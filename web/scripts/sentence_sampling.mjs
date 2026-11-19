@@ -1,5 +1,35 @@
 import assert from 'node:assert/strict';
-import { SENTENCE_POOLS, SentenceDeck } from '../src/sentences.js';
+import { textToKeystrokes } from '../src/features.js';
+import {
+  GENERAL_SENTENCES,
+  PANGRAM_SENTENCES,
+  RECENT_COOLDOWN,
+  SENTENCE_POOLS,
+  SentenceDeck,
+} from '../src/sentences.js';
+
+const CHO = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'];
+const JUNG = ['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ', 'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ'];
+const JONG = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'];
+const BASIC_CONS = [...'ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ'];
+const BASIC_VOWELS = [...'ㅏㅑㅓㅕㅗㅛㅜㅠㅡㅣ'];
+const ALL_26_2BEOLSIK = [...'ㅂㅈㄷㄱㅅㅛㅕㅑㅐㅔㅁㄴㅇㄹㅎㅗㅓㅏㅣㅋㅌㅊㅍㅠㅜㅡ'];
+const ALL_26_EN = [...'abcdefghijklmnopqrstuvwxyz'];
+
+function directJamoSet(text) {
+  const out = new Set();
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    if (cp >= 0xac00 && cp <= 0xd7a3) {
+      const idx = cp - 0xac00;
+      out.add(CHO[Math.floor(idx / 588)]);
+      out.add(JUNG[Math.floor((idx % 588) / 28)]);
+      const jong = JONG[idx % 28];
+      if (jong) out.add(jong);
+    }
+  }
+  return out;
+}
 
 function memoryStorage() {
   const records = new Map();
@@ -9,45 +39,111 @@ function memoryStorage() {
   };
 }
 
-function drawMany(deck, lang, count) {
-  return Array.from({ length: count }, () => deck.next(lang));
+function drawMany(deck, lang, count, opts) {
+  return Array.from({ length: count }, () => deck.next(lang, opts));
 }
 
-const storage = memoryStorage();
-let deck = new SentenceDeck(storage);
+// 1. Catalog integrity: 96 general + 32 pangrams = 128 unique prompts per language
+for (const lang of ['ko', 'en']) {
+  assert.equal(GENERAL_SENTENCES[lang].length, 96, `${lang} general count`);
+  assert.equal(PANGRAM_SENTENCES[lang].length, 32, `${lang} pangram count`);
+  assert.equal(SENTENCE_POOLS[lang].length, 128, `${lang} total pool size`);
+  assert.equal(new Set(SENTENCE_POOLS[lang]).size, 128, `${lang} pool is 100% unique`);
+
+  const allowed = lang === 'ko' ? /^[가-힣][가-힣 ]*[가-힣]\.$/ : /^[A-Z][A-Za-z, ]*[a-z]\.$/;
+  for (const s of SENTENCE_POOLS[lang]) {
+    assert.equal(s.trim(), s, `${lang} prompt trimmed`);
+    assert.equal(/  /.test(s), false, `${lang} prompt has single spaces`);
+    assert.equal(/ [.,]/.test(s), false, `${lang} prompt has no space before punctuation: ${s}`);
+    assert.equal(allowed.test(s), true, `${lang} prompt matches sentence capitalization & period policy: ${s}`);
+    if (lang === 'en') {
+      assert.equal(/\bi\b/.test(s), false, `EN prompt never uses lowercase pronoun "i": ${s}`);
+      assert.equal(/,[^ ]/.test(s), false, `EN prompt follows comma with a space: ${s}`);
+    }
+  }
+}
+
+for (const s of PANGRAM_SENTENCES.ko) {
+  const direct = directJamoSet(s);
+  const keys = new Set(textToKeystrokes(s));
+  assert.deepEqual(BASIC_CONS.filter((c) => !direct.has(c)), [], `KO pangram covers 14 basic consonants: ${s}`);
+  assert.deepEqual(BASIC_VOWELS.filter((v) => !direct.has(v)), [], `KO pangram covers 10 basic vowels: ${s}`);
+  assert.deepEqual(ALL_26_2BEOLSIK.filter((k) => !keys.has(k)), [], `KO pangram covers all 26 2-beolsik keys: ${s}`);
+}
+
+for (const s of PANGRAM_SENTENCES.en) {
+  const chars = new Set(s.toLowerCase());
+  assert.deepEqual(ALL_26_EN.filter((c) => !chars.has(c)), [], `EN pangram covers a-z: ${s}`);
+}
+
+// 2. Full-cycle non-repetition across reloads, language switches, and multi-tab shared storage
+const sharedStorage = memoryStorage();
+let tabA = new SentenceDeck(sharedStorage);
+let tabB = new SentenceDeck(sharedStorage);
 const seen = {
-  en: drawMany(deck, 'en', 13),
-  ko: drawMany(deck, 'ko', 7),
+  en: [...drawMany(tabA, 'en', 15), ...drawMany(tabB, 'en', 15)],
+  ko: [...drawMany(tabA, 'ko', 10), ...drawMany(tabB, 'ko', 12)],
 };
-seen.en.push(...drawMany(deck, 'en', 5));
-deck = new SentenceDeck(storage);
-
+tabA = new SentenceDeck(sharedStorage);
 for (const [lang, pool] of Object.entries(SENTENCE_POOLS)) {
-  assert.equal(pool.length, 64, `${lang} pool size`);
-  assert.equal(new Set(pool).size, pool.length, `${lang} pool is unique`);
-  seen[lang].push(...drawMany(deck, lang, pool.length - seen[lang].length));
-  assert.deepEqual(new Set(seen[lang]), new Set(pool), `${lang} deck survives language switches and reload`);
+  seen[lang].push(...drawMany(tabA, lang, pool.length - seen[lang].length));
+  assert.equal(seen[lang].length, pool.length);
+  assert.deepEqual(new Set(seen[lang]), new Set(pool), `${lang} deck survives multi-tab draws, language switches, and reload`);
+
+  // Every 5-sentence profile enrollment window in the initial 128-card cycle mixes general + pangram prompts
+  const pangramSet = new Set(PANGRAM_SENTENCES[lang]);
+  for (let p = 0; p + 5 <= pool.length; p += 5) {
+    const window5 = seen[lang].slice(p, p + 5);
+    const pangramHits = window5.filter((s) => pangramSet.has(s)).length;
+    assert.ok(pangramHits >= 1 && pangramHits <= 2, `${lang} 5-shot enrollment window has balanced pangrams (got ${pangramHits})`);
+  }
 }
 
-// A fixed shuffle puts the catalog's first entry at the head, forcing the boundary check.
+// 3. Multi-cycle sliding cooldown guarantee across 5 consecutive 128-sentence cycles (640 draws)
+for (const lang of ['ko', 'en']) {
+  const deck = new SentenceDeck(memoryStorage());
+  const pool = SENTENCE_POOLS[lang];
+  const lastIndex = new Map();
+  const minAllowedGap = pool.length - RECENT_COOLDOWN; // >= 80 indices apart => gap >= 49
+  for (let step = 0; step < pool.length * 5; step++) {
+    const picked = deck.next(lang);
+    if (lastIndex.has(picked)) {
+      const gap = step - lastIndex.get(picked);
+      assert.ok(gap > RECENT_COOLDOWN, `${lang} repeat gap ${gap} must exceed cooldown ${RECENT_COOLDOWN}`);
+    }
+    lastIndex.set(picked, step);
+  }
+  assert.ok(minAllowedGap > RECENT_COOLDOWN);
+}
+
+// 4. Active sibling exclusion (`{ exclude }`) avoids simultaneous enroll/blind collision without losing prompts
+{
+  const deck = new SentenceDeck(memoryStorage());
+  const held = deck.next('ko');
+  const next = deck.next('ko', { exclude: [held] });
+  assert.notEqual(next, held, 'Sibling sub-tab never receives the held prompt');
+}
+
+// 5. Boundary check under deterministic RNG + v2/v1 state migration & corrupted queue recovery
 const originalRandom = Math.random;
 try {
   Math.random = () => 0.9999;
   const pool = SENTENCE_POOLS.en;
-  const key = 'keyprint_sentence_deck_v1_en';
-  for (const queue of [[], [pool[1], pool[1]], ['obsolete prompt']]) {
-    const previous = memoryStorage();
-    previous.setItem(key, JSON.stringify({ queue, lastPicked: pool[0] }));
-    const cycle = drawMany(new SentenceDeck(previous), 'en', pool.length);
-    assert.notEqual(cycle[0], pool[0], 'Do not repeat the last prompt at a restored boundary');
-    assert.deepEqual(new Set(cycle), new Set(pool), 'An exhausted or outdated queue starts a fresh cycle');
+  for (const key of ['keyprint_sentence_deck_v2_en', 'keyprint_sentence_deck_v1_en']) {
+    for (const queue of [[], [pool[1], pool[1]], ['obsolete prompt']]) {
+      const previous = memoryStorage();
+      previous.setItem(key, JSON.stringify({ queue, lastPicked: pool[0] }));
+      const cycle = drawMany(new SentenceDeck(previous), 'en', pool.length);
+      assert.notEqual(cycle[0], pool[0], `Do not repeat the last prompt at a restored boundary (${key})`);
+      assert.deepEqual(new Set(cycle), new Set(pool), `An exhausted or outdated queue starts a fresh 128-prompt cycle (${key})`);
+    }
   }
 } finally {
   Math.random = originalRandom;
 }
 
 const brokenState = memoryStorage();
-brokenState.setItem('keyprint_sentence_deck_v1_ko', '{');
+brokenState.setItem('keyprint_sentence_deck_v2_ko', '{');
 const deniedStorage = {
   getItem() { throw new Error('Storage access denied'); },
   setItem() { throw new Error('Storage writes denied'); },
@@ -58,4 +154,4 @@ for (const storage of [brokenState, deniedStorage, null]) {
   assert.deepEqual(new Set(cycle), new Set(pool), 'A fresh deck works without valid storage');
 }
 
-console.log('Sentence sampling passed for 64 distinct prompts per language, independent decks, reload, reshuffle, and unavailable storage.');
+console.log('Sentence sampling passed for 128 distinct prompts per language (96 general + 32 pangrams), multi-tab localStorage sync, 48-prompt cooldown, and storage fallbacks.');
