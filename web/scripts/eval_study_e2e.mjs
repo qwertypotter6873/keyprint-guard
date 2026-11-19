@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { findChromeExecutable } from './browser_helpers.mjs';
+import { startFieldStudyServer } from './serve_field_study.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const web = path.resolve(here, '..');
@@ -275,8 +276,147 @@ try {
   assert.equal(pyReport.touch_and_motion.device_motion_audit.n_records_with_motion >= 1, true);
   assert.equal(pyReport.password_string_calibration.overall.n_dual_queries, 2);
 
+  // 8) Local Multi-Device Hub E2E: Laptop (HTTP ws://) <-> Smartphone (HTTPS wss://) live sync + auto JSONL save
+  const hubLogPath = path.join(tmpDir, 'hub_merged.jsonl');
+  const hubReportPath = path.join(tmpDir, 'hub_report.json');
+  const hub = await startFieldStudyServer({
+    distDir: root,
+    logFile: hubLogPath,
+    httpPort: 0,
+    httpsPort: 0,
+    host: '127.0.0.1',
+    roomCode: 'E2ESTUDY',
+    quiet: true,
+  });
+
+  try {
+    const laptopCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const phoneCtx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      userAgent:
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+      hasTouch: true,
+      isMobile: true,
+      ignoreHTTPSErrors: true,
+    });
+
+    const laptopPage = await laptopCtx.newPage();
+    const phonePage = await phoneCtx.newPage();
+
+    // Laptop opens plain root over HTTP -> hub auto-enables eval panel, QR box, and #E2ESTUDY room
+    await laptopPage.goto(`http://127.0.0.1:${hub.httpPort}/?tab=guard`);
+    await laptopPage.waitForFunction(() => window.__keyprintTestApi?.engine?.session !== null);
+    await laptopPage.waitForFunction(() => window.__keyprintTestApi?.evalStudy?.hubActive === true);
+    assert.equal(await laptopPage.locator('#eval-lan-hub-box').isVisible(), true, 'Hub QR box visible on laptop');
+    assert.equal((await laptopPage.locator('#eval-qr-https svg').count()) === 1, true, 'HTTPS QR SVG rendered');
+    await laptopPage.check('#eval-raw-consent-chk');
+    await laptopPage.selectOption('#eval-keyboard-type', 'mechanical_linear');
+
+    // Enroll '다기기참가자P01' on Laptop (4 shots of Gachon2026pw)
+    await laptopPage.click('#guard-sub-enroll');
+    await laptopPage.fill('#guard-enroll-name', '다기기참가자P01');
+    await laptopPage.selectOption('#guard-exp-preset-select', 'Gachon2026pw');
+    for (let i = 0; i < 4; i++) {
+      await laptopPage.locator('#guard-enroll-input').focus();
+      await typeWithHold(laptopPage, 'Gachon2026pw', 24, 18);
+      await laptopPage.locator('#guard-enroll-input').press('Enter');
+      if (i < 3) {
+        await laptopPage.waitForFunction(
+          (step) => document.getElementById('guard-step-text').textContent.includes(`${step} / 4`),
+          i + 2
+        );
+      } else {
+        await laptopPage.waitForFunction(() => document.getElementById('guard-verify-panel').hidden === false);
+      }
+    }
+
+    // Smartphone opens over HTTPS (wss://) -> auto-detects iOS touch_phone & receives Laptop profile via shared MQTT broker!
+    await phonePage.goto(`https://127.0.0.1:${hub.httpsPort}/?tab=guard`);
+    await phonePage.waitForFunction(() => window.__keyprintTestApi?.engine?.session !== null);
+    await phonePage.waitForFunction(() => window.__keyprintTestApi?.evalStudy?.hubActive === true);
+    await phonePage.waitForFunction(() =>
+      window.__keyprintTestApi.state.profiles.some((p) => p.name === '다기기참가자P01' && Boolean(p.password))
+    );
+    assert.equal(await phonePage.locator('#eval-keyboard-type').inputValue(), 'touch_phone', 'iOS auto-selects touch_phone');
+    const qrCollapsedOnMobile = await phonePage.evaluate(() => !document.getElementById('eval-lan-qr-details').open);
+    assert.equal(qrCollapsedOnMobile, true, 'QR details auto-collapsed on mobile viewport');
+
+    await phonePage.check('#eval-raw-consent-chk');
+    const syncedId = await phonePage.evaluate(
+      () => window.__keyprintTestApi.state.profiles.find((p) => p.name === '다기기참가자P01').id
+    );
+    await phonePage.selectOption('#eval-gt-role', `enrolled:${syncedId}`);
+
+    // Simulate mobile soft-keyboard touch input (Unidentified keydown + input events) + handheld DeviceMotion
+    await phonePage.evaluate(async () => {
+      const motion = window.__keyprintTestApi.evalStudy.motion;
+      const baseT = performance.now();
+      for (let k = 0; k < 45; k++) {
+        motion.ingestSample({
+          tMs: baseT + k * 16.7,
+          ax: 0.14 * Math.sin(k * 0.6),
+          ay: 0.11 * Math.cos(k * 0.5),
+          az: 0.22 * Math.sin(k * 0.9),
+          agx: 0.5,
+          agy: 5.2,
+          agz: -8.2,
+          rAlpha: 4.5,
+          rBeta: 6.1,
+          rGamma: 3.2,
+          reportedIntervalMs: 16.7,
+        });
+      }
+    });
+
+    await phonePage.locator('#guard-verify-input').focus();
+    for (const ch of 'Gachon2026pw') {
+      await phonePage.evaluate((c) => {
+        const el = document.getElementById('guard-verify-input');
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Unidentified', code: '', bubbles: true }));
+        el.value += c;
+        el.dispatchEvent(new InputEvent('input', { data: c, inputType: 'insertText', bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Unidentified', code: '', bubbles: true }));
+      }, ch);
+      await phonePage.waitForTimeout(38);
+    }
+    await phonePage.locator('#guard-verify-input').press('Enter');
+    await phonePage.waitForFunction(() => document.getElementById('guard-result-card').hidden === false);
+    await phonePage.waitForFunction(() => window.__keyprintTestApi.evalStudy.hubInfo?.savedRecordCount >= 2);
+
+    assert.equal(hub.getRecordCount(), 2, 'Hub automatically persisted Laptop enroll + Smartphone HTTPS touch query');
+    const hubLines = fs
+      .readFileSync(hubLogPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    assert.equal(hubLines.length, 2);
+    const phoneQueryRec = hubLines.find((r) => r.eventType === 'query');
+    assert.equal(phoneQueryRec.queryEnv.os, 'iOS');
+    assert.equal(phoneQueryRec.queryEnv.keyboardType, 'touch_phone');
+    assert.equal(phoneQueryRec.queryEnv.detectedInputMode, 'touch');
+    assert.equal(phoneQueryRec.crossDevice, true, 'Cross-device Laptop->Smartphone automatically tagged via hub enrollEnvs');
+    assert.equal(phoneQueryRec.targetAccount.enrollEnv.keyboardType, 'mechanical_linear');
+    assert.equal(phoneQueryRec.verdict.stringCalibrationActive, true, 'Touch password query auto-activates string calibration');
+    assert.equal(phoneQueryRec.deviceMotion.available, true, 'Smartphone HTTPS DeviceMotion captured');
+
+    execFileSync(pyBin, [path.join(repoRoot, 'src', 'analyze_field_study.py'), hubLogPath, '--out', hubReportPath], {
+      encoding: 'utf8',
+    });
+    const hubReport = JSON.parse(fs.readFileSync(hubReportPath, 'utf8'));
+    assert.equal(hubReport.meta.total_records, 2);
+    assert.equal(hubReport.environment_and_errors.password.cross_device.n_total, 1);
+    assert.equal(hubReport.password_string_calibration.overall.n_dual_queries, 1);
+
+    await laptopCtx.close();
+    await phoneCtx.close();
+  } finally {
+    await hub.close();
+  }
+
   fs.rmSync(tmpDir, { recursive: true, force: true });
-  console.log('Eval Study E2E passed: ?eval=1 UI, Williams 4-device order, 2-beolsik guard, cross-switch hold rescoring, DeviceMotion, string calibration & privacy redaction.');
+  console.log(
+    'Eval Study E2E passed: static ?eval=1 + Local Multi-Device Hub (Laptop HTTP <-> Smartphone HTTPS live sync & auto JSONL).'
+  );
   console.log(stdout.trim());
 } finally {
   await browser.close();

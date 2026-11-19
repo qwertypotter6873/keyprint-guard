@@ -196,9 +196,24 @@ function renderStepDots(containerEl, labelEl, completedCount, totalCount, prefix
 }
 
 // ================= ROOM SYNC SETUP =================
+const FIELD_HUB_BOOT =
+  typeof window !== 'undefined' && window.__KEYPRINT_FIELD_HUB?.active ? window.__KEYPRINT_FIELD_HUB : null;
+
+if (
+  FIELD_HUB_BOOT &&
+  typeof window !== 'undefined' &&
+  (!Array.isArray(window.__KEYPRINT_MQTT_BROKERS) || window.__KEYPRINT_MQTT_BROKERS.length === 0)
+) {
+  const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  window.__KEYPRINT_MQTT_BROKERS = [`${wsProto}//${window.location.host}/mqtt`];
+}
+
 const roomSync = new RoomProfileSync({
   onChange: (profiles) => {
     state.profiles = Array.isArray(profiles) ? profiles : [];
+    if (evalStudy.hubActive) {
+      evalStudy.scheduleHubPull(120);
+    }
     ensureSelectedGuardAccount();
     renderAllRosters();
     renderEvalStudyPanel();
@@ -215,19 +230,26 @@ const roomSync = new RoomProfileSync({
       (status === 'online' ? 'is-online' : status === 'local' ? 'is-local' : 'is-connecting');
 
     const peerLabel = status === 'online' ? `기기 ${safeInt(peerCount, 1)}대` : '로컬';
+    const roomKind = FIELD_HUB_BOOT ? '로컬 Wi-Fi' : '공유 방';
     $('room-pill-label').textContent = shared
-      ? `공유 방 #${roomCode} · ${peerLabel} · 프로필 ${safeInt(profileCount, 0)}명`
+      ? `${roomKind} #${roomCode} · ${peerLabel} · 프로필 ${safeInt(profileCount, 0)}명`
       : `이 브라우저만 · 프로필 ${safeInt(profileCount, 0)}명`;
 
-    $('modal-room-code').textContent = shared ? `공유 방 #${roomCode}` : '이 브라우저만';
+    $('modal-room-code').textContent = shared ? `${roomKind} #${roomCode}` : '이 브라우저만';
     $('copy-invite-btn').disabled = !shared;
     $('use-local-btn').hidden = !shared;
     $('modal-sync-badge').textContent =
-      !shared ? '외부 전송 없이 로컬 저장' : status === 'online'
-        ? `실시간 연결됨 · 현재 기기 ${safeInt(peerCount, 1)}대 접속`
-        : status === 'local'
-          ? '연결 끊김 · 변경은 로컬 보관 후 재연결 시 동기화'
-          : '실시간 서버 연결 중…';
+      !shared
+        ? '외부 전송 없이 로컬 저장'
+        : FIELD_HUB_BOOT
+          ? status === 'online'
+            ? `노트북 로컬 Wi-Fi 허브 동기화 중 (외부 서버 미전송) · 기기 ${safeInt(peerCount, 1)}대`
+            : '노트북 로컬 허브 연결 중…'
+          : status === 'online'
+            ? `실시간 연결됨 · 현재 기기 ${safeInt(peerCount, 1)}대 접속`
+            : status === 'local'
+              ? '연결 끊김 · 변경은 로컬 보관 후 재연결 시 동기화'
+              : '실시간 서버 연결 중…';
 
     const compatNotice = $('compat-isolation-notice');
     if (compatNotice) {
@@ -2383,6 +2405,54 @@ function renderEvalStudyPanel() {
     sys.timerResolutionUs ?? '?'
   }µs · 모델 ${engine.modelHash || '준비중'} (${engine.preprocessVersion})`;
 
+  const hubBox = $('eval-lan-hub-box');
+  if (hubBox) {
+    if (evalStudy.hubActive && evalStudy.hubInfo) {
+      const info = evalStudy.hubInfo;
+      hubBox.hidden = false;
+      $('eval-lan-hub-title').textContent = `로컬 Wi-Fi 다기기 실측 허브 연결됨 (#${roomSync.roomCode})`;
+      $('eval-lan-hub-sub').textContent = `노트북·외장 키보드·스마트폰 프로필이 동일 공유기 내에서 실시간 공유되며, 모든 평가 기록은 노트북의 ${
+        info.logFileRel || 'logs/field_study/field_study_merged.jsonl'
+      }에 자동 통합 저장됩니다 (현재 ${info.savedRecordCount ?? summary.totalRecords}건 · 외부 서버 미전송).`;
+
+      const qrDetails = $('eval-lan-qr-details');
+      if (qrDetails && !qrDetails.dataset.autoToggled) {
+        qrDetails.dataset.autoToggled = '1';
+        if (sys.os === 'iOS' || sys.os === 'Android') {
+          qrDetails.open = false;
+        }
+      }
+
+      const qrHttpsEl = $('eval-qr-https');
+      if (qrHttpsEl && info.qrSvgHttps && qrHttpsEl.dataset.renderedUrl !== info.httpsUrl) {
+        qrHttpsEl.innerHTML = info.qrSvgHttps;
+        qrHttpsEl.dataset.renderedUrl = info.httpsUrl;
+      }
+      const qrHttpEl = $('eval-qr-http');
+      if (qrHttpEl && info.qrSvgHttp && qrHttpEl.dataset.renderedUrl !== info.httpUrl) {
+        qrHttpEl.innerHTML = info.qrSvgHttp;
+        qrHttpEl.dataset.renderedUrl = info.httpUrl;
+      }
+
+      const linkHttps = $('eval-link-https');
+      if (linkHttps && info.httpsUrl) {
+        linkHttps.href = info.httpsUrl;
+        linkHttps.textContent = info.httpsUrl;
+      }
+      const linkHttp = $('eval-link-http');
+      if (linkHttp && info.httpUrl) {
+        linkHttp.href = info.httpUrl;
+        linkHttp.textContent = info.httpUrl;
+      }
+      const caLink = $('eval-hub-ca-link');
+      if (caLink) {
+        caLink.hidden = !info.hasCaCert;
+      }
+    } else {
+      hubBox.hidden = true;
+    }
+  }
+
   const statParts = [
     `누적 ${summary.totalRecords}건 (등록 ${summary.enrollCount} · 문장판별 ${summary.arenaQueryCount} · 암호판별 ${summary.pwQueryCount})`,
   ];
@@ -2524,6 +2594,22 @@ function bindEvalStudyEvents() {
     setFeedback($('eval-action-feedback'), '브라우저에 저장된 실측 평가 기록을 비웠습니다.');
   });
 
+  const hubSyncBtn = $('eval-hub-sync-btn');
+  if (hubSyncBtn) {
+    hubSyncBtn.addEventListener('click', async () => {
+      const res = await evalStudy.syncWithHub();
+      if (res.ok) {
+        setFeedback(
+          $('eval-action-feedback'),
+          `노트북 로컬 허브 동기화 완료: 총 ${res.hubTotal}건 (${evalStudy.hubInfo?.logFileRel || 'field_study_merged.jsonl'})`,
+          'success'
+        );
+      } else {
+        setFeedback($('eval-action-feedback'), '로컬 허브 서버에 연결하지 못했습니다.', 'error');
+      }
+    });
+  }
+
   $('guard-exp-preset-select').addEventListener('change', (e) => {
     const chosen = e.target.value;
     if (!chosen) return;
@@ -2552,16 +2638,19 @@ async function bootstrap() {
   $('room-pill-label').textContent = '이 브라우저만 · 준비 중';
   $('modal-room-code').textContent = '이 브라우저만';
 
+  const hadSavedEvalSettings = evalStudy.hasStoredSettings();
   await evalStudy.init();
-  if (params.get('eval') === '1') {
+  if (params.get('eval') === '1' || FIELD_HUB_BOOT) {
     state.evalPanelOpen = true;
-    evalStudy.updateSettings({ enabled: true });
+    if (params.get('eval') === '1' || !hadSavedEvalSettings) {
+      evalStudy.updateSettings({ enabled: true });
+    }
   }
 
   bindEvents();
   renderEvalStudyPanel();
   if (params.get('lang') === 'ko') switchLanguage('ko', { deferPrompt: true });
-  if (params.has('room')) {
+  if (params.has('room') && !FIELD_HUB_BOOT) {
     $('room-dialog').showModal();
     setFeedback($('room-feedback'), `#${initialRoom} 초대 링크입니다. 공개 공유에 동의하고 입장해야 연결됩니다.`);
   }
@@ -2602,9 +2691,21 @@ async function bootstrap() {
 
   // Connect RoomProfileSync safely even if window.WebSocket throws synchronously
   try {
-    roomSync.connect('LOCAL');
+    if (FIELD_HUB_BOOT) {
+      const hubRoom = sanitizeRoomCode(params.get('room') || FIELD_HUB_BOOT.defaultRoom || 'LOCALSTUDY');
+      $('room-code-input').value = hubRoom;
+      roomSync.connect(hubRoom, { shared: true });
+    } else {
+      roomSync.connect('LOCAL');
+    }
   } catch (syncErr) {
     console.warn('Room sync fallback to local mode:', syncErr);
+  }
+
+  if (FIELD_HUB_BOOT) {
+    evalStudy.connectLocalHub().then(() => {
+      renderEvalStudyPanel();
+    });
   }
 
   resetArenaEnrollProgress();

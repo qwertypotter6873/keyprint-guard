@@ -12,3 +12,5 @@ data/processed/*.npz
 .tmp_*
 web-legacy-full/
 기말-*/
+.local_certs/
+logs/

@@ -77,6 +77,46 @@
 
         <div id="eval-order-banner" class="eval-order-banner" role="note"></div>
 
+        <div id="eval-lan-hub-box" class="eval-lan-hub" hidden>
+          <div class="eval-lan-hub-head">
+            <div>
+              <strong id="eval-lan-hub-title" class="eval-lan-hub-title">로컬 Wi-Fi 다기기 실측 허브 연결됨</strong>
+              <p id="eval-lan-hub-sub" class="eval-lan-hub-sub"></p>
+            </div>
+            <div class="eval-lan-hub-actions">
+              <button type="button" id="eval-hub-sync-btn" class="secondary-btn sm-btn">허브 기록 동기화</button>
+              <a id="eval-hub-ca-link" class="ghost-sm-btn" href="./api/field-study/ca.pem" hidden>루트 인증서(CA)</a>
+            </div>
+          </div>
+
+          <details id="eval-lan-qr-details" class="eval-lan-qr-details" open>
+            <summary class="eval-lan-qr-summary">스마트폰 카메라 스캔용 QR 코드 및 동일 Wi-Fi 접속 주소</summary>
+            <div class="eval-lan-qr-grid">
+              <div class="eval-qr-card">
+                <div id="eval-qr-https" class="eval-qr-svg" aria-hidden="true"></div>
+                <div class="eval-qr-copy">
+                  <span class="eval-qr-badge is-https">권장 · HTTPS (터치 + 모션센서)</span>
+                  <a id="eval-link-https" class="eval-qr-url mono-text" href="#" target="_blank" rel="noopener"></a>
+                  <p class="eval-qr-hint">
+                    스마트폰 카메라로 스캔 후 최초 1회 브라우저 <strong>고급 → 이동(웹사이트 방문)</strong>을 선택하면 터치 타건과 가속도·자이로 센서가 모두 작동합니다.
+                  </p>
+                </div>
+              </div>
+
+              <div class="eval-qr-card">
+                <div id="eval-qr-http" class="eval-qr-svg" aria-hidden="true"></div>
+                <div class="eval-qr-copy">
+                  <span class="eval-qr-badge">즉시 접속 · HTTP (경고창 없는 터치)</span>
+                  <a id="eval-link-http" class="eval-qr-url mono-text" href="#" target="_blank" rel="noopener"></a>
+                  <p class="eval-qr-hint">
+                    인증서 확인 없이 바로 열립니다. 스마트폰 터치 타건·노트북 프로필 공유·통합 로그 자동 저장이 동일하게 작동합니다(모션 센서만 제외).
+                  </p>
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+
         <form id="eval-config-form" class="eval-form" aria-labelledby="eval-study-heading">
           <fieldset class="eval-fieldset">
             <legend class="eval-legend">1. 참가자 · 실제 작성자(정답) · 기기 환경</legend>

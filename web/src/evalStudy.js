@@ -469,7 +469,20 @@ export class EvalStudyManager {
     this.records = [];
     this.enrollEnvs = new Map(); // `${roomCode}::${profileId}::${domain}` -> env snapshot
     this.publicStrings = FALLBACK_PUBLIC_STRINGS;
+    this.hubActive = false;
+    this.hubInfo = null;
+    this.hubSyncError = null;
+    this._pullTimer = null;
     this.settings = this._loadSettings();
+  }
+
+  hasStoredSettings() {
+    try {
+      const storage = typeof window !== 'undefined' ? window.localStorage : null;
+      return Boolean(storage && storage.getItem(SETTINGS_KEY));
+    } catch {
+      return false;
+    }
   }
 
   _defaultSettings() {
@@ -701,7 +714,10 @@ export class EvalStudyManager {
     this.enrollEnvs.set(envKey, env);
     await this._putStore('enroll_envs', { key: envKey, env });
 
-    if (!this.settings.enabled) return null;
+    if (!this.settings.enabled) {
+      await this._pushToHub([]);
+      return null;
+    }
 
     const pubEntry = domain === 'password' ? this.findPublicPasswordEntry(passwordText) : null;
     const allowKeyIdentity = domain === 'arena' || Boolean(pubEntry);
@@ -780,6 +796,7 @@ export class EvalStudyManager {
 
     this.records.push(record);
     await this._putStore('records', record);
+    await this._pushToHub([record]);
     this._emit();
     return record;
   }
@@ -823,6 +840,9 @@ export class EvalStudyManager {
           : null;
 
     const domKey = `arena_${lang || 'en'}`;
+    if (this.hubActive && candidates.some((c) => !this.getEnrollEnv(roomCode, c.id, domKey))) {
+      await this._pullFromHubOnce();
+    }
     const winnerEnrollEnv = winnerId ? this.getEnrollEnv(roomCode, winnerId, domKey) : null;
     const actualEnrollEnv = actualProfileId ? this.getEnrollEnv(roomCode, actualProfileId, domKey) : null;
     const crossDevice =
@@ -891,6 +911,7 @@ export class EvalStudyManager {
 
     this.records.push(record);
     await this._putStore('records', record);
+    await this._pushToHub([record]);
     this._emit();
     return record;
   }
@@ -923,6 +944,9 @@ export class EvalStudyManager {
       actualRole = isGenuine ? 'genuine' : 'impostor';
     }
 
+    if (this.hubActive && !this.getEnrollEnv(roomCode, targetAccount.id, 'password')) {
+      await this._pullFromHubOnce();
+    }
     const targetEnrollEnv = this.getEnrollEnv(roomCode, targetAccount.id, 'password');
     const crossDevice =
       targetEnrollEnv && targetEnrollEnv.keyboardType ? targetEnrollEnv.keyboardType !== env.keyboardType : null;
@@ -1031,15 +1055,121 @@ export class EvalStudyManager {
 
     this.records.push(record);
     await this._putStore('records', record);
+    await this._pushToHub([record]);
     this._emit();
     return record;
+  }
+
+  async connectLocalHub() {
+    if (
+      typeof window === 'undefined' ||
+      !window.__KEYPRINT_FIELD_HUB?.active ||
+      typeof fetch !== 'function'
+    ) {
+      return null;
+    }
+    try {
+      const res = await fetch('./api/field-study/info', { cache: 'no-store' });
+      if (!res.ok) return null;
+      const ctype = res.headers.get('content-type') || '';
+      if (!ctype.includes('application/json')) return null;
+      const info = await res.json();
+      if (!info?.ok || !info.hubVersion) return null;
+      this.hubActive = true;
+      this.hubInfo = info;
+      this.hubSyncError = null;
+      await this.syncWithHub();
+      return this.hubInfo;
+    } catch (err) {
+      this.hubSyncError = err?.message || 'hub_unreachable';
+      return null;
+    }
+  }
+
+  scheduleHubPull(delayMs = 150) {
+    if (!this.hubActive) return;
+    if (this._pullTimer) clearTimeout(this._pullTimer);
+    this._pullTimer = setTimeout(() => {
+      this._pullTimer = null;
+      this._pullFromHubOnce().then((changed) => {
+        if (changed) this._emit();
+      });
+    }, delayMs);
+  }
+
+  async _pullFromHubOnce() {
+    if (!this.hubActive || typeof fetch !== 'function') return false;
+    try {
+      const res = await fetch('./api/field-study/records', { cache: 'no-store' });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (!data?.ok) return false;
+      let changed = false;
+      if (Array.isArray(data.enrollEnvs)) {
+        for (const item of data.enrollEnvs) {
+          if (item?.key && item?.env && !this.enrollEnvs.has(item.key)) {
+            this.enrollEnvs.set(item.key, item.env);
+            await this._putStore('enroll_envs', { key: item.key, env: item.env });
+            changed = true;
+          }
+        }
+      }
+      if (data.jsonl) {
+        const imported = await this._importJsonlInternal(data.jsonl);
+        if (imported.added > 0) changed = true;
+      }
+      if (this.hubInfo && Number.isFinite(data.total)) {
+        this.hubInfo.savedRecordCount = data.total;
+      }
+      this.hubSyncError = null;
+      return changed;
+    } catch (err) {
+      this.hubSyncError = err?.message || 'pull_failed';
+      return false;
+    }
+  }
+
+  async _pushToHub(recordsToSend = []) {
+    if (!this.hubActive || typeof fetch !== 'function') return null;
+    try {
+      const enrollEnvs = Array.from(this.enrollEnvs.entries()).map(([key, env]) => ({ key, env }));
+      const res = await fetch('./api/field-study/records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ records: recordsToSend, enrollEnvs }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data?.ok && this.hubInfo && Number.isFinite(data.total)) {
+        this.hubInfo.savedRecordCount = data.total;
+      }
+      this.hubSyncError = null;
+      return data;
+    } catch (err) {
+      this.hubSyncError = err?.message || 'push_failed';
+      return null;
+    }
+  }
+
+  async syncWithHub() {
+    if (!this.hubActive) return { ok: false, total: this.records.length, hubTotal: 0 };
+    await this._pullFromHubOnce();
+    if (this.records.length > 0 || this.enrollEnvs.size > 0) {
+      await this._pushToHub(this.records);
+    }
+    this._emit();
+    return {
+      ok: !this.hubSyncError,
+      total: this.records.length,
+      hubTotal: this.hubInfo?.savedRecordCount ?? this.records.length,
+    };
   }
 
   toJsonl() {
     return this.records.map((r) => JSON.stringify(r)).join('\n') + (this.records.length ? '\n' : '');
   }
 
-  async importJsonlText(text) {
+  async _importJsonlInternal(text) {
     const lines = String(text || '')
       .split(/\r?\n/)
       .map((l) => l.trim())
@@ -1068,9 +1198,19 @@ export class EvalStudyManager {
       }
       added += 1;
     }
-    this.records.sort((a, b) => String(a.recordedAt).localeCompare(String(b.recordedAt)));
-    this._emit();
+    if (added > 0) {
+      this.records.sort((a, b) => String(a.recordedAt).localeCompare(String(b.recordedAt)));
+    }
     return { added, skipped, total: this.records.length };
+  }
+
+  async importJsonlText(text) {
+    const res = await this._importJsonlInternal(text);
+    if (res.added > 0) {
+      await this._pushToHub(this.records);
+    }
+    this._emit();
+    return res;
   }
 
   computeLiveSummary() {

@@ -9,7 +9,8 @@
     "dev": "vite",
     "prebuild": "npm run sync-ort",
     "build": "vite build",
-    "preview": "vite preview --port 4173"
+    "preview": "vite preview --port 4173",
+    "field-study": "npm run build && node scripts/serve_field_study.mjs"
   },
   "dependencies": {
     "mqtt": "^5.16.1",
