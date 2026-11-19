@@ -406,6 +406,7 @@ function renderAllRosters() {
     ? '한국어 정량 평가는 공개 스마트폰 타건을 기준으로 합니다. PC 한글 입력은 체험용입니다.'
     : '영어 성능은 공개 타건 데이터로 평가했습니다. 등록할 때와 같은 언어로 비교합니다.';
   $('arena-korean-study-link').hidden = state.lang !== 'ko';
+  $('arena-sample-start-btn').textContent = state.lang === 'ko' ? '한국어 샘플로 체험' : '영어 샘플로 체험';
   const rosterNotes = [];
   if (otherLanguage) rosterNotes.push(`다른 언어로 등록된 ${otherLanguage}명은 비교에서 제외됩니다.`);
   if (cands.length === 1) {
@@ -541,7 +542,7 @@ function renderModalProfiles() {
       if (p?.arena?.ko) badges.push(`한글 ${safeInt(p.arena.ko.count, 1)}문장`);
       if (p?.arena?.en) badges.push(`영문 ${safeInt(p.arena.en.count, 1)}문장`);
       if (p?.password) badges.push(`암호(${safeInt(p.password.count, 1)}회)`);
-      const refTmpl = p?.arena?.ko || p?.arena?.en || p?.password;
+      const refTmpl = (state.lang === 'ko' ? p?.arena?.ko : p?.arena?.en) || p?.arena?.en || p?.arena?.ko || p?.password;
       const behTxt = refTmpl ? behaviorSummaryText(refTmpl.behavior) : '';
       const modeLabel = refTmpl?.inputMode ? INPUT_MODE_LABEL[refTmpl.inputMode] || '' : '';
       const modeTxt = modeLabel && refTmpl?.inputMode !== 'keyboard' ? ` · ${modeLabel}` : '';
@@ -828,17 +829,23 @@ function changeWorkspace(roomCode, shared) {
   setFeedback($('room-feedback'), shared ? '공개 공유를 시작했습니다. 이 방에서 등록하는 프로필과 시연 문자열이 브로커에 전송됩니다.' : '이 브라우저의 로컬 프로필로 돌아왔습니다. 외부 전송을 중지했습니다.');
 }
 
-function startEnglishSampleExperience() {
+function startSampleExperience() {
   if (!state.ready) {
     setFeedback($('room-feedback'), notReadyMessage(), 'error');
     return;
   }
   roomSync.loadSamples(engine.config?.mvp_sample_profiles || []);
-  switchLanguage('en', { deferPrompt: true });
+  const targetLang = state.lang === 'ko' ? 'ko' : 'en';
+  switchLanguage(targetLang, { deferPrompt: true });
   $('room-dialog').close();
   switchArenaSub('blind');
   switchMainMode('arena');
-  setFeedback($('arena-blind-feedback'), '다른 사람이 입력한 영어 실측 샘플과 비교합니다. 내 리듬과 비교하려면 내 프로필을 등록하세요.');
+  setFeedback(
+    $('arena-blind-feedback'),
+    targetLang === 'ko'
+      ? '공개 스마트폰 한국어 실측 샘플 4명과 비교합니다. 내 리듬과 비교하려면 내 프로필을 등록하세요.'
+      : '다른 사람이 입력한 영어 실측 샘플 4명과 비교합니다. 내 리듬과 비교하려면 내 프로필을 등록하세요.'
+  );
 }
 
 // ================= ACTION HANDLERS =================
@@ -1057,7 +1064,7 @@ async function handleArenaBlindSubmit(isCurrent) {
   if (candidates.length === 0) {
     setFeedback(
       $('arena-blind-feedback'),
-      '현재 언어로 등록된 참가자가 없습니다. 먼저 프로필을 등록하거나 [영어 샘플로 체험]을 선택해 주세요.',
+      `현재 언어로 등록된 참가자가 없습니다. 먼저 프로필을 등록하거나 [${state.lang === 'ko' ? '한국어' : '영어'} 샘플로 체험]을 선택해 주세요.`,
       'error'
     );
     return;
@@ -2272,8 +2279,8 @@ function bindEvents() {
   });
 
   $('use-local-btn').addEventListener('click', () => changeWorkspace('LOCAL', false));
-  $('arena-sample-start-btn').addEventListener('click', startEnglishSampleExperience);
-  $('sample-start-btn').addEventListener('click', startEnglishSampleExperience);
+  $('arena-sample-start-btn').addEventListener('click', startSampleExperience);
+  $('sample-start-btn').addEventListener('click', startSampleExperience);
 
   $('toggle-samples-btn').addEventListener('click', () => {
     if (roomSync.hasSamples()) {

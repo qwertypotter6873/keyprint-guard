@@ -440,20 +440,27 @@ export class KeyPrintEngine {
       // with both length-only baseline and string-specific cohort calibration computed side-by-side.
       const slope = dual.slope ?? 1.0;
       const thr = threshold ?? 0.5 + thresholdOffset;
-      const prmLen = { ...dualParamsForLength(dual, inputMode, template.target?.length) };
+      const modeKey = inputMode === 'touch' ? 'touch' : 'keyboard';
+      const fixedSamplePrm =
+        dual.sample_fixed && template?.target === dual.sample_fixed.target ? dual.sample_fixed[modeKey] : null;
+      const prmLen = fixedSamplePrm
+        ? { ...fixedSamplePrm }
+        : { ...dualParamsForLength(dual, inputMode, template.target?.length) };
       const baseLen = dualPasswordScore(embedding, embedding17, template, template.enc17, prmLen, slope);
 
       const tCal0 = performance.now();
-      const prmStr = {
-        ...stringCalibratedDualParams(
-          template.target || '',
-          inputMode,
-          dual,
-          this.config?.keyboard_layout,
-          this.calibrationStudy,
-          { minShrinkScale: useStringCalibration === true ? 0.7 : 0.0 }
-        ),
-      };
+      const prmStr = fixedSamplePrm
+        ? { ...fixedSamplePrm, shrinkWeight: 1, support: dual.sample_fixed.val_subjects ?? 10 }
+        : {
+            ...stringCalibratedDualParams(
+              template.target || '',
+              inputMode,
+              dual,
+              this.config?.keyboard_layout,
+              this.calibrationStudy,
+              { minShrinkScale: useStringCalibration === true ? 0.7 : 0.0 }
+            ),
+          };
       const baseStr = dualPasswordScore(embedding, embedding17, template, template.enc17, prmStr, slope);
       const calibLatencyMs = Math.round((performance.now() - tCal0) * 1000) / 1000;
 
@@ -474,7 +481,6 @@ export class KeyPrintEngine {
 
       const simLen = 1 / (1 + Math.exp(-slope * (zLen - prmLen.tau)));
       const simStr = 1 / (1 + Math.exp(-slope * (zStr - prmStr.tau)));
-      const modeKey = inputMode === 'touch' ? 'touch' : 'keyboard';
       const activeStr =
         useStringCalibration !== null
           ? Boolean(useStringCalibration)

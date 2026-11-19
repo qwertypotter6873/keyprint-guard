@@ -530,7 +530,7 @@ async function run() {
       const sampleState = await api(page, () =>
         window.__keyprintTestApi.state.profiles.filter((p) => p.isSample).map((p) => ({ name: p.name, ko: Boolean(p.arena?.ko), en: Boolean(p.arena?.en), pw: Boolean(p.password) })),
       );
-      expect(sampleState.length === 4 && sampleState.every((s) => s.en && s.pw), `samples loaded: ${JSON.stringify(sampleState)}`);
+      expect(sampleState.length === 4 && sampleState.every((s) => s.ko && s.en && s.pw), `samples loaded: ${JSON.stringify(sampleState)}`);
       // Sample profiles are protected; only the exact sample name is reserved
       await page.click('#nav-arena-btn').catch(() => {});
       await page.click('#arena-sub-enroll');

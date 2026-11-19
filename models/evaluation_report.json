@@ -1,5 +1,5 @@
 {
-  "elapsed_seconds": 89.58,
+  "elapsed_seconds": 79.61,
   "bot_split_audit": {
     "validation_seed": 42,
     "test_seed": 1000045,
@@ -39,9 +39,9 @@
   },
   "device": "mps (mps)",
   "provenance": {
-    "run_id": "kp-v4-20261118T044606Z",
-    "timestamp_utc": "2026-11-18T04:46:06.406306+00:00",
-    "git_head": "8ee540d65c379f4165bd0b0a65f95dbfcc82bb2b",
+    "run_id": "kp-v4-20261119T135017Z",
+    "timestamp_utc": "2026-11-19T13:50:17.073545+00:00",
+    "git_head": "52f8d8f518695615a2356833eeef5a13e6a56493",
     "command": "src/visualize_and_run.py",
     "python_version": "3.12.11",
     "torch_version": "2.15.0",
@@ -73,8 +73,11 @@
     },
     "source_manifest_scope": "evaluation/training and auxiliary analysis scripts; notebook/packaging tools are tracked by the submission build",
     "source_sha256": {
+      "src/analyze_field_study.py": "41c8ef8932b1e4d7b9a76bf64ab6a2cf47780595d52400e4c9b6e052a96122c3",
       "src/behavior_profile.py": "6a2e279eddadda82c714a0e8df2127fda655da1495b2a736b3a51a155e1fe606",
       "src/capture_sim.py": "12557ff02da229ca1db84e92d2c751e49b01dcf717490ea326bf3b86ae10c535",
+      "src/eval_calibration_and_cross_device.py": "6050ef260586a1f65bb9092bf75a7cf490b2258e25e8ec20b963b6c53d5ad7e1",
+      "src/eval_korean_fact.py": "e116d8e9573318c0fa4e21e995703811be8d5d8b96faa6d487afe95bc373ffe5",
       "src/eval_password_calibration.py": "1120ab47ed72a285146309c97c6ef4c0bee5dfd976f34e5dad0bbc299a5735a9",
       "src/eval_timestamp_sensitivity.py": "f4e1c8080baa5c5ec1d918516a9b3922ab0af57c6b554303898c34970155aec8",
       "src/eval_trial_sensitivity.py": "f5c3f5a03f71d26fd7efbe3595714c327e1315e831c3615cb1ac5080a1d6b583",
@@ -86,9 +89,10 @@
       "src/models.py": "add3372325c52107559e2e4e3dc85ce88f243ca12725907ae9c90184da7fb3f1",
       "src/password_synth.py": "f8f0ab928ff6deab1362776acf6910a0419ca9d1d8b5cb38de990c7b1f3feb5b",
       "src/preprocessing.py": "329eaccedda1c547c718ca59f92030459e5a89f3efb2b77958ad970b6986e0d3",
+      "src/string_calibration.py": "7c6f494e795dbc742fa4288d236261a38804b0d230bb7b21cae48a2165865d3c",
       "src/train_and_evaluate.py": "b1ee2c238667f71348a641784fd3e642fee7819d23ebb8dae029018abb56d0c4",
       "src/train_timestamp_control.py": "fb955f9a01f20868ff3e8df6efc865fe99fee42ddc34bfca4110ce2f5d20b26d",
-      "src/visualize_and_run.py": "4c206df66d28d9e64703aa448fce6e586d25be393a21ef44987f89a6f36880d0"
+      "src/visualize_and_run.py": "0a699ec2bc787643af24f144e7c87d8c3b03eaeca2b929804ab9320a4cafc5b5"
     },
     "training_provenance": {
       "run_id": "kp-corrected-20261118T043630Z",
@@ -149,8 +153,8 @@
       "models/legacy/keyprint_net_9ch.onnx": "654af6d75ad845db0741104e2e9f76eb955e3c4c2774e349efd1e3c35c8946dd",
       "web/public/models/keyprint_net.onnx": "355f9d90a057ac81da96a875f5e5a0b710b8469b2dafda336d8caea5ca8cf7b0",
       "web/public/models/keyprint_net_password.onnx": "654af6d75ad845db0741104e2e9f76eb955e3c4c2774e349efd1e3c35c8946dd",
-      "web/public/models/model_config.json": "3fc28a4f3754d46ebdcb4c5f90de0cd56940352cfe62701f88b8bf4ced91d4bb",
-      "web/scripts/fixtures/feature_parity.json": "036e41d18d350ab7a376421286ceec4cfbf75c8ff16d9e0044424686890a8c5c"
+      "web/public/models/model_config.json": "6f9862c91f491e492a4c6f0c1d006165e7821412e0a82296ee373fb6a56f3802",
+      "web/scripts/fixtures/feature_parity.json": "cb44f130fde90b94b3d9f85324015fcb2127813c1250164078d63e6508140f2c"
     }
   },
   "preprocessing": {
@@ -4520,9 +4524,9 @@
       "browser_password_characters": 10,
       "browser_password_transitions": 9,
       "profiles": 4,
-      "enrollment_session": 1,
+      "enrollment_session": 7,
       "enrollment_recordings": 5,
-      "query_session": 6
+      "query_session": 8
     }
   },
   "error_analysis": {

@@ -40,6 +40,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, roc
 
 from behavior_profile import fit_behavior_model, load_keyrecs_sessions, merge, to_events
 from capture_sim import (
+    RecorderSim,
     as_norm_similarity,
     build_input_tensor,
     export_parity_fixture,
@@ -83,6 +84,7 @@ from password_synth import (
     capital_llr,
     params_for_length,
     password_rng,
+    raw_similarity,
     run_password_synthesis,
     select_adaptation_policy,
 )
@@ -2082,14 +2084,18 @@ def main() -> None:
     password_onnx_info["sha256"] = sha9
 
     # Real sample profiles for the web app (stamped with schema v4 + modelHash)
-    def _pick(cands: Dict[str, Dict[str, float]]) -> List[str]:
+    def _pick(cands: Dict[str, Dict[str, float]], stable_balanced: bool = False) -> List[str]:
         chosen: List[str] = []
         rules = [("cpm", max), ("cpm", "median"), ("cv", min), ("rollover", max)]
         for key, how in rules:
             pool = {k: v for k, v in cands.items() if k not in chosen}
             if how == "median":
-                med = float(np.median([v["cpm"] for v in pool.values()]))
-                chosen.append(min(pool, key=lambda k: abs(pool[k]["cpm"] - med)))
+                sub = pool
+                if stable_balanced:
+                    med_cv = float(np.median([v["cv"] for v in pool.values()]))
+                    sub = {k: v for k, v in pool.items() if v["cv"] <= med_cv} or pool
+                med = float(np.median([v["cpm"] for v in sub.values()]))
+                chosen.append(min(sub, key=lambda k: abs(sub[k]["cpm"] - med)))
             else:
                 chosen.append(how(pool, key=lambda k: pool[k][key]))
         return chosen  # order: fast, balanced, steady, rollover
@@ -2103,20 +2109,95 @@ def main() -> None:
                 "rollover": float(np.mean([x["rolloverPct"] for x in st])),
                 "cv": dd_cv(sess[1][:ARENA_ENROLL_SENTENCES]),
             }
+    cmu_val = splits["val"]
     cmu_test = splits["test"]
+    sample_enroll_session, sample_query_session = 7, 8
 
-    def _browser_recordings(indices):
+    def _browser_recordings_for(sp_obj, indices, touch: bool = False):
         for i in indices:
-            raw_h, raw_d = cmu_test.raw_holds[i], cmu_test.raw_dds[i]
-            # The recorder submits on Enter keydown, so every character keyup must have arrived.
+            raw_h, raw_d = sp_obj.raw_holds[i], sp_obj.raw_dds[i]
+            # The recorder submits on Enter keydown, so every character keyup must have arrived on keyboard.
             downs = np.concatenate([[0.0], np.cumsum(raw_d, dtype=np.float64)])
-            if np.any(downs[:-1] + raw_h[:-1] > downs[-1]):
+            if not touch and np.any(downs[:-1] + raw_h[:-1] > downs[-1]):
                 continue
-            cap = cmu_browser_password_capture(raw_h, raw_d)
-            if cap["clean_digraphs"] != len(CMU_BROWSER_SAMPLE_PASSWORD) - 1 or not all(cap["hold_valid"]):
+            if touch:
+                rec = RecorderSim(touch=True)
+                times = np.concatenate([[0.0], np.cumsum(raw_d[:-1], dtype=np.float64)])
+                for code, char, tm in zip(CMU_PASSWORD_CODES[:-1], CMU_BROWSER_SAMPLE_PASSWORD, times):
+                    rec.feed(code, char, float(tm), None)
+                cap = rec.extract()
+            else:
+                cap = cmu_browser_password_capture(raw_h, raw_d)
+            if cap["clean_digraphs"] != len(CMU_BROWSER_SAMPLE_PASSWORD) - 1:
+                continue
+            if not touch and not all(cap["hold_valid"]):
                 continue
             cap["tensor"] = build_input_tensor(cap, bounds, touch_hold, chan_mean, chan_std)
             yield int(i), cap
+
+    def _browser_recordings(indices):
+        return _browser_recordings_for(cmu_test, indices, touch=False)
+
+    # Validation-only dual calibration for the fixed 10-char CMU sample password (.tie5Roanl)
+    # enrolled at memorized Session 7 and queried at Session 8 (keyboard + touch query paths).
+    val_sample_tmpls, val_sample_q_kb, val_sample_q_tc = {}, {}, {}
+    for uid, subj in enumerate(cmu_val.subjects):
+        same_person = cmu_val.subject_ids == uid
+        e_idx = np.flatnonzero(same_person & (cmu_val.sessions == sample_enroll_session))
+        q_idx = np.flatnonzero(same_person & (cmu_val.sessions == sample_query_session))
+        enr = list(islice(_browser_recordings_for(cmu_val, e_idx, touch=False), 5))
+        qkb = list(_browser_recordings_for(cmu_val, q_idx, touch=False))
+        qtc = list(_browser_recordings_for(cmu_val, q_idx, touch=True))
+        if len(enr) < 5 or not qkb or not qtc:
+            continue
+        et = [c["tensor"] for _, c in enr]
+        val_sample_tmpls[subj] = (
+            make_template(encode_variable(legacy_model, et, device, L9)),
+            make_template(encode_variable(keyprint_model, et, device, N_CHANNELS)),
+        )
+        qkb_t = [c["tensor"] for _, c in qkb]
+        qtc_t = [c["tensor"] for _, c in qtc]
+        val_sample_q_kb[subj] = (
+            encode_variable(legacy_model, qkb_t, device, L9),
+            encode_variable(keyprint_model, qkb_t, device, N_CHANNELS),
+        )
+        val_sample_q_tc[subj] = (
+            encode_variable(legacy_model, qtc_t, device, L9),
+            encode_variable(keyprint_model, qtc_t, device, N_CHANNELS),
+        )
+
+    sample_fixed = {
+        "target": CMU_BROWSER_SAMPLE_PASSWORD,
+        "selection_split": "val_only",
+        "enrollment_session": sample_enroll_session,
+        "query_session": sample_query_session,
+        "val_subjects": len(val_sample_tmpls),
+    }
+    for mode_name, q_bank in (("keyboard", val_sample_q_kb), ("touch", val_sample_q_tc)):
+        y_vf, r9_vf, r17_vf = [], [], []
+        for t_subj, (t9_v, t17_v) in val_sample_tmpls.items():
+            for q_subj, (Q9_v, Q17_v) in q_bank.items():
+                lbl = 1 if t_subj == q_subj else 0
+                s9_v = raw_similarity(Q9_v, t9_v)
+                s17_v = raw_similarity(Q17_v, t17_v)
+                y_vf.extend([lbl] * len(s9_v))
+                r9_vf.extend(s9_v.tolist())
+                r17_vf.extend(s17_v.tolist())
+        y_arr = np.asarray(y_vf, dtype=np.int32)
+        r9_arr = np.asarray(r9_vf, dtype=np.float64)
+        r17_arr = np.asarray(r17_vf, dtype=np.float64)
+        mu9_v, sd9_v = float(r9_arr[y_arr == 0].mean()), max(float(r9_arr[y_arr == 0].std()), 1e-4)
+        mu17_v, sd17_v = float(r17_arr[y_arr == 0].mean()), max(float(r17_arr[y_arr == 0].std()), 1e-4)
+        z_vf = (r9_arr - mu9_v) / sd9_v + (r17_arr - mu17_v) / sd17_v
+        fpr_v, tpr_v, thrs_v = roc_curve(y_arr, z_vf)
+        eer_i = int(np.argmin(np.abs(fpr_v - (1.0 - tpr_v))))
+        sample_fixed[mode_name] = {
+            "mu9": round(mu9_v, 5),
+            "sd9": round(sd9_v, 5),
+            "mu17": round(mu17_v, 5),
+            "sd17": round(sd17_v, 5),
+            "tau": round(float(thrs_v[eer_i]), 4),
+        }
 
     def _sample_password_fixture(recording):
         i, cap = recording
@@ -2136,8 +2217,8 @@ def main() -> None:
     cmu_cands, cmu_rows = {}, {}
     for uid, subj in enumerate(cmu_test.subjects):
         same_person = cmu_test.subject_ids == uid
-        idx = np.flatnonzero(same_person & (cmu_test.sessions == 1))
-        g_idx = np.flatnonzero(same_person & (cmu_test.sessions == 6) & (cmu_test.reps >= 10))
+        idx = np.flatnonzero(same_person & (cmu_test.sessions == sample_enroll_session))
+        g_idx = np.flatnonzero(same_person & (cmu_test.sessions == sample_query_session) & (cmu_test.reps >= 10))
         enroll = list(islice(_browser_recordings(idx), 5))
         genuine = next(_browser_recordings(g_idx), None)
         if len(enroll) < 5 or genuine is None:
@@ -2151,6 +2232,31 @@ def main() -> None:
         }
         cmu_rows[subj] = (enroll, genuine)
 
+    fact_ko_fixture = json.loads((root / "data" / "raw" / "FACT-korean-sample-4writers.json").read_text(encoding="utf-8"))
+
+    def _fact_touch_cap(item: Dict) -> Dict:
+        dds = [float(x) for x in item["dds"]]
+        stitches = [bool(x) for x in item["stitchFlags"]]
+        n = len(dds)
+        hold_count = n + 1 + sum(stitches)
+        cap = {
+            "input_mode": "touch",
+            "clean_digraphs": n,
+            "holds": [None] * hold_count,
+            "hold_valid": [False] * hold_count,
+            "h_curr": [None] * n,
+            "h_next": [None] * n,
+            "hv_curr": [False] * n,
+            "hv_next": [False] * n,
+            "dds": dds,
+            "uds": [None] * n,
+            "stitch_flags": stitches,
+            "pair_keys": [[None, None]] * n,
+            "behavior": {},
+        }
+        cap["tensor"] = build_input_tensor(cap, bounds, touch_hold, chan_mean, chan_std)
+        return cap
+
     sample_meta = [
         ("서연 (샘플·고속연타)", "#2563eb"),
         ("민준 (샘플·균형리듬)", "#059669"),
@@ -2159,7 +2265,12 @@ def main() -> None:
     ]
     mvp_sample_profiles = []
     sample_password_cases = []
-    for (name, color), kr_id, cmu_id in zip(sample_meta, _pick(kr_cands), _pick(cmu_cands)):
+    for (name, color), kr_id, cmu_id, fact_writer in zip(
+        sample_meta,
+        _pick(kr_cands),
+        _pick(cmu_cands, stable_balanced=True),
+        fact_ko_fixture["writers"],
+    ):
         e_caps = banks["test"][kr_id][1][:ARENA_ENROLL_SENTENCES]
         beh = None
         for c in e_caps:
@@ -2167,6 +2278,17 @@ def main() -> None:
         arena_tmpl = template_payload(np.stack([c["emb"] for c in e_caps]), e_caps, beh)
         q_cap = banks["test"][kr_id][2][1]
         arena_tmpl["testQueryStroke"] = {**stroke_payload(q_cap), "behavior": q_cap["behavior"]}
+
+        ko_ecaps = [_fact_touch_cap(item) for item in fact_writer["enroll_captures"][:ARENA_ENROLL_SENTENCES]]
+        ko_qcap = _fact_touch_cap(fact_writer["query_captures"][1])
+        ko_embs = encode_variable(
+            sentence_model,
+            [c["tensor"] for c in ko_ecaps] + [ko_qcap["tensor"]],
+            device,
+            N_CHANNELS,
+        )
+        ko_arena_tmpl = template_payload(ko_embs[:-1], ko_ecaps, {}, input_mode="touch")
+        ko_arena_tmpl["testQueryStroke"] = {**stroke_payload(ko_qcap), "behavior": {}}
 
         enroll, genuine = cmu_rows[cmu_id]
         caps = [cap for _, cap in enroll]
@@ -2199,9 +2321,13 @@ def main() -> None:
                 "modelVersion": deployed_model_version,
                 "createdAt": SAMPLE_PROFILE_TIMESTAMP,
                 "updatedAt": SAMPLE_PROFILE_TIMESTAMP,
-                "source": {"keyrecs_participant": kr_id, "cmu_subject": cmu_id},
+                "source": {
+                    "keyrecs_participant": kr_id,
+                    "cmu_subject": cmu_id,
+                    "fact_ko_writer": f"w{int(fact_writer['writer_id']):02d}",
+                },
                 "password": pw_tmpl,
-                "arena": {"en": arena_tmpl},
+                "arena": {"en": arena_tmpl, "ko": ko_arena_tmpl},
             }
         )
     print(f"[Web] rebuilt sample profiles (modelHash={model_hash}): {[(p['name'], p['source']) for p in mvp_sample_profiles]}")
@@ -2292,7 +2418,9 @@ def main() -> None:
             "browser_password_characters": len(CMU_BROWSER_SAMPLE_PASSWORD),
             "browser_password_transitions": len(CMU_BROWSER_SAMPLE_PASSWORD) - 1,
             "profiles": len(sample_password_cases),
-            "enrollment_session": 1, "enrollment_recordings": 5, "query_session": 6,
+            "enrollment_session": sample_enroll_session,
+            "enrollment_recordings": 5,
+            "query_session": sample_query_session,
         },
     }
 
@@ -2356,6 +2484,7 @@ def main() -> None:
                 "frr_target": PASSWORD_FRR_TARGET,
                 "touch_reference_only": True,
                 "by_length": pw_len_table,
+                "sample_fixed": sample_fixed,
                 "capital_method": {
                     "weight": pw_capital["weight"],
                     "tau_offset": pw_capital["tau_offset"],
